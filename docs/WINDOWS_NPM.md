@@ -16,4 +16,6 @@ Equivalent `cmd.exe` form:
 cmd /c "npm run tauri -- dev"
 ```
 
-`pnpm-lock.yaml` is preserved for now. Do not delete it until the npm workflow has been confirmed stable and a maintainer intentionally removes the old pnpm lockfile.
+`pnpm-workspace.yaml` was removed because this is not a pnpm workspace and the file only carried pnpm-specific build approvals.
+
+`pnpm-lock.yaml` is preserved for now. Do not delete it until a clean npm install has produced and verified `package-lock.json`.

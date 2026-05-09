@@ -123,18 +123,48 @@ The user will work in the Codex Windows App, not primarily through Codex CLI. Tr
 5. When using image generation, generate UI reference images only after the feature inventory exists; then create `docs/UI_TRACE.md` mapping every required feature to an implemented component.
 6. Use the Codex App review/diff pane, `/review` if available, or an explicit code review pass before finalizing.
 
-## 9. Testing and done criteria
+## 9. Stage Gate Protocol
+Every implementation or planning task must end with a `STAGE_GATE_RESULT` block.
+
+The block must include:
+- `CURRENT_STAGE`
+- `READY_FOR_NEXT_STEP: YES | NO | BLOCKED`
+- `CONFIDENCE`
+- `ACCEPTANCE_CHECKLIST`
+- `VERIFICATION_COMMANDS`
+- `FILES_CHANGED`
+- `BLOCKERS`
+- `NEXT_ALLOWED_ACTION`
+
+Stage progression rules:
+- The user may proceed to the next stage only when `READY_FOR_NEXT_STEP` is `YES`.
+- If `READY_FOR_NEXT_STEP` is `NO`, Codex must provide exactly one focused repair prompt for the same stage.
+- If `READY_FOR_NEXT_STEP` is `BLOCKED`, Codex must stop and request the exact missing user action or error output.
+- Codex must not proceed to the next feature stage automatically.
+
+Loop and verification rules:
+- Codex must not retry the same failing command more than twice.
+- Codex must not loop indefinitely on the same error.
+- Codex must not run long-lived dev servers as the only verification unless explicitly requested.
+
+Project safety rules:
+- Codex must not switch package managers silently.
+- Codex must not create a nested project.
+- Codex must not delete `AGENTS.md` or `docs/`.
+- Codex must not add fake menus, cloud/login/marketplace/premium features, or generated-image-only features.
+
+## 10. Testing and done criteria
 Minimum checks before claiming completion:
-- `pnpm lint`
-- `pnpm test`
-- `pnpm build`
-- `pnpm tauri build` when packaging work changes
+- `npm run lint`
+- `npm run test`
+- `npm run build`
+- `npm run tauri -- build` when packaging work changes
 - Rust unit tests for validation, crop math, export naming, GIF loop parsing/setting, and database migrations.
 - Frontend tests for inline alt editing, multi-select, drag reorder, edit panel mode switching, and export validation dialog.
 
 A feature is done only when it is implemented, persisted where applicable, validated, and covered by at least one automated test or a documented manual verification script.
 
-## 10. Safety and maintainability
+## 11. Safety and maintainability
 - Treat user-imported files as untrusted. Validate extensions and decode images safely before processing.
 - Avoid unrestricted filesystem access. Prefer user-selected paths, Tauri plugin scopes, and dedicated Tauri commands.
 - Never delete originals unless the user explicitly chooses a destructive “library cleanup” action with confirmation.

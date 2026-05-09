@@ -22,11 +22,21 @@ Done when: App opens, empty Explorer-like shell renders, checks run.
    - `update_icon_order`
 4. Define app data directory layout:
    - `library.sqlite`
-   - `assets/originals/`
-   - `assets/generated/`
+   - `originals/`
+   - `generated/crops/`
+   - `thumbnails/source-files/`
+   - `previews/collections/`
    - `exports/`
+   - `temp/import/`
+   - `temp/export/`
 
 Done when: Collection CRUD persists across restart.
+
+Stage 07 status: SQLite initialization, app data folder creation, schema
+migration, collection CRUD commands, `list_icons`, frontend command wrappers,
+and persisted main collection loading are implemented. `update_icon_order`,
+actual image import, source file copy, and cover assignment remain in later
+stages.
 
 ## Phase 2 — Explorer UI and import
 1. Main screen collection grid.
@@ -39,6 +49,15 @@ Done when: Collection CRUD persists across restart.
 
 Done when: Multiple jpg/png/gif files can be imported and are still visible after restart.
 
+Stage 08 status: Image file import is implemented for jpg/jpeg/png/gif through
+multi-file file input and drag-and-drop. Imported originals are written to the
+Tauri app data `originals/` library by SHA-256, source rows are deduplicated by
+hash, thumbnails are generated under `thumbnails/source-files/`, icon and piece
+rows are persisted in `icons.order_index` order, and the first imported icon is
+assigned as the collection cover. Users can change the cover to another imported
+icon from the collection grid. Folder import, crop editing, drag reorder, and
+final export remain later stages.
+
 ## Phase 3 — Icon management
 1. Icon grid/list view.
 2. Multi-select with Ctrl/Shift and keyboard Delete.
@@ -47,6 +66,16 @@ Done when: Multiple jpg/png/gif files can be imported and are still visible afte
 5. Inline alt editing and duplicate/invalid highlighting.
 
 Done when: The collection behaves like a file explorer and `order_index`/alt text persist.
+
+Stage 09 status: Icon grid interactions are implemented with dnd-kit sortable
+tiles, Ctrl multi-select, Shift range select, keyboard Delete, and a right-click
+context menu for delete, duplicate, edit, and representative image selection.
+The stage-safe edit action focuses the inline alt editor; crop editing remains
+reserved for Stage 10. Alt values are edited inline, validated in the frontend
+and Rust command layer, rejected when duplicated, and persisted in
+`icon_pieces.alt_text`. Drag reorder persists to `icons.order_index`; duplicate
+and delete operations are durable SQLite operations that preserve imported
+original files.
 
 ## Phase 4 — Editor and imaging pipeline
 1. Right-side editor panel.
@@ -60,6 +89,26 @@ Done when: The collection behaves like a file explorer and `order_index`/alt tex
 
 Done when: Applying edits updates previews/exports without destroying source and can be re-edited later.
 
+Stage 10 plan: implement the editor as a vertical slice without final export.
+The slice adds a right-side React editor panel, React-Konva crop box movement
+and resizing, fixed-mode presets, configurable effective cell size, persisted
+crop metadata, icon shape/piece reconciliation, GIF loop metadata persistence,
+and preview derivative generation while preserving immutable source files.
+
+Stage 10 status: right-side editor panel, source-image crop canvas, single and
+double icon shape modes, free/fixed crop behavior, split lines, fixed presets,
+icon-level cell-size overrides, persistent crop metadata, preview derivative
+generation, and source preservation tests are implemented. Final export and the
+preview simulator remain later phases.
+
+Stage 11 status: GIF import now records frame count and source loop metadata,
+editor crop apply processes every GIF frame into animated preview and piece GIFs,
+loop settings are encoded for preserve/infinite/once/count, regenerated preview
+URLs are cache-refreshed in the grid/editor, generated piece files are checked
+for png/gif format and collection byte limits, and Rust tests verify animation,
+delays, loop metadata, crop resize dimensions, and original source preservation.
+The usage preview simulator does not exist yet and remains Phase 5 work.
+
 ## Phase 5 — Preview simulator
 1. DCInside-like comment UI.
 2. Insert icons into text-like flow.
@@ -68,6 +117,13 @@ Done when: Applying edits updates previews/exports without destroying source and
 5. Multi-piece icons render in piece order.
 
 Done when: User can visually test a collection before export.
+
+Stage 12 status: the collection screen now has a local usage preview mode with
+a DCInside-style comment composer, 100×100 icon display, click-to-insert icon
+groups, multi-piece rendering in piece order, alt labels in the palette and
+inserted summary, generated piece preview usage when available, and GIF preview
+URL refresh so animated GIFs continue replaying in the simulator. This stage
+does not implement upload, login, posting, scraping, or final export.
 
 ## Phase 6 — Export and validation
 1. DCInside validation.
@@ -79,6 +135,15 @@ Done when: User can visually test a collection before export.
 7. Export all pieces in persisted order.
 
 Done when: Export creates files matching order, dimensions, format, size constraints, and alt txt.
+
+Stage 13 status: export is implemented as a Tauri/Rust vertical slice with
+persisted DCInside/Custom profile settings, collection/icon effective-size
+export, saved icon order plus piece order expansion, sequence and alt filename
+modes, `alts.txt` and `export-manifest.json`, post-render 2MB validation,
+DCInside count/format/200×200/alt/duplicate checks, strict-warning handling,
+multi-piece splitting, animated GIF export with saved loop settings, and
+open-folder/open-`alts.txt` commands. The collection UI exposes an export
+dialog with settings, validation results, and completion actions.
 
 ## Phase 7 — QA and packaging
 1. Run lint/test/build/tauri build.

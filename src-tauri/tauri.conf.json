@@ -14,11 +14,16 @@
       {
         "title": "PMTCONCON Studio",
         "width": 1200,
-        "height": 760
+        "height": 760,
+        "dragDropEnabled": false
       }
     ],
     "security": {
-      "csp": null
+      "csp": null,
+      "assetProtocol": {
+        "enable": true,
+        "scope": ["$APPDATA/**"]
+      }
     }
   },
   "bundle": {

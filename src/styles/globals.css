@@ -6,6 +6,21 @@
   --color-foreground: #101828;
   --color-muted: #667085;
   --color-border: #d0d5dd;
+  --color-border-strong: #98a2b3;
+  --color-sidebar: #eef2f8;
+  --color-sidebar-active: #ffffff;
+  --color-canvas: #f8fafc;
+  --color-surface: #ffffff;
+  --color-card: #ffffff;
+  --color-preview: #f1f5f9;
+  --color-selected: #dcecff;
+  --color-accent: #2563eb;
+  --color-accent-strong: #1d4ed8;
+  --color-accent-foreground: #ffffff;
+  --color-focus: #0f766e;
+  --color-dropzone: #94a3b8;
+  --color-menu-hover: #f1f5f9;
+  --color-danger: #b42318;
 }
 
 :root {

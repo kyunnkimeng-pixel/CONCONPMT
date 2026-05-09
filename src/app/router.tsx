@@ -1,23 +1,30 @@
 import {
-  Outlet,
   createRootRoute,
   createRoute,
   createRouter,
 } from "@tanstack/react-router";
 
 import { AppShell } from "@/app/AppShell";
+import { CollectionRoute } from "@/app/routes/collection-route";
+import { HomeRoute } from "@/app/routes/home-route";
 
 const rootRoute = createRootRoute({
-  component: () => <Outlet />,
+  component: AppShell,
 });
 
 const indexRoute = createRoute({
   getParentRoute: () => rootRoute,
   path: "/",
-  component: AppShell,
+  component: HomeRoute,
 });
 
-const routeTree = rootRoute.addChildren([indexRoute]);
+const collectionRoute = createRoute({
+  getParentRoute: () => rootRoute,
+  path: "/collections/$collectionId",
+  component: CollectionRoute,
+});
+
+const routeTree = rootRoute.addChildren([indexRoute, collectionRoute]);
 
 export const router = createRouter({ routeTree });
 
