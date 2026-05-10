@@ -31,6 +31,7 @@ pub struct IconDto {
     pub cell_width_override: Option<i64>,
     pub cell_height_override: Option<i64>,
     pub thumbnail_url: Option<String>,
+    pub thumbnail_override_url: Option<String>,
     pub current_preview_url: Option<String>,
     pub gif_loop_mode: String,
     pub gif_loop_count: Option<i64>,
@@ -48,6 +49,7 @@ pub struct IconPieceDto {
     pub piece_role: String,
     pub alt_text: String,
     pub generated_preview_url: Option<String>,
+    pub last_export_url: Option<String>,
     pub export_status: String,
     pub created_at: String,
     pub updated_at: String,
@@ -115,6 +117,40 @@ pub struct ApplyIconCropPayload {
 pub struct ImportImageFilePayload {
     pub original_filename: String,
     pub bytes: Vec<u8>,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct UpdateCollectionSettingsPayload {
+    pub default_cell_width: i64,
+    pub default_cell_height: i64,
+    pub preview_width: i64,
+    pub preview_height: i64,
+    pub export_format: String,
+    pub max_bytes: i64,
+}
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct AppSettingsDto {
+    pub last_open_collection_id: Option<String>,
+    pub last_view_mode: String,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct SaveAppSettingsPayload {
+    pub last_open_collection_id: Option<String>,
+    pub last_view_mode: String,
+}
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct LibraryCleanupResultDto {
+    pub orphaned_source_files: i64,
+    pub removed_original_files: i64,
+    pub removed_thumbnail_files: i64,
+    pub removed_temp_files: i64,
 }
 
 #[derive(Debug, Clone, Serialize)]

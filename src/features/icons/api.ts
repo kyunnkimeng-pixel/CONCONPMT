@@ -38,6 +38,30 @@ export function updateIconPieceAlt(
   }).then(normalizeIconSummary);
 }
 
+export function renameIcon(
+  collectionId: string,
+  iconId: string,
+  displayName: string,
+) {
+  return invokeCommand<IconSummary>("rename_icon", {
+    collectionId,
+    iconId,
+    displayName,
+  }).then(normalizeIconSummary);
+}
+
+export async function setIconThumbnailOverride(
+  collectionId: string,
+  iconId: string,
+  file: File,
+) {
+  return invokeCommand<IconSummary>("set_icon_thumbnail_override", {
+    collectionId,
+    iconId,
+    file: await fileToImportPayload(file),
+  }).then(normalizeIconSummary);
+}
+
 export function duplicateIcon(collectionId: string, iconId: string) {
   return invokeCommand<IconSummary>("duplicate_icon", {
     collectionId,
@@ -59,10 +83,22 @@ export function reorderIcons(collectionId: string, iconIds: string[]) {
   }).then((icons) => icons.map(normalizeIconSummary));
 }
 
+export function revealIconOriginal(collectionId: string, iconId: string) {
+  return invokeCommand<void>("reveal_icon_original", { collectionId, iconId });
+}
+
+export function revealIconExportResult(collectionId: string, iconId: string) {
+  return invokeCommand<void>("reveal_icon_export_result", { collectionId, iconId });
+}
+
 export function normalizeIconSummary(icon: IconSummary): IconSummary {
   return {
     ...icon,
     thumbnailUrl: filePathToAssetUrl(icon.thumbnailUrl, icon.updatedAt),
+    thumbnailOverrideUrl: filePathToAssetUrl(
+      icon.thumbnailOverrideUrl,
+      icon.updatedAt,
+    ),
     currentPreviewUrl: filePathToAssetUrl(icon.currentPreviewUrl, icon.updatedAt),
     pieces: icon.pieces.map((piece) => ({
       ...piece,
@@ -70,6 +106,7 @@ export function normalizeIconSummary(icon: IconSummary): IconSummary {
         piece.generatedPreviewUrl,
         piece.updatedAt,
       ),
+      lastExportUrl: filePathToAssetUrl(piece.lastExportUrl, piece.updatedAt),
     })),
   };
 }

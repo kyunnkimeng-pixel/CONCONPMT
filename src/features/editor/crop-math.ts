@@ -38,11 +38,17 @@ export function centeredFreeCrop(
   shape: IconShape,
   cellWidth: number,
   cellHeight: number,
+  fillRatio = 1,
 ): CropRect {
   const aspectRatio = aspectRatioForShape(shape, cellWidth, cellHeight);
   const sourceAspectRatio = source.width / source.height;
-  const width =
+  const fittedWidth =
     sourceAspectRatio > aspectRatio ? source.height * aspectRatio : source.width;
+  const normalizedFillRatio = Math.min(Math.max(fillRatio, 0.1), 1);
+  const width = Math.min(
+    fittedWidth,
+    Math.max(MIN_CROP_SIZE, fittedWidth * normalizedFillRatio),
+  );
   const height = width / aspectRatio;
 
   return {

@@ -152,3 +152,16 @@ dialog with settings, validation results, and completion actions.
 4. Update `docs/FEATURE_INVENTORY.md` statuses.
 
 Done when: MVP is usable end-to-end and feature inventory has no accidental gaps.
+
+## Stage 14R — Consolidated missing feature closure
+1. Close the final-review todo items only: icon display-name rename, icon thumbnail
+   override, collection duplicate UI, collection/icon size settings UI, folder import,
+   startup route/view restore, explicit library cleanup, reveal original/export result,
+   and standalone 200×200 JPG/PNG collection cover import.
+2. Preserve existing import/edit/export behavior and original file copies.
+3. Keep F048 transparency/JPG warnings, mark only the optional 5px margin heuristic
+   as user-deprioritized and non-blocking.
+4. Rerun final feature review and update `docs/FEATURE_INVENTORY.md`.
+
+Done when: `F011`, `F012`, `F024`, `F035`, `F053`, `F059`, `F060`,
+`F061`, and `F062` are implemented and verified; `F048` is correctly mapped.

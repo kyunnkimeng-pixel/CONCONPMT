@@ -12,9 +12,9 @@ labels, menus, validation, persistence, and feature scope.
 | `03-editor-preview.png` | Prompt 3 | Icon editor + preview simulator |
 | `04-export-validation.png` | Prompt 4 | Export validation screen |
 
-Original generator cache used for this stage:
-`C:\Users\david\.codex\generated_images\019e0d29-03ba-7c30-9eab-6d9d1d2cbb5d`.
-The project-local copies above are the durable references for documentation.
+The original generator cache was local and is intentionally not required for
+the repository. The project-local copies above are the durable references for
+documentation.
 
 ## Ignore As Non-Functional Decoration
 
@@ -26,4 +26,3 @@ The project-local copies above are the durable references for documentation.
   upload, or share affordance if a generated image appears to imply one.
 - Any generated text that differs from the required Korean product language or
   the fixed product name `PMTCONCON Studio`.
-

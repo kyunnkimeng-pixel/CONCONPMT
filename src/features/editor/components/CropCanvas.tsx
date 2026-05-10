@@ -1,6 +1,7 @@
-import { useEffect, useMemo, useState } from "react";
+import { useMemo } from "react";
+import type { CSSProperties } from "react";
 import type { KonvaEventObject } from "konva/lib/Node";
-import { Circle, Image as KonvaImage, Layer, Line, Rect, Stage } from "react-konva";
+import { Circle, Layer, Line, Rect, Stage } from "react-konva";
 
 import {
   aspectRatioForShape,
@@ -29,6 +30,10 @@ interface CropCanvasProps {
 const HANDLE_RADIUS = 6;
 const MAX_CANVAS_WIDTH = 520;
 const MAX_CANVAS_HEIGHT = 420;
+const nonDraggableImageStyle: CSSProperties & { WebkitUserDrag: string } = {
+  WebkitUserDrag: "none",
+  userSelect: "none",
+};
 
 export function CropCanvas({
   sourceUrl,
@@ -41,7 +46,6 @@ export function CropCanvas({
   cellHeight,
   onCropChange,
 }: CropCanvasProps) {
-  const [imageElement, setImageElement] = useState<HTMLImageElement | null>(null);
   const source = useMemo(
     () => ({ width: sourceWidth, height: sourceHeight }),
     [sourceHeight, sourceWidth],
@@ -61,17 +65,8 @@ export function CropCanvas({
   const aspectRatio = aspectRatioForShape(shape, cellWidth, cellHeight);
   const handles = cropHandles(cropStage);
 
-  useEffect(() => {
-    const nextImage = new window.Image();
-    nextImage.onload = () => setImageElement(nextImage);
-    nextImage.src = sourceUrl;
-
-    return () => {
-      nextImage.onload = null;
-    };
-  }, [sourceUrl]);
-
   const updateCropPosition = (event: KonvaEventObject<DragEvent>) => {
+    event.cancelBubble = true;
     const nextCrop = clampCropPosition(
       {
         ...crop,
@@ -86,92 +81,109 @@ export function CropCanvas({
 
   const updateCropSize =
     (handle: CropHandle) => (event: KonvaEventObject<DragEvent>) => {
+      event.cancelBubble = true;
       const pointer = {
         x: event.target.x() / scale + bounds.x,
         y: event.target.y() / scale + bounds.y,
       };
       const nextCrop = resizeCropFromCorner(crop, handle, pointer, source, aspectRatio);
       onCropChange(nextCrop);
-    };
+  };
 
   return (
     <div className="overflow-auto rounded-md border border-border bg-preview p-3">
-      <Stage height={canvas.height} width={canvas.width}>
-        <Layer>
-          <Rect
-            fill="#ffffff"
-            height={canvas.height}
-            stroke="#d0d5dd"
-            width={canvas.width}
-            x={0}
-            y={0}
-          />
-          {imageElement ? (
-            <KonvaImage
-              height={sourceStage.height}
-              image={imageElement}
-              width={sourceStage.width}
-              x={sourceStage.x}
-              y={sourceStage.y}
+      <div
+        className="relative bg-white"
+        data-testid="crop-canvas"
+        style={{ height: canvas.height, width: canvas.width }}
+        onDragStart={(event) => event.preventDefault()}
+      >
+        <img
+          alt=""
+          className="pointer-events-none absolute select-none"
+          data-testid="crop-source-image"
+          draggable={false}
+          src={sourceUrl}
+          style={{
+            ...nonDraggableImageStyle,
+            height: sourceStage.height,
+            left: sourceStage.x,
+            top: sourceStage.y,
+            width: sourceStage.width,
+          }}
+          onDragStart={(event) => event.preventDefault()}
+        />
+        <Stage className="absolute left-0 top-0" height={canvas.height} width={canvas.width}>
+          <Layer>
+            <Rect
+              height={canvas.height}
+              listening={false}
+              stroke="#d0d5dd"
+              width={canvas.width}
+              x={0}
+              y={0}
             />
-          ) : null}
-          <Rect
-            dash={[6, 4]}
-            draggable
-            fill="rgba(37, 99, 235, 0.08)"
-            height={cropStage.height}
-            stroke="#2563eb"
-            strokeWidth={2}
-            width={cropStage.width}
-            x={cropStage.x}
-            y={cropStage.y}
-            onDragEnd={updateCropPosition}
-            onDragMove={updateCropPosition}
-          />
-          {shape === "horizontal_double" ? (
-            <Line
-              dash={[5, 5]}
-              points={[
-                cropStage.x + cropStage.width / 2,
-                cropStage.y,
-                cropStage.x + cropStage.width / 2,
-                cropStage.y + cropStage.height,
-              ]}
-              stroke="#0f766e"
+            <Rect
+              dash={[6, 4]}
+              draggable
+              fill="rgba(37, 99, 235, 0.08)"
+              height={cropStage.height}
+              stroke="#2563eb"
               strokeWidth={2}
+              width={cropStage.width}
+              x={cropStage.x}
+              y={cropStage.y}
+              onDragEnd={updateCropPosition}
+              onDragMove={updateCropPosition}
             />
-          ) : null}
-          {shape === "vertical_double" ? (
-            <Line
-              dash={[5, 5]}
-              points={[
-                cropStage.x,
-                cropStage.y + cropStage.height / 2,
-                cropStage.x + cropStage.width,
-                cropStage.y + cropStage.height / 2,
-              ]}
-              stroke="#0f766e"
-              strokeWidth={2}
-            />
-          ) : null}
-          {cropMode === "free"
-            ? handles.map((handle) => (
-                <Circle
-                  draggable
-                  fill="#ffffff"
-                  key={handle.id}
-                  radius={HANDLE_RADIUS}
-                  stroke="#2563eb"
-                  strokeWidth={2}
-                  x={handle.x}
-                  y={handle.y}
-                  onDragEnd={updateCropSize(handle.id)}
-                  onDragMove={updateCropSize(handle.id)}
-                />
-              ))
-            : null}
-        </Layer>
-      </Stage>
+            {shape === "horizontal_double" ? (
+              <Line
+                dash={[5, 5]}
+                points={[
+                  cropStage.x + cropStage.width / 2,
+                  cropStage.y,
+                  cropStage.x + cropStage.width / 2,
+                  cropStage.y + cropStage.height,
+                ]}
+                stroke="#0f766e"
+                strokeWidth={2}
+              />
+            ) : null}
+            {shape === "vertical_double" ? (
+              <Line
+                dash={[5, 5]}
+                points={[
+                  cropStage.x,
+                  cropStage.y + cropStage.height / 2,
+                  cropStage.x + cropStage.width,
+                  cropStage.y + cropStage.height / 2,
+                ]}
+                stroke="#0f766e"
+                strokeWidth={2}
+              />
+            ) : null}
+            {cropMode === "free"
+              ? handles.map((handle) => (
+                  <Circle
+                    draggable
+                    fill="#ffffff"
+                    key={handle.id}
+                    radius={HANDLE_RADIUS}
+                    stroke="#2563eb"
+                    strokeWidth={2}
+                    x={handle.x}
+                    y={handle.y}
+                    onDragStart={(event) => {
+                      event.cancelBubble = true;
+                    }}
+                    onDragEnd={updateCropSize(handle.id)}
+                    onDragMove={updateCropSize(handle.id)}
+                  />
+                ))
+              : null}
+          </Layer>
+        </Stage>
+      </div>
     </div>
   );
 }

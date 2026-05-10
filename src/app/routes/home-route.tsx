@@ -1,12 +1,17 @@
 import { useCallback, useEffect, useRef, useState } from "react";
+import type { InputHTMLAttributes } from "react";
 import { useNavigate } from "@tanstack/react-router";
-import { FileImage, FolderPlus, Plus, Upload } from "lucide-react";
+import { Copy, FileImage, FolderPlus, Plus, Trash2, Upload } from "lucide-react";
 
 import { CollectionGrid } from "@/features/collections/components/CollectionGrid";
 import { DropImportZone } from "@/features/collections/components/DropImportZone";
 import {
+  cleanupLibrary,
   createCollection,
+  duplicateCollection,
+  getAppSettings,
   listCollections,
+  previewLibraryCleanup,
   renameCollection,
 } from "@/features/collections/api";
 import type { CollectionSummary } from "@/features/collections/types";
@@ -14,12 +19,23 @@ import { importImagesIntoCollection } from "@/features/icons/api";
 import {
   IMPORTABLE_IMAGE_ACCEPT,
   partitionImportableImageFiles,
+  sortFilesForImport,
 } from "@/lib/file-types";
 import { getCommandErrorMessage } from "@/lib/tauri";
+
+const folderInputProps = {
+  webkitdirectory: "",
+  directory: "",
+} as InputHTMLAttributes<HTMLInputElement> & {
+  webkitdirectory: string;
+  directory: string;
+};
 
 export function HomeRoute() {
   const navigate = useNavigate();
   const fileInputRef = useRef<HTMLInputElement>(null);
+  const folderInputRef = useRef<HTMLInputElement>(null);
+  const didAttemptRestoreRef = useRef(false);
   const [isActionPanelOpen, setIsActionPanelOpen] = useState(false);
   const [isDragging, setIsDragging] = useState(false);
   const [selectedCollectionId, setSelectedCollectionId] = useState<string | null>(null);
@@ -41,12 +57,27 @@ export function HomeRoute() {
           ? currentId
           : null,
       );
+
+      if (!didAttemptRestoreRef.current && shouldAttemptStartupRestore()) {
+        didAttemptRestoreRef.current = true;
+        markStartupRestoreAttempted();
+        const settings = await getAppSettings();
+        const restoredCollection = nextCollections.find(
+          (collection) => collection.id === settings.lastOpenCollectionId,
+        );
+        if (restoredCollection) {
+          void navigate({
+            to: "/collections/$collectionId",
+            params: { collectionId: restoredCollection.id },
+          });
+        }
+      }
     } catch (error) {
       setErrorMessage(getCommandErrorMessage(error));
     } finally {
       setIsLoading(false);
     }
-  }, []);
+  }, [navigate]);
 
   useEffect(() => {
     void reloadCollections();
@@ -94,9 +125,54 @@ export function HomeRoute() {
     }
   };
 
+  const handleDuplicateCollection = async () => {
+    if (!selectedCollectionId) {
+      return;
+    }
+
+    setErrorMessage(null);
+    setImportStatus(null);
+
+    try {
+      const duplicated = await duplicateCollection(selectedCollectionId);
+      setCollections((currentCollections) => [...currentCollections, duplicated]);
+      setSelectedCollectionId(duplicated.id);
+      setImportStatus("모음을 복제했습니다.");
+    } catch (error) {
+      setErrorMessage(getCommandErrorMessage(error));
+    }
+  };
+
+  const handleCleanupLibrary = async () => {
+    setErrorMessage(null);
+    setImportStatus(null);
+
+    try {
+      const preview = await previewLibraryCleanup();
+      const candidateCount =
+        preview.removedOriginalFiles +
+        preview.removedThumbnailFiles +
+        preview.removedTempFiles;
+
+      if (candidateCount === 0) {
+        setImportStatus("정리할 라이브러리 파일이 없습니다.");
+        return;
+      }
+
+      if (!window.confirm(cleanupConfirmMessage(preview))) {
+        return;
+      }
+
+      const result = await cleanupLibrary();
+      setImportStatus(cleanupResultMessage(result));
+    } catch (error) {
+      setErrorMessage(getCommandErrorMessage(error));
+    }
+  };
+
   const handleImportFiles = useCallback(
     async (files: File[]) => {
-      const { accepted, rejected } = partitionImportableImageFiles(files);
+      const { accepted, rejected } = partitionImportableImageFiles(sortFilesForImport(files));
       setErrorMessage(null);
       setImportStatus(null);
       setIsActionPanelOpen(false);
@@ -137,6 +213,10 @@ export function HomeRoute() {
     fileInputRef.current?.click();
   };
 
+  const openFolderImportPicker = () => {
+    folderInputRef.current?.click();
+  };
+
   return (
     <div className="flex min-h-screen flex-col">
       <header className="border-b border-border bg-surface/95 px-8 py-5">
@@ -148,7 +228,26 @@ export function HomeRoute() {
             <h1 className="text-2xl font-semibold tracking-normal">디시콘 모음</h1>
           </div>
 
-          <div className="relative">
+          <div className="flex items-center gap-2">
+            <button
+              className="inline-flex items-center gap-2 rounded-md border border-border bg-white px-3 py-2 text-sm font-medium hover:bg-menu-hover focus-visible:outline focus-visible:outline-2 focus-visible:outline-focus disabled:cursor-not-allowed disabled:text-muted"
+              disabled={!selectedCollectionId}
+              title={!selectedCollectionId ? "복제할 모음을 선택하세요." : undefined}
+              type="button"
+              onClick={() => void handleDuplicateCollection()}
+            >
+              <Copy aria-hidden="true" />
+              선택 복제
+            </button>
+            <button
+              className="inline-flex items-center gap-2 rounded-md border border-border bg-white px-3 py-2 text-sm font-medium hover:bg-menu-hover focus-visible:outline focus-visible:outline-2 focus-visible:outline-focus"
+              type="button"
+              onClick={() => void handleCleanupLibrary()}
+            >
+              <Trash2 aria-hidden="true" />
+              라이브러리 정리
+            </button>
+            <div className="relative">
             <button
               aria-expanded={isActionPanelOpen}
               aria-label="모음 추가"
@@ -178,16 +277,17 @@ export function HomeRoute() {
                   {selectedCollectionId ? "선택한 모음에 이미지 가져오기" : "새 모음으로 이미지 가져오기"}
                 </button>
                 <button
-                  aria-disabled="true"
-                  className="flex w-full cursor-not-allowed items-center gap-3 rounded-md px-3 py-2 text-left text-sm text-muted"
-                  title="폴더 가져오기는 이후 단계에서 연결됩니다."
+                  className="flex w-full items-center gap-3 rounded-md px-3 py-2 text-left text-sm hover:bg-menu-hover focus-visible:outline focus-visible:outline-2 focus-visible:outline-focus disabled:cursor-not-allowed disabled:text-muted"
+                  disabled={isImporting}
                   type="button"
+                  onClick={openFolderImportPicker}
                 >
                   <FolderPlus aria-hidden="true" />
-                  폴더 가져오기 준비 중
+                  {selectedCollectionId ? "선택한 모음에 폴더 가져오기" : "새 모음으로 폴더 가져오기"}
                 </button>
               </div>
             ) : null}
+            </div>
           </div>
         </div>
       </header>
@@ -198,6 +298,19 @@ export function HomeRoute() {
         className="hidden"
         multiple
         type="file"
+        onChange={(event) => {
+          const files = Array.from(event.currentTarget.files ?? []);
+          event.currentTarget.value = "";
+          void handleImportFiles(files);
+        }}
+      />
+      <input
+        ref={folderInputRef}
+        accept={IMPORTABLE_IMAGE_ACCEPT}
+        className="hidden"
+        multiple
+        type="file"
+        {...folderInputProps}
         onChange={(event) => {
           const files = Array.from(event.currentTarget.files ?? []);
           event.currentTarget.value = "";
@@ -302,4 +415,38 @@ function importStatusMessage(importedCount: number, skippedCount: number) {
   return skippedCount > 0
     ? `${importedCount}개 이미지를 가져왔습니다. ${skippedCount}개 파일은 건너뛰었습니다.`
     : `${importedCount}개 이미지를 가져왔습니다.`;
+}
+
+function cleanupConfirmMessage(result: {
+  orphanedSourceFiles: number;
+  removedOriginalFiles: number;
+  removedThumbnailFiles: number;
+  removedTempFiles: number;
+}) {
+  return [
+    "사용 중이 아닌 라이브러리 파일을 정리할까요?",
+    `원본 ${result.removedOriginalFiles}개, 썸네일 ${result.removedThumbnailFiles}개, 임시 파일 ${result.removedTempFiles}개가 대상입니다.`,
+  ].join("\n");
+}
+
+function cleanupResultMessage(result: {
+  removedOriginalFiles: number;
+  removedThumbnailFiles: number;
+  removedTempFiles: number;
+}) {
+  const total =
+    result.removedOriginalFiles + result.removedThumbnailFiles + result.removedTempFiles;
+  return total === 0
+    ? "정리할 라이브러리 파일이 없습니다."
+    : `라이브러리 파일 ${total}개를 정리했습니다.`;
+}
+
+const RESTORE_SESSION_KEY = "pmtconcon:last-route-restore-attempted";
+
+function shouldAttemptStartupRestore() {
+  return window.sessionStorage.getItem(RESTORE_SESSION_KEY) !== "1";
+}
+
+function markStartupRestoreAttempted() {
+  window.sessionStorage.setItem(RESTORE_SESSION_KEY, "1");
 }

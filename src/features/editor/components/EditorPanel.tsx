@@ -1,4 +1,5 @@
-import { useCallback, useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import type { CSSProperties, PointerEvent } from "react";
 import {
   CircleDot,
   type LucideIcon,
@@ -36,6 +37,11 @@ import type {
 import { getCommandErrorMessage } from "@/lib/tauri";
 import { cn } from "@/lib/utils";
 
+const nonDraggableImageStyle: CSSProperties & { WebkitUserDrag: string } = {
+  WebkitUserDrag: "none",
+  userSelect: "none",
+};
+
 interface EditorPanelProps {
   collection: CollectionSummary;
   iconId: string;
@@ -64,6 +70,11 @@ const CROP_MODE_OPTIONS: Array<{ value: CropMode; label: string }> = [
   { value: "free", label: "자유" },
   { value: "fixed", label: "고정" },
 ];
+
+const EDITOR_PANEL_MIN_WIDTH = 420;
+const EDITOR_PANEL_MAX_WIDTH = 760;
+const EDITOR_PANEL_DEFAULT_WIDTH = 620;
+const EDITOR_PANEL_WIDTH_STORAGE_KEY = "pmtconcon.editorPanelWidth";
 
 const GIF_LOOP_OPTIONS: Array<{ value: GifLoopMode; label: string }> = [
   { value: "preserve", label: "원본 유지" },
@@ -100,6 +111,14 @@ export function EditorPanel({
   const [isApplying, setIsApplying] = useState(false);
   const [statusMessage, setStatusMessage] = useState<string | null>(null);
   const [errorMessage, setErrorMessage] = useState<string | null>(null);
+  const resizeStartRef = useRef<{ pointerX: number; width: number } | null>(null);
+  const [panelWidth, setPanelWidth] = useState(() => {
+    const savedWidth = window.localStorage.getItem(EDITOR_PANEL_WIDTH_STORAGE_KEY);
+    const parsedWidth = savedWidth ? Number.parseInt(savedWidth, 10) : NaN;
+    return clampPanelWidth(
+      Number.isFinite(parsedWidth) ? parsedWidth : EDITOR_PANEL_DEFAULT_WIDTH,
+    );
+  });
 
   const loadEditorState = useCallback(async () => {
     setIsLoading(true);
@@ -122,6 +141,33 @@ export function EditorPanel({
   useEffect(() => {
     void loadEditorState();
   }, [loadEditorState]);
+
+  useEffect(() => {
+    window.localStorage.setItem(EDITOR_PANEL_WIDTH_STORAGE_KEY, String(panelWidth));
+  }, [panelWidth]);
+
+  const startResize = (event: PointerEvent<HTMLButtonElement>) => {
+    event.preventDefault();
+    resizeStartRef.current = {
+      pointerX: event.clientX,
+      width: panelWidth,
+    };
+    event.currentTarget.setPointerCapture(event.pointerId);
+  };
+
+  const updatePanelResize = (event: PointerEvent<HTMLButtonElement>) => {
+    if (!resizeStartRef.current) {
+      return;
+    }
+
+    const delta = resizeStartRef.current.pointerX - event.clientX;
+    setPanelWidth(clampPanelWidth(resizeStartRef.current.width + delta));
+  };
+
+  const stopResize = (event: PointerEvent<HTMLButtonElement>) => {
+    resizeStartRef.current = null;
+    event.currentTarget.releasePointerCapture(event.pointerId);
+  };
 
   const sourceDimensions = useMemo(() => {
     if (!editorState) {
@@ -183,10 +229,12 @@ export function EditorPanel({
               current.cellHeight,
               presetPosition,
             )
-          : constrainCropToAspect(
-              current.crop,
+          : centeredFreeCrop(
               sourceDimensions,
-              aspectRatioForShape(current.shape, current.cellWidth, current.cellHeight),
+              current.shape,
+              current.cellWidth,
+              current.cellHeight,
+              0.8,
             );
 
       return {
@@ -329,6 +377,7 @@ export function EditorPanel({
                 current.shape,
                 current.cellWidth,
                 current.cellHeight,
+                0.8,
               ),
       };
     });
@@ -382,7 +431,21 @@ export function EditorPanel({
   };
 
   return (
-    <aside className="flex h-full w-[430px] shrink-0 flex-col border-l border-border bg-surface">
+    <aside
+      className="relative flex h-full shrink-0 flex-col border-l border-border bg-surface"
+      data-testid="editor-panel"
+      style={{ width: panelWidth }}
+    >
+      <button
+        aria-label="편집 패널 너비 조절"
+        className="absolute -left-1 top-0 z-10 h-full w-2 cursor-col-resize bg-transparent hover:bg-focus/20 focus-visible:outline focus-visible:outline-2 focus-visible:outline-focus"
+        data-testid="editor-resize-handle"
+        type="button"
+        onPointerCancel={stopResize}
+        onPointerDown={startResize}
+        onPointerMove={updatePanelResize}
+        onPointerUp={stopResize}
+      />
       <header className="flex items-center justify-between border-b border-border px-5 py-4">
         <div className="min-w-0">
           <h2 className="truncate text-base font-semibold tracking-normal">아이콘 편집</h2>
@@ -440,6 +503,7 @@ export function EditorPanel({
                 {SHAPE_OPTIONS.map((option) => (
                   <button
                     className={segmentedButtonClass(draft.shape === option.value)}
+                    data-testid={`editor-shape-${option.value}`}
                     key={option.value}
                     type="button"
                     onClick={() => updateShape(option.value)}
@@ -462,30 +526,16 @@ export function EditorPanel({
                 </button>
               </div>
               <div className="grid grid-cols-2 gap-3">
-                <label className="flex flex-col gap-1 text-xs font-medium text-muted">
-                  너비
-                  <input
-                    className="rounded-md border border-border bg-white px-3 py-2 text-sm text-foreground focus-visible:outline focus-visible:outline-2 focus-visible:outline-focus"
-                    min={1}
-                    type="number"
-                    value={draft.cellWidth}
-                    onChange={(event) =>
-                      updateCellSize("cellWidth", event.currentTarget.valueAsNumber)
-                    }
-                  />
-                </label>
-                <label className="flex flex-col gap-1 text-xs font-medium text-muted">
-                  높이
-                  <input
-                    className="rounded-md border border-border bg-white px-3 py-2 text-sm text-foreground focus-visible:outline focus-visible:outline-2 focus-visible:outline-focus"
-                    min={1}
-                    type="number"
-                    value={draft.cellHeight}
-                    onChange={(event) =>
-                      updateCellSize("cellHeight", event.currentTarget.valueAsNumber)
-                    }
-                  />
-                </label>
+                <DraftNumberInput
+                  label="너비"
+                  value={draft.cellWidth}
+                  onChange={(value) => updateCellSize("cellWidth", value)}
+                />
+                <DraftNumberInput
+                  label="높이"
+                  value={draft.cellHeight}
+                  onChange={(value) => updateCellSize("cellHeight", value)}
+                />
               </div>
             </section>
 
@@ -495,6 +545,7 @@ export function EditorPanel({
                 {CROP_MODE_OPTIONS.map((option) => (
                   <button
                     className={segmentedButtonClass(draft.cropMode === option.value)}
+                    data-testid={`editor-crop-mode-${option.value}`}
                     key={option.value}
                     type="button"
                     onClick={() => updateCropMode(option.value)}
@@ -518,6 +569,7 @@ export function EditorPanel({
                         "border-focus bg-selected",
                     )}
                     disabled={draft.cropMode !== "fixed"}
+                    data-testid={`editor-preset-${value}`}
                     key={value}
                     title={label}
                     type="button"
@@ -534,17 +586,19 @@ export function EditorPanel({
                 <h3 className="text-sm font-semibold tracking-normal">GIF 반복</h3>
                 <select
                   className="rounded-md border border-border bg-white px-3 py-2 text-sm focus-visible:outline focus-visible:outline-2 focus-visible:outline-focus"
+                  data-testid="editor-gif-loop-mode"
                   value={draft.gifLoopMode}
-                  onChange={(event) =>
+                  onChange={(event) => {
+                    const gifLoopMode = event.currentTarget.value as GifLoopMode;
                     setDraft((current) =>
                       current
                         ? {
                             ...current,
-                            gifLoopMode: event.currentTarget.value as GifLoopMode,
+                            gifLoopMode,
                           }
                         : current,
-                    )
-                  }
+                    );
+                  }}
                 >
                   {GIF_LOOP_OPTIONS.map((option) => (
                     <option key={option.value} value={option.value}>
@@ -557,22 +611,24 @@ export function EditorPanel({
                     반복 횟수
                     <input
                       className="rounded-md border border-border bg-white px-3 py-2 text-sm text-foreground focus-visible:outline focus-visible:outline-2 focus-visible:outline-focus"
+                      data-testid="editor-gif-loop-count"
                       min={1}
                       type="number"
                       value={draft.gifLoopCount}
-                      onChange={(event) =>
+                      onChange={(event) => {
+                        const gifLoopCount = Math.max(
+                          1,
+                          Math.round(event.currentTarget.valueAsNumber || 1),
+                        );
                         setDraft((current) =>
                           current
                             ? {
                                 ...current,
-                                gifLoopCount: Math.max(
-                                  1,
-                                  Math.round(event.currentTarget.valueAsNumber || 1),
-                                ),
+                                gifLoopCount,
                               }
                             : current,
-                        )
-                      }
+                        );
+                      }}
                     />
                   </label>
                 ) : null}
@@ -587,19 +643,17 @@ export function EditorPanel({
                   minHeight: collection.previewHeight + 24,
                 }}
               >
-                {editorState.icon.currentPreviewUrl ? (
-                  <img
-                    alt=""
-                    className="object-contain"
-                    src={editorState.icon.currentPreviewUrl}
-                    style={{
-                      maxHeight: collection.previewHeight,
-                      maxWidth: collection.previewWidth,
-                    }}
-                  />
-                ) : (
-                  <span className="text-sm text-muted">아직 적용된 미리보기가 없습니다.</span>
-                )}
+                <LiveCropPreview
+                  cellHeight={draft.cellHeight}
+                  cellWidth={draft.cellWidth}
+                  crop={draft.crop}
+                  previewHeight={collection.previewHeight}
+                  previewWidth={collection.previewWidth}
+                  shape={draft.shape}
+                  sourceHeight={editorState.source.height}
+                  sourceUrl={editorState.source.originalImageUrl}
+                  sourceWidth={editorState.source.width}
+                />
               </div>
             </section>
 
@@ -620,6 +674,7 @@ export function EditorPanel({
       <footer className="flex items-center justify-between gap-2 border-t border-border px-5 py-4">
         <button
           className="inline-flex items-center gap-2 rounded-md border border-border bg-white px-3 py-2 text-sm font-medium hover:bg-menu-hover focus-visible:outline focus-visible:outline-2 focus-visible:outline-focus disabled:cursor-not-allowed disabled:text-muted"
+          data-testid="editor-reset"
           disabled={!draft || isApplying}
           type="button"
           onClick={resetCropToCenter}
@@ -630,6 +685,7 @@ export function EditorPanel({
         <div className="flex items-center gap-2">
           <button
             className="inline-flex items-center gap-2 rounded-md border border-border bg-white px-3 py-2 text-sm font-medium hover:bg-menu-hover focus-visible:outline focus-visible:outline-2 focus-visible:outline-focus disabled:cursor-not-allowed disabled:text-muted"
+            data-testid="editor-revert"
             disabled={!editorState || isApplying}
             type="button"
             onClick={revertSavedSettings}
@@ -639,6 +695,7 @@ export function EditorPanel({
           </button>
           <button
             className="inline-flex items-center gap-2 rounded-md bg-accent px-3 py-2 text-sm font-semibold text-accent-foreground hover:bg-accent-strong focus-visible:outline focus-visible:outline-2 focus-visible:outline-focus disabled:cursor-not-allowed disabled:opacity-60"
+            data-testid="editor-apply"
             disabled={!draft || isApplying}
             type="button"
             onClick={() => {
@@ -680,6 +737,120 @@ function segmentedButtonClass(isSelected: boolean) {
     "rounded-md border border-border bg-white px-3 py-2 text-sm font-medium hover:bg-menu-hover focus-visible:outline focus-visible:outline-2 focus-visible:outline-focus",
     isSelected && "border-focus bg-selected",
   );
+}
+
+function clampPanelWidth(width: number) {
+  return Math.min(EDITOR_PANEL_MAX_WIDTH, Math.max(EDITOR_PANEL_MIN_WIDTH, width));
+}
+
+function DraftNumberInput({
+  label,
+  value,
+  onChange,
+}: {
+  label: string;
+  value: number;
+  onChange: (value: number) => void;
+}) {
+  const [draft, setDraft] = useState(String(value));
+
+  useEffect(() => {
+    setDraft(String(value));
+  }, [value]);
+
+  return (
+    <label className="flex flex-col gap-1 text-xs font-medium text-muted">
+      {label}
+      <input
+        className="select-text rounded-md border border-border bg-white px-3 py-2 text-sm text-foreground focus-visible:outline focus-visible:outline-2 focus-visible:outline-focus"
+        inputMode="numeric"
+        min={1}
+        type="number"
+        value={draft}
+        onBlur={() => {
+          const parsed = Number.parseInt(draft, 10);
+          if (!Number.isFinite(parsed) || parsed < 1) {
+            setDraft(String(value));
+          }
+        }}
+        onChange={(event) => {
+          const nextValue = event.currentTarget.value;
+          setDraft(nextValue);
+
+          if (nextValue.trim() === "") {
+            return;
+          }
+
+          const parsed = Number.parseInt(nextValue, 10);
+          if (Number.isFinite(parsed) && parsed >= 1) {
+            onChange(parsed);
+          }
+        }}
+      />
+    </label>
+  );
+}
+
+function LiveCropPreview({
+  sourceUrl,
+  sourceWidth,
+  sourceHeight,
+  crop,
+  shape,
+  previewWidth,
+  previewHeight,
+}: {
+  sourceUrl: string;
+  sourceWidth: number;
+  sourceHeight: number;
+  crop: CropRect;
+  shape: IconShape;
+  cellWidth: number;
+  cellHeight: number;
+  previewWidth: number;
+  previewHeight: number;
+}) {
+  const viewport = previewViewportSize(previewWidth, previewHeight, shape);
+  const scale = viewport.width / Math.max(1, crop.width);
+
+  return (
+    <div
+      className="relative overflow-hidden border border-border bg-white"
+      data-testid="editor-live-preview"
+      style={{
+        height: viewport.height,
+        width: viewport.width,
+      }}
+      onDragStart={(event) => event.preventDefault()}
+    >
+      <img
+        alt=""
+        className="pointer-events-none absolute left-0 top-0 max-w-none select-none"
+        draggable={false}
+        src={sourceUrl}
+        style={{
+          ...nonDraggableImageStyle,
+          height: sourceHeight * scale,
+          transform: `translate(${-crop.x * scale}px, ${-crop.y * scale}px)`,
+          width: sourceWidth * scale,
+        }}
+        onDragStart={(event) => event.preventDefault()}
+      />
+      {shape === "horizontal_double" ? (
+        <span className="absolute bottom-0 left-1/2 top-0 border-l border-dashed border-focus" />
+      ) : null}
+      {shape === "vertical_double" ? (
+        <span className="absolute left-0 right-0 top-1/2 border-t border-dashed border-focus" />
+      ) : null}
+    </div>
+  );
+}
+
+function previewViewportSize(width: number, height: number, shape: IconShape) {
+  return {
+    width: shape === "horizontal_double" ? width * 2 : width,
+    height: shape === "vertical_double" ? height * 2 : height,
+  };
 }
 
 function formatBytes(bytes: number) {

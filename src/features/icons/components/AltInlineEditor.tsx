@@ -55,19 +55,13 @@ export function AltInlineEditor({
       return;
     }
 
-    const error = validateDraft(draft);
-    setDraftError(error);
-    if (error) {
-      inputRef.current?.focus();
-      return;
-    }
+    setDraftError(validateDraft(draft));
 
     isCommitting.current = true;
     const didCommit = await onCommit(draft);
     isCommitting.current = false;
 
     if (didCommit) {
-      setDraftError(null);
       setIsEditing(false);
       return;
     }
@@ -86,9 +80,10 @@ export function AltInlineEditor({
           aria-invalid={errorMessage ? true : undefined}
           aria-label={ariaLabel}
           className={cn(
-            "w-full rounded-md border bg-white px-2 py-1 text-center text-xs font-medium text-foreground outline-none",
+            "w-full select-text rounded-md border bg-white px-2 py-1 text-center text-xs font-medium text-foreground outline-none",
             errorMessage ? "border-danger" : "border-focus",
           )}
+          data-testid="icon-alt-input"
           value={draft}
           onBlur={() => {
             void commit();
@@ -100,6 +95,7 @@ export function AltInlineEditor({
           onClick={(event) => event.stopPropagation()}
           onContextMenu={(event) => event.stopPropagation()}
           onDoubleClick={(event) => event.stopPropagation()}
+          onDragStart={(event) => event.preventDefault()}
           onPointerDown={(event) => event.stopPropagation()}
           onKeyDown={(event) => {
             event.stopPropagation();
@@ -123,7 +119,9 @@ export function AltInlineEditor({
           className={cn(
             "w-full truncate rounded-md px-2 py-1 text-center text-xs font-medium text-foreground hover:bg-white/80 focus-visible:outline focus-visible:outline-2 focus-visible:outline-focus",
             errorMessage && "text-danger",
+            !value && "text-muted",
           )}
+          data-testid="icon-alt-button"
           type="button"
           onClick={(event) => {
             event.stopPropagation();
@@ -133,6 +131,7 @@ export function AltInlineEditor({
           }}
           onContextMenu={(event) => event.stopPropagation()}
           onDoubleClick={(event) => event.stopPropagation()}
+          onDragStart={(event) => event.preventDefault()}
           onPointerDown={(event) => event.stopPropagation()}
           onKeyDown={(event) => event.stopPropagation()}
         >

@@ -36,6 +36,17 @@ describe("editor crop math", () => {
     expect(crop.y).toBeCloseTo(25);
   });
 
+  it("can create a smaller centered free crop for immediate drag room", () => {
+    const crop = centeredFreeCrop({ width: 200, height: 200 }, "single", 100, 100, 0.8);
+
+    expect(crop).toEqual({
+      x: 20,
+      y: 20,
+      width: 160,
+      height: 160,
+    });
+  });
+
   it("uses fixed crop preset positions without hardcoded 200px cells", () => {
     const crop = fixedCropForPreset(
       { width: 500, height: 300 },

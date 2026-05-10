@@ -387,7 +387,7 @@ fn insert_icon(
     )?;
 
     insert_default_crop_settings(transaction, &icon_id, collection, source_file)?;
-    insert_single_icon_piece(transaction, &icon_id, display_name)?;
+    insert_single_icon_piece(transaction, &icon_id)?;
 
     Ok(icon_id)
 }
@@ -456,7 +456,6 @@ fn insert_default_crop_settings(
 fn insert_single_icon_piece(
     transaction: &Transaction<'_>,
     icon_id: &str,
-    display_name: &str,
 ) -> AppResult<()> {
     transaction.execute(
         "INSERT INTO icon_pieces (
@@ -477,7 +476,7 @@ fn insert_single_icon_piece(
            strftime('%Y-%m-%dT%H:%M:%fZ', 'now'),
            strftime('%Y-%m-%dT%H:%M:%fZ', 'now')
          )",
-        params![create_id("piece"), icon_id, display_name],
+        params![create_id("piece"), icon_id, ""],
     )?;
 
     Ok(())
@@ -693,6 +692,7 @@ mod tests {
         assert_eq!(result.imported_icons[0].order_index, 0);
         assert!(result.imported_icons[0].thumbnail_url.is_some());
         assert!(result.imported_icons[0].current_preview_url.is_some());
+        assert_eq!(result.imported_icons[0].pieces[0].alt_text, "");
 
         let source_count: i64 = connection
             .query_row("SELECT COUNT(*) FROM source_files", [], |row| row.get(0))

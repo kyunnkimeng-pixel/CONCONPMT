@@ -467,9 +467,9 @@ fn validate_plan_before_render(plan: &ExportPlan) -> Vec<ExportValidationIssueDt
 
     if plan.profile.profile_type == "dcinside" {
         if !(10..=200).contains(&output_count) {
-            issues.push(error_issue(
+            issues.push(warning_issue(
                 "dcinside_count",
-                "DCInside 프로필은 내보내기 이미지 수가 10개 이상 200개 이하여야 합니다.",
+                "DCInside 권장 이미지 수는 10개 이상 200개 이하입니다. 내보내기는 계속할 수 있습니다.",
                 None,
                 None,
             ));
@@ -597,7 +597,7 @@ fn validate_plan_before_render(plan: &ExportPlan) -> Vec<ExportValidationIssueDt
 
             if plan.profile.profile_type == "dcinside" {
                 if let Err(message) = validate_dcinside_alt(&piece.alt_text) {
-                    issues.push(error_issue(
+                    issues.push(warning_issue(
                         "invalid_alt",
                         message,
                         Some(icon.icon_id.clone()),
@@ -635,9 +635,9 @@ fn validate_plan_before_render(plan: &ExportPlan) -> Vec<ExportValidationIssueDt
         for (alt_text, piece_ids) in alt_to_piece_ids {
             if !alt_text.is_empty() && piece_ids.len() > 1 {
                 for piece_id in piece_ids {
-                    issues.push(error_issue(
+                    issues.push(warning_issue(
                         "duplicate_alt",
-                        format!("alt 값 '{}'이 중복되었습니다.", alt_text),
+                        format!("alt 값 '{}'이 중복되었습니다. 내보내기는 계속할 수 있습니다.", alt_text),
                         None,
                         Some(piece_id),
                     ));
@@ -1201,8 +1201,8 @@ mod tests {
     use rusqlite::Connection;
 
     use super::{
-        assign_filenames, export_collection, sanitized_alt_filename_stem, ExportPlan, PlannedIcon,
-        PlannedPiece,
+        assign_filenames, export_collection, sanitized_alt_filename_stem,
+        validate_export_collection, ExportPlan, PlannedIcon, PlannedPiece,
     };
 
     use crate::db::migrations;
@@ -1428,6 +1428,121 @@ mod tests {
         let summary = gif_summary(&export_dir.join("001.gif"));
         assert_eq!(summary.frame_sizes, vec![(200, 200), (200, 200)]);
         assert_eq!(summary.delays, vec![5, 7]);
+
+        std::fs::remove_dir_all(paths.root).unwrap();
+    }
+
+    #[test]
+    fn validation_warns_when_jpg_output_may_drop_transparency() {
+        let mut connection = connection();
+        let paths = temp_paths("pmtconcon-export-jpg-warning");
+        let collection =
+            create_collection(&mut connection, Some("JPG 경고".to_string())).unwrap();
+        import_image_files(
+            &mut connection,
+            &paths,
+            &collection.id,
+            vec![ImportImageFilePayload {
+                original_filename: "source.png".to_string(),
+                bytes: png_bytes(200, 200),
+            }],
+        )
+        .unwrap();
+
+        let custom_profile = custom_profile_id(&connection, &collection.id);
+        let result = validate_export_collection(
+            &connection,
+            &paths,
+            &collection.id,
+            &ExportRequestPayload {
+                profile_id: custom_profile,
+                target_format: "jpg".to_string(),
+                target_cell_width: 200,
+                target_cell_height: 200,
+                max_bytes: 10_000_000,
+                filename_mode: "sequence".to_string(),
+                include_alt_txt: true,
+                strict_warnings: false,
+                output_directory: None,
+                open_folder_after_export: false,
+                open_alt_txt_after_export: false,
+            },
+        )
+        .unwrap();
+
+        assert!(result
+            .warnings
+            .iter()
+            .any(|warning| warning.code == "transparent_background_recommended"));
+
+        std::fs::remove_dir_all(paths.root).unwrap();
+    }
+
+    #[test]
+    fn dcinside_count_and_alt_warnings_do_not_block_sequence_export() {
+        let mut connection = connection();
+        let paths = temp_paths("pmtconcon-export-warning-only");
+        let collection =
+            create_collection(&mut connection, Some("DCInside warning export".to_string()))
+                .unwrap();
+        let imported = import_image_files(
+            &mut connection,
+            &paths,
+            &collection.id,
+            vec![ImportImageFilePayload {
+                original_filename: "source.png".to_string(),
+                bytes: png_bytes(200, 200),
+            }],
+        )
+        .unwrap();
+        let piece_id = imported.imported_icons[0].pieces[0].id.clone();
+        connection
+            .execute(
+                "UPDATE icon_pieces SET alt_text = 'abcd' WHERE id = ?1",
+                [&piece_id],
+            )
+            .unwrap();
+
+        let dcinside_profile = list_export_profiles(&connection, &collection.id)
+            .unwrap()
+            .into_iter()
+            .find(|profile| profile.profile_type == "dcinside")
+            .unwrap()
+            .id;
+        let result = export_collection(
+            &mut connection,
+            &paths,
+            &collection.id,
+            &ExportRequestPayload {
+                profile_id: dcinside_profile,
+                target_format: "png".to_string(),
+                target_cell_width: 200,
+                target_cell_height: 200,
+                max_bytes: 10_000_000,
+                filename_mode: "sequence".to_string(),
+                include_alt_txt: true,
+                strict_warnings: false,
+                output_directory: Some(
+                    paths.root.join("exports-out").to_string_lossy().to_string(),
+                ),
+                open_folder_after_export: false,
+                open_alt_txt_after_export: false,
+            },
+        )
+        .unwrap();
+
+        assert!(result.validation.can_export);
+        assert!(result.export_directory.is_some());
+        assert!(result
+            .validation
+            .warnings
+            .iter()
+            .any(|warning| warning.code == "dcinside_count"));
+        assert!(result
+            .validation
+            .warnings
+            .iter()
+            .any(|warning| warning.code == "invalid_alt"));
 
         std::fs::remove_dir_all(paths.root).unwrap();
     }

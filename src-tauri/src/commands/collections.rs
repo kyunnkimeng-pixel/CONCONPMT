@@ -3,7 +3,7 @@ use tauri::State;
 use crate::app_state::AppState;
 use crate::db::repositories::collections as collection_repository;
 use crate::error::AppResult;
-use crate::models::CollectionDto;
+use crate::models::{CollectionDto, ImportImageFilePayload, UpdateCollectionSettingsPayload};
 
 #[tauri::command]
 pub fn list_collections(state: State<'_, AppState>) -> AppResult<Vec<CollectionDto>> {
@@ -53,4 +53,30 @@ pub fn set_collection_cover_icon(
 ) -> AppResult<CollectionDto> {
     let connection = state.connection()?;
     collection_repository::set_collection_cover_icon(&connection, &collection_id, &icon_id)
+}
+
+#[tauri::command]
+pub fn update_collection_settings(
+    state: State<'_, AppState>,
+    collection_id: String,
+    payload: UpdateCollectionSettingsPayload,
+) -> AppResult<CollectionDto> {
+    let connection = state.connection()?;
+    collection_repository::update_collection_settings(&connection, &collection_id, payload)
+}
+
+#[tauri::command]
+pub fn import_collection_cover_image(
+    state: State<'_, AppState>,
+    collection_id: String,
+    file: ImportImageFilePayload,
+) -> AppResult<CollectionDto> {
+    let paths = state.paths().clone();
+    let mut connection = state.connection()?;
+    collection_repository::import_collection_cover_image(
+        &mut connection,
+        &paths,
+        &collection_id,
+        file,
+    )
 }

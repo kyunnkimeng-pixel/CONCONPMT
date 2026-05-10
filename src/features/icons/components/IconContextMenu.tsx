@@ -1,6 +1,6 @@
 import { useEffect, useRef } from "react";
-import type { ReactNode } from "react";
-import { Copy, Pencil, Star, Trash2 } from "lucide-react";
+import type { KeyboardEvent as ReactKeyboardEvent, ReactNode } from "react";
+import { Copy, FileImage, FolderOpen, ImagePlus, Pencil, Star, Trash2 } from "lucide-react";
 
 import { cn } from "@/lib/utils";
 
@@ -8,24 +8,36 @@ interface IconContextMenuProps {
   x: number;
   y: number;
   isCover: boolean;
+  hasExportResult: boolean;
   selectionCount: number;
   onClose: () => void;
+  onBatchAltEdit: () => void;
   onDelete: () => void;
   onDuplicate: () => void;
   onEdit: () => void;
+  onRevealExportResult: () => void;
+  onRevealOriginal: () => void;
+  onRename: () => void;
   onSetCover: () => void;
+  onSetThumbnailOverride: () => void;
 }
 
 export function IconContextMenu({
   x,
   y,
   isCover,
+  hasExportResult,
   selectionCount,
   onClose,
+  onBatchAltEdit,
   onDelete,
   onDuplicate,
   onEdit,
+  onRevealExportResult,
+  onRevealOriginal,
+  onRename,
   onSetCover,
+  onSetThumbnailOverride,
 }: IconContextMenuProps) {
   const menuRef = useRef<HTMLDivElement>(null);
 
@@ -56,6 +68,53 @@ export function IconContextMenu({
     menuRef.current?.querySelector<HTMLButtonElement>("button:not(:disabled)")?.focus();
   }, []);
 
+  const focusMenuItem = (direction: "first" | "last" | "next" | "previous") => {
+    const menuItems = Array.from(
+      menuRef.current?.querySelectorAll<HTMLButtonElement>("button:not(:disabled)") ?? [],
+    );
+
+    if (menuItems.length === 0) {
+      return;
+    }
+
+    const currentIndex = menuItems.indexOf(document.activeElement as HTMLButtonElement);
+    const nextIndex =
+      direction === "first"
+        ? 0
+        : direction === "last"
+          ? menuItems.length - 1
+          : direction === "next"
+            ? (Math.max(currentIndex, 0) + 1) % menuItems.length
+            : (currentIndex <= 0 ? menuItems.length : currentIndex) - 1;
+
+    menuItems[nextIndex]?.focus();
+  };
+
+  const handleMenuKeyDown = (event: ReactKeyboardEvent<HTMLDivElement>) => {
+    if (event.key === "ArrowDown") {
+      event.preventDefault();
+      focusMenuItem("next");
+      return;
+    }
+
+    if (event.key === "ArrowUp") {
+      event.preventDefault();
+      focusMenuItem("previous");
+      return;
+    }
+
+    if (event.key === "Home") {
+      event.preventDefault();
+      focusMenuItem("first");
+      return;
+    }
+
+    if (event.key === "End") {
+      event.preventDefault();
+      focusMenuItem("last");
+    }
+  };
+
   const runAction = (action: () => void) => {
     action();
     onClose();
@@ -66,22 +125,48 @@ export function IconContextMenu({
       ref={menuRef}
       aria-label="아이콘 작업 메뉴"
       className="fixed min-w-48 rounded-md border border-border bg-white p-1 shadow-lg"
+      data-testid="icon-context-menu"
       role="menu"
       style={{ left: x, top: y }}
+      onKeyDown={handleMenuKeyDown}
     >
-      <MenuButton onClick={() => runAction(onEdit)}>
+      <MenuButton testId="icon-context-edit" onClick={() => runAction(onEdit)}>
         <Pencil aria-hidden="true" />
         편집
       </MenuButton>
-      <MenuButton onClick={() => runAction(onDuplicate)}>
+      <MenuButton testId="icon-context-rename" onClick={() => runAction(onRename)}>
+        <Pencil aria-hidden="true" />
+        이름 변경
+      </MenuButton>
+      <MenuButton testId="icon-context-batch-alt" onClick={() => runAction(onBatchAltEdit)}>
+        <Pencil aria-hidden="true" />
+        {selectionCount > 1 ? `선택 ${selectionCount}개 alt 일괄 변경` : "alt 변경"}
+      </MenuButton>
+      <MenuButton testId="icon-context-thumbnail" onClick={() => runAction(onSetThumbnailOverride)}>
+        <ImagePlus aria-hidden="true" />
+        썸네일 바꾸기
+      </MenuButton>
+      <MenuButton testId="icon-context-duplicate" onClick={() => runAction(onDuplicate)}>
         <Copy aria-hidden="true" />
         아이콘 복제
       </MenuButton>
-      <MenuButton disabled={isCover} onClick={() => runAction(onSetCover)}>
+      <MenuButton disabled={isCover} testId="icon-context-set-cover" onClick={() => runAction(onSetCover)}>
         <Star aria-hidden="true" />
         {isCover ? "이미 대표 이미지" : "대표 이미지로 설정"}
       </MenuButton>
-      <MenuButton tone="danger" onClick={() => runAction(onDelete)}>
+      <MenuButton testId="icon-context-reveal-original" onClick={() => runAction(onRevealOriginal)}>
+        <FolderOpen aria-hidden="true" />
+        원본 위치 열기
+      </MenuButton>
+      <MenuButton
+        disabled={!hasExportResult}
+        testId="icon-context-reveal-export"
+        onClick={() => runAction(onRevealExportResult)}
+      >
+        <FileImage aria-hidden="true" />
+        {hasExportResult ? "내보내기 결과 보기" : "내보내기 결과 없음"}
+      </MenuButton>
+      <MenuButton tone="danger" testId="icon-context-delete" onClick={() => runAction(onDelete)}>
         <Trash2 aria-hidden="true" />
         {selectionCount > 1 ? `선택 ${selectionCount}개 삭제` : "아이콘 삭제"}
       </MenuButton>
@@ -92,6 +177,7 @@ export function IconContextMenu({
 interface MenuButtonProps {
   children: ReactNode;
   disabled?: boolean;
+  testId?: string;
   tone?: "default" | "danger";
   onClick: () => void;
 }
@@ -99,6 +185,7 @@ interface MenuButtonProps {
 function MenuButton({
   children,
   disabled = false,
+  testId,
   tone = "default",
   onClick,
 }: MenuButtonProps) {
@@ -108,6 +195,7 @@ function MenuButton({
         "flex w-full items-center gap-2 rounded px-3 py-2 text-left text-sm hover:bg-menu-hover focus-visible:outline focus-visible:outline-2 focus-visible:outline-focus disabled:cursor-not-allowed disabled:text-muted",
         tone === "danger" ? "text-danger" : "text-foreground",
       )}
+      data-testid={testId}
       disabled={disabled}
       role="menuitem"
       type="button"

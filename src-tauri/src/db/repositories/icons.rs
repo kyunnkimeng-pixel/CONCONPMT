@@ -2,9 +2,13 @@ use std::collections::HashSet;
 
 use rusqlite::{params, Connection, OptionalExtension, Row, Transaction};
 
+use crate::db::repositories::source_files::{
+    import_source_file_from_bytes, SourceFileImportOptions,
+};
 use crate::error::{AppError, AppResult};
 use crate::ids::create_id;
-use crate::models::{IconDto, IconPieceDto};
+use crate::models::{IconDto, IconPieceDto, ImportImageFilePayload};
+use crate::paths::AppPaths;
 
 pub fn list_icons(connection: &Connection, collection_id: &str) -> AppResult<Vec<IconDto>> {
     let collection_exists = connection
@@ -36,6 +40,7 @@ pub fn list_icons(connection: &Connection, collection_id: &str) -> AppResult<Vec
            cell_width_override,
            cell_height_override,
            thumbnail_path,
+           thumbnail_override_path,
            current_preview_path,
            gif_loop_mode,
            gif_loop_count,
@@ -61,10 +66,8 @@ pub fn update_icon_piece_alt(
     alt_text: String,
 ) -> AppResult<IconDto> {
     let normalized_alt = normalized_alt_text(alt_text);
-    validate_alt_text(&normalized_alt)?;
 
     let icon_id = icon_id_for_piece(connection, collection_id, piece_id)?;
-    ensure_unique_alt(connection, collection_id, piece_id, &normalized_alt)?;
 
     let changed = connection.execute(
         "UPDATE icon_pieces
@@ -87,6 +90,72 @@ pub fn update_icon_piece_alt(
     )?;
 
     get_icon(connection, collection_id, &icon_id)
+}
+
+pub fn rename_icon(
+    connection: &Connection,
+    collection_id: &str,
+    icon_id: &str,
+    display_name: String,
+) -> AppResult<IconDto> {
+    ensure_collection_exists(connection, collection_id)?;
+    let display_name = normalized_display_name(display_name);
+
+    let changed = connection.execute(
+        "UPDATE icons
+         SET display_name = ?1,
+             updated_at = strftime('%Y-%m-%dT%H:%M:%fZ', 'now')
+         WHERE id = ?2
+           AND collection_id = ?3
+           AND deleted_at IS NULL",
+        params![display_name, icon_id, collection_id],
+    )?;
+
+    if changed == 0 {
+        return Err(AppError::not_found("이름을 변경할 아이콘을 찾을 수 없습니다."));
+    }
+
+    get_icon(connection, collection_id, icon_id)
+}
+
+pub fn set_icon_thumbnail_override(
+    connection: &mut Connection,
+    paths: &AppPaths,
+    collection_id: &str,
+    icon_id: &str,
+    file: ImportImageFilePayload,
+) -> AppResult<IconDto> {
+    let transaction = connection.transaction()?;
+    ensure_collection_exists(&transaction, collection_id)?;
+    ensure_icon_exists(&transaction, collection_id, icon_id)?;
+    let source_file = import_source_file_from_bytes(
+        &transaction,
+        paths,
+        &file,
+        SourceFileImportOptions {
+            allow_gif: true,
+            exact_dimensions: None,
+        },
+    )?;
+
+    transaction.execute(
+        "UPDATE icons
+         SET thumbnail_override_source_file_id = ?1,
+             thumbnail_override_path = ?2,
+             updated_at = strftime('%Y-%m-%dT%H:%M:%fZ', 'now')
+         WHERE id = ?3
+           AND collection_id = ?4
+           AND deleted_at IS NULL",
+        params![
+            source_file.id,
+            source_file.thumbnail_path,
+            icon_id,
+            collection_id
+        ],
+    )?;
+    transaction.commit()?;
+
+    get_icon(connection, collection_id, icon_id)
 }
 
 pub fn duplicate_icon(
@@ -112,6 +181,8 @@ pub fn duplicate_icon(
            cell_width_override,
            cell_height_override,
            thumbnail_path,
+           thumbnail_override_source_file_id,
+           thumbnail_override_path,
            current_preview_path,
            gif_loop_mode,
            gif_loop_count,
@@ -131,6 +202,8 @@ pub fn duplicate_icon(
            ?10,
            ?11,
            ?12,
+           ?13,
+           ?14,
            strftime('%Y-%m-%dT%H:%M:%fZ', 'now'),
            strftime('%Y-%m-%dT%H:%M:%fZ', 'now')
          )",
@@ -144,6 +217,8 @@ pub fn duplicate_icon(
             icon.cell_width_override,
             icon.cell_height_override,
             icon.thumbnail_path,
+            icon.thumbnail_override_source_file_id,
+            icon.thumbnail_override_path,
             icon.current_preview_path,
             icon.gif_loop_mode,
             icon.gif_loop_count,
@@ -235,6 +310,49 @@ pub fn reorder_icons(
     list_icons(connection, collection_id)
 }
 
+pub fn original_path_for_icon(
+    connection: &Connection,
+    collection_id: &str,
+    icon_id: &str,
+) -> AppResult<String> {
+    connection
+        .query_row(
+            "SELECT s.original_path_in_library
+             FROM source_files s
+             JOIN icons i ON i.source_file_id = s.id
+             WHERE i.id = ?1
+               AND i.collection_id = ?2
+               AND i.deleted_at IS NULL",
+            params![icon_id, collection_id],
+            |row| row.get(0),
+        )
+        .optional()?
+        .ok_or_else(|| AppError::not_found("원본 파일을 찾을 수 없습니다."))
+}
+
+pub fn export_result_path_for_icon(
+    connection: &Connection,
+    collection_id: &str,
+    icon_id: &str,
+) -> AppResult<String> {
+    connection
+        .query_row(
+            "SELECT p.last_export_path
+             FROM icon_pieces p
+             JOIN icons i ON i.id = p.icon_id
+             WHERE i.id = ?1
+               AND i.collection_id = ?2
+               AND i.deleted_at IS NULL
+               AND p.last_export_path IS NOT NULL
+             ORDER BY p.piece_index ASC
+             LIMIT 1",
+            params![icon_id, collection_id],
+            |row| row.get(0),
+        )
+        .optional()?
+        .ok_or_else(|| AppError::not_found("이 아이콘의 내보내기 결과가 아직 없습니다."))
+}
+
 fn icon_from_row(connection: &Connection, row: &Row<'_>) -> rusqlite::Result<IconDto> {
     let icon_id: String = row.get("id")?;
 
@@ -249,6 +367,7 @@ fn icon_from_row(connection: &Connection, row: &Row<'_>) -> rusqlite::Result<Ico
         cell_width_override: row.get("cell_width_override")?,
         cell_height_override: row.get("cell_height_override")?,
         thumbnail_url: row.get("thumbnail_path")?,
+        thumbnail_override_url: row.get("thumbnail_override_path")?,
         current_preview_url: row.get("current_preview_path")?,
         gif_loop_mode: row.get("gif_loop_mode")?,
         gif_loop_count: row.get("gif_loop_count")?,
@@ -266,6 +385,7 @@ fn list_pieces(connection: &Connection, icon_id: &str) -> rusqlite::Result<Vec<I
            piece_role,
            alt_text,
            generated_preview_path,
+           last_export_path,
            export_status,
            created_at,
            updated_at
@@ -283,6 +403,7 @@ fn list_pieces(connection: &Connection, icon_id: &str) -> rusqlite::Result<Vec<I
                 piece_role: row.get("piece_role")?,
                 alt_text: row.get("alt_text")?,
                 generated_preview_url: row.get("generated_preview_path")?,
+                last_export_url: row.get("last_export_path")?,
                 export_status: row.get("export_status")?,
                 created_at: row.get("created_at")?,
                 updated_at: row.get("updated_at")?,
@@ -310,6 +431,7 @@ pub(crate) fn get_icon(
                cell_width_override,
                cell_height_override,
                thumbnail_path,
+               thumbnail_override_path,
                current_preview_path,
                gif_loop_mode,
                gif_loop_count,
@@ -348,6 +470,31 @@ fn ensure_collection_exists(connection: &Connection, collection_id: &str) -> App
     }
 }
 
+fn ensure_icon_exists(
+    connection: &Connection,
+    collection_id: &str,
+    icon_id: &str,
+) -> AppResult<()> {
+    let exists = connection
+        .query_row(
+            "SELECT id
+             FROM icons
+             WHERE id = ?1
+               AND collection_id = ?2
+               AND deleted_at IS NULL",
+            params![icon_id, collection_id],
+            |row| row.get::<_, String>(0),
+        )
+        .optional()?
+        .is_some();
+
+    if exists {
+        Ok(())
+    } else {
+        Err(AppError::not_found("아이콘을 찾을 수 없습니다."))
+    }
+}
+
 fn icon_id_for_piece(
     connection: &Connection,
     collection_id: &str,
@@ -368,38 +515,6 @@ fn icon_id_for_piece(
         .ok_or_else(|| AppError::not_found("수정할 alt 값을 찾을 수 없습니다."))
 }
 
-fn ensure_unique_alt(
-    connection: &Connection,
-    collection_id: &str,
-    piece_id: &str,
-    alt_text: &str,
-) -> AppResult<()> {
-    let duplicate_exists = connection
-        .query_row(
-            "SELECT p.id
-             FROM icon_pieces p
-             JOIN icons i ON i.id = p.icon_id
-             WHERE i.collection_id = ?1
-               AND i.deleted_at IS NULL
-               AND p.id <> ?2
-               AND p.alt_text = ?3
-             LIMIT 1",
-            params![collection_id, piece_id, alt_text],
-            |row| row.get::<_, String>(0),
-        )
-        .optional()?
-        .is_some();
-
-    if duplicate_exists {
-        Err(AppError::new(
-            "validation",
-            "같은 모음 안에서 alt 값은 중복될 수 없습니다.",
-        ))
-    } else {
-        Ok(())
-    }
-}
-
 #[derive(Debug)]
 struct IconDuplicateRecord {
     source_file_id: String,
@@ -408,6 +523,8 @@ struct IconDuplicateRecord {
     cell_width_override: Option<i64>,
     cell_height_override: Option<i64>,
     thumbnail_path: Option<String>,
+    thumbnail_override_source_file_id: Option<String>,
+    thumbnail_override_path: Option<String>,
     current_preview_path: Option<String>,
     gif_loop_mode: String,
     gif_loop_count: Option<i64>,
@@ -451,6 +568,8 @@ fn icon_record_for_duplicate(
                cell_width_override,
                cell_height_override,
                thumbnail_path,
+               thumbnail_override_source_file_id,
+               thumbnail_override_path,
                current_preview_path,
                gif_loop_mode,
                gif_loop_count
@@ -467,6 +586,9 @@ fn icon_record_for_duplicate(
                     cell_width_override: row.get("cell_width_override")?,
                     cell_height_override: row.get("cell_height_override")?,
                     thumbnail_path: row.get("thumbnail_path")?,
+                    thumbnail_override_source_file_id: row
+                        .get("thumbnail_override_source_file_id")?,
+                    thumbnail_override_path: row.get("thumbnail_override_path")?,
                     current_preview_path: row.get("current_preview_path")?,
                     gif_loop_mode: row.get("gif_loop_mode")?,
                     gif_loop_count: row.get("gif_loop_count")?,
@@ -479,7 +601,7 @@ fn icon_record_for_duplicate(
 
 fn duplicate_icon_pieces(
     transaction: &Transaction<'_>,
-    collection_id: &str,
+    _collection_id: &str,
     source_icon_id: &str,
     target_icon_id: &str,
 ) -> AppResult<()> {
@@ -512,10 +634,7 @@ fn duplicate_icon_pieces(
 
         pieces
     };
-    let mut used_alt_texts = collection_alt_texts(transaction, collection_id)?;
-
     for piece in pieces {
-        let duplicate_alt_text = unique_duplicate_alt_text(&mut used_alt_texts, &piece.alt_text);
         transaction.execute(
             "INSERT INTO icon_pieces (
                id,
@@ -546,7 +665,7 @@ fn duplicate_icon_pieces(
                 target_icon_id,
                 piece.piece_index,
                 piece.piece_role,
-                duplicate_alt_text,
+                piece.alt_text,
                 piece.generated_preview_path,
                 piece.last_export_path,
                 piece.export_status,
@@ -645,65 +764,6 @@ fn duplicate_crop_settings(
     }
 
     Ok(())
-}
-
-fn collection_alt_texts(
-    connection: &Connection,
-    collection_id: &str,
-) -> AppResult<HashSet<String>> {
-    let mut statement = connection.prepare(
-        "SELECT p.alt_text
-         FROM icon_pieces p
-         JOIN icons i ON i.id = p.icon_id
-         WHERE i.collection_id = ?1
-           AND i.deleted_at IS NULL",
-    )?;
-
-    let values = statement
-        .query_map(params![collection_id], |row| row.get::<_, String>(0))?
-        .collect::<Result<HashSet<_>, _>>()?;
-
-    Ok(values)
-}
-
-fn unique_duplicate_alt_text(used_alt_texts: &mut HashSet<String>, original: &str) -> String {
-    let prefix = original
-        .chars()
-        .find(|character| is_allowed_alt_character(*character))
-        .unwrap_or('복');
-
-    for number in 1..=1295 {
-        let candidate = format!("{prefix}{}", base36(number));
-        if validate_alt_text(&candidate).is_ok() && !used_alt_texts.contains(&candidate) {
-            used_alt_texts.insert(candidate.clone());
-            return candidate;
-        }
-    }
-
-    for number in 1..=999 {
-        let candidate = format!("복{}", base36(number));
-        if validate_alt_text(&candidate).is_ok() && !used_alt_texts.contains(&candidate) {
-            used_alt_texts.insert(candidate.clone());
-            return candidate;
-        }
-    }
-
-    "복".to_string()
-}
-
-fn base36(mut number: usize) -> String {
-    const DIGITS: &[u8] = b"0123456789abcdefghijklmnopqrstuvwxyz";
-    let mut output = Vec::new();
-
-    loop {
-        output.push(DIGITS[number % 36] as char);
-        number /= 36;
-        if number == 0 {
-            break;
-        }
-    }
-
-    output.iter().rev().collect()
 }
 
 fn repair_cover_after_delete(
@@ -808,48 +868,55 @@ fn normalized_alt_text(alt_text: String) -> String {
     alt_text.trim().to_string()
 }
 
-fn validate_alt_text(alt_text: &str) -> AppResult<()> {
-    let character_count = alt_text.chars().count();
-    if !(1..=3).contains(&character_count) {
-        return Err(AppError::new(
-            "validation",
-            "alt 값은 한글 기준 1~3글자여야 합니다.",
-        ));
+fn normalized_display_name(display_name: String) -> String {
+    let trimmed = display_name.trim();
+    if trimmed.is_empty() {
+        "이름 없는 아이콘".to_string()
+    } else {
+        trimmed.to_string()
     }
-
-    if !alt_text.chars().all(is_allowed_alt_character) {
-        return Err(AppError::new(
-            "validation",
-            "alt 값에는 한글, 영문, 숫자, * ^ ! ~ + 만 사용할 수 있습니다.",
-        ));
-    }
-
-    Ok(())
-}
-
-fn is_allowed_alt_character(character: char) -> bool {
-    character.is_ascii_alphanumeric()
-        || matches!(character, '*' | '^' | '!' | '~' | '+')
-        || matches!(
-            character as u32,
-            0x1100..=0x11FF | 0x3130..=0x318F | 0xAC00..=0xD7A3
-        )
 }
 
 #[cfg(test)]
 mod tests {
+    use std::io::Cursor;
+    use std::time::{SystemTime, UNIX_EPOCH};
+
+    use image::{DynamicImage, ImageBuffer, ImageFormat, Rgba};
     use rusqlite::{params, Connection};
 
     use crate::db::migrations;
     use crate::db::repositories::collections::create_collection;
     use crate::ids::create_id;
+    use crate::models::ImportImageFilePayload;
+    use crate::paths::AppPaths;
 
-    use super::{delete_icons, duplicate_icon, list_icons, reorder_icons, update_icon_piece_alt};
+    use super::{
+        delete_icons, duplicate_icon, list_icons, rename_icon, reorder_icons,
+        set_icon_thumbnail_override, update_icon_piece_alt,
+    };
 
     fn connection() -> Connection {
         let mut connection = Connection::open_in_memory().unwrap();
         migrations::run(&mut connection).unwrap();
         connection
+    }
+
+    fn temp_paths() -> AppPaths {
+        let suffix = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap()
+            .as_nanos();
+        AppPaths::prepare(std::env::temp_dir().join(format!("pmtconcon-icons-{suffix}"))).unwrap()
+    }
+
+    fn png_bytes() -> Vec<u8> {
+        let image = ImageBuffer::from_pixel(20, 20, Rgba([0, 0, 255, 255]));
+        let mut cursor = Cursor::new(Vec::new());
+        DynamicImage::ImageRgba8(image)
+            .write_to(&mut cursor, ImageFormat::Png)
+            .unwrap();
+        cursor.into_inner()
     }
 
     fn seed_icon(
@@ -957,29 +1024,85 @@ mod tests {
     }
 
     #[test]
-    fn update_icon_piece_alt_rejects_duplicates() {
+    fn update_icon_piece_alt_accepts_warning_values_and_duplicates() {
         let mut connection = connection();
         let collection =
             create_collection(&mut connection, Some("alt 테스트".to_string())).unwrap();
         let (_first_icon_id, _first_piece_id) = seed_icon(&connection, &collection.id, 0, "가");
         let (_second_icon_id, second_piece_id) = seed_icon(&connection, &collection.id, 1, "나");
 
-        let duplicate = update_icon_piece_alt(
+        let long_alt = update_icon_piece_alt(
             &connection,
             &collection.id,
             &second_piece_id,
-            "가".to_string(),
-        );
-        assert!(duplicate.is_err());
+            "가나다라".to_string(),
+        )
+        .unwrap();
+        assert_eq!(long_alt.pieces[0].alt_text, "가나다라");
 
         let updated = update_icon_piece_alt(
             &connection,
             &collection.id,
             &second_piece_id,
-            "다".to_string(),
+            "가".to_string(),
         )
         .unwrap();
-        assert_eq!(updated.pieces[0].alt_text, "다");
+        assert_eq!(updated.pieces[0].alt_text, "가");
+    }
+
+    #[test]
+    fn rename_icon_updates_display_name_without_changing_alt_text() {
+        let mut connection = connection();
+        let collection =
+            create_collection(&mut connection, Some("아이콘명 테스트".to_string())).unwrap();
+        let (icon_id, _) = seed_icon(&connection, &collection.id, 0, "가");
+
+        let updated =
+            rename_icon(&connection, &collection.id, &icon_id, "새 아이콘".to_string()).unwrap();
+
+        assert_eq!(updated.display_name, "새 아이콘");
+        assert_eq!(updated.pieces[0].alt_text, "가");
+    }
+
+    #[test]
+    fn set_icon_thumbnail_override_persists_without_replacing_export_source() {
+        let mut connection = connection();
+        let paths = temp_paths();
+        let collection =
+            create_collection(&mut connection, Some("썸네일 테스트".to_string())).unwrap();
+        let (icon_id, _) = seed_icon(&connection, &collection.id, 0, "가");
+        let original_source_file_id: String = connection
+            .query_row(
+                "SELECT source_file_id FROM icons WHERE id = ?1",
+                [&icon_id],
+                |row| row.get(0),
+            )
+            .unwrap();
+
+        let updated = set_icon_thumbnail_override(
+            &mut connection,
+            &paths,
+            &collection.id,
+            &icon_id,
+            ImportImageFilePayload {
+                original_filename: "thumb.png".to_string(),
+                bytes: png_bytes(),
+            },
+        )
+        .unwrap();
+
+        assert!(updated.thumbnail_override_url.is_some());
+        assert!(std::path::Path::new(updated.thumbnail_override_url.as_ref().unwrap()).exists());
+        let source_file_id_after: String = connection
+            .query_row(
+                "SELECT source_file_id FROM icons WHERE id = ?1",
+                [&icon_id],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert_eq!(source_file_id_after, original_source_file_id);
+
+        std::fs::remove_dir_all(paths.root).unwrap();
     }
 
     #[test]
@@ -1010,7 +1133,7 @@ mod tests {
     }
 
     #[test]
-    fn duplicate_icon_creates_new_order_and_unique_alt() {
+    fn duplicate_icon_creates_new_order_and_preserves_alt_warning_state() {
         let mut connection = connection();
         let collection =
             create_collection(&mut connection, Some("복제 테스트".to_string())).unwrap();
@@ -1020,7 +1143,7 @@ mod tests {
 
         assert_ne!(duplicated.id, icon_id);
         assert_eq!(duplicated.order_index, 1);
-        assert_ne!(duplicated.pieces[0].alt_text, "가");
+        assert_eq!(duplicated.pieces[0].alt_text, "가");
         assert_eq!(list_icons(&connection, &collection.id).unwrap().len(), 2);
     }
 

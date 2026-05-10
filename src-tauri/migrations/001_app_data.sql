@@ -138,8 +138,8 @@ CREATE TABLE export_profiles (
 CREATE TABLE app_settings (
   id INTEGER PRIMARY KEY CHECK (id = 1),
   last_open_collection_id TEXT REFERENCES collections(id),
-  last_view_mode TEXT NOT NULL DEFAULT 'grid'
-    CHECK (last_view_mode IN ('grid', 'list')),
+  last_view_mode TEXT NOT NULL DEFAULT 'explorer'
+    CHECK (last_view_mode IN ('explorer', 'usagePreview')),
   last_export_directory TEXT,
   locale TEXT NOT NULL DEFAULT 'ko-KR',
   theme TEXT NOT NULL DEFAULT 'system'

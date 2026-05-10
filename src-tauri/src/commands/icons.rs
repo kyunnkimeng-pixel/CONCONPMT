@@ -4,7 +4,7 @@ use crate::app_state::AppState;
 use crate::db::repositories::collections as collection_repository;
 use crate::db::repositories::icons as icon_repository;
 use crate::error::AppResult;
-use crate::models::{CollectionDto, IconDto};
+use crate::models::{CollectionDto, IconDto, ImportImageFilePayload};
 
 #[tauri::command]
 pub fn list_icons(state: State<'_, AppState>, collection_id: String) -> AppResult<Vec<IconDto>> {
@@ -21,6 +21,35 @@ pub fn update_icon_piece_alt(
 ) -> AppResult<IconDto> {
     let connection = state.connection()?;
     icon_repository::update_icon_piece_alt(&connection, &collection_id, &piece_id, alt_text)
+}
+
+#[tauri::command]
+pub fn rename_icon(
+    state: State<'_, AppState>,
+    collection_id: String,
+    icon_id: String,
+    display_name: String,
+) -> AppResult<IconDto> {
+    let connection = state.connection()?;
+    icon_repository::rename_icon(&connection, &collection_id, &icon_id, display_name)
+}
+
+#[tauri::command]
+pub fn set_icon_thumbnail_override(
+    state: State<'_, AppState>,
+    collection_id: String,
+    icon_id: String,
+    file: ImportImageFilePayload,
+) -> AppResult<IconDto> {
+    let paths = state.paths().clone();
+    let mut connection = state.connection()?;
+    icon_repository::set_icon_thumbnail_override(
+        &mut connection,
+        &paths,
+        &collection_id,
+        &icon_id,
+        file,
+    )
 }
 
 #[tauri::command]
@@ -52,4 +81,27 @@ pub fn reorder_icons(
 ) -> AppResult<Vec<IconDto>> {
     let connection = state.connection()?;
     icon_repository::reorder_icons(&connection, &collection_id, icon_ids)
+}
+
+#[tauri::command]
+pub fn reveal_icon_original(
+    state: State<'_, AppState>,
+    collection_id: String,
+    icon_id: String,
+) -> AppResult<()> {
+    let connection = state.connection()?;
+    let path = icon_repository::original_path_for_icon(&connection, &collection_id, &icon_id)?;
+    crate::export::open_export_path(&path)
+}
+
+#[tauri::command]
+pub fn reveal_icon_export_result(
+    state: State<'_, AppState>,
+    collection_id: String,
+    icon_id: String,
+) -> AppResult<()> {
+    let connection = state.connection()?;
+    let path =
+        icon_repository::export_result_path_for_icon(&connection, &collection_id, &icon_id)?;
+    crate::export::open_export_path(&path)
 }

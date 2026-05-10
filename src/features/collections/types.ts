@@ -22,6 +22,7 @@ export interface IconPieceSummary {
   pieceRole: "single" | "left" | "right" | "top" | "bottom";
   altText: string;
   generatedPreviewUrl: string | null;
+  lastExportUrl: string | null;
   exportStatus: "not_exported" | "ready" | "warning" | "error";
   createdAt: string;
   updatedAt: string;
@@ -37,12 +38,34 @@ export interface IconSummary {
   cellWidthOverride: number | null;
   cellHeightOverride: number | null;
   thumbnailUrl: string | null;
+  thumbnailOverrideUrl: string | null;
   currentPreviewUrl: string | null;
   gifLoopMode: "preserve" | "infinite" | "once" | "count";
   gifLoopCount: number | null;
   createdAt: string;
   updatedAt: string;
   pieces: IconPieceSummary[];
+}
+
+export interface CollectionSettingsPayload {
+  defaultCellWidth: number;
+  defaultCellHeight: number;
+  previewWidth: number;
+  previewHeight: number;
+  exportFormat: CollectionSummary["exportFormat"];
+  maxBytes: number;
+}
+
+export interface AppSettings {
+  lastOpenCollectionId: string | null;
+  lastViewMode: "explorer" | "usagePreview";
+}
+
+export interface LibraryCleanupResult {
+  orphanedSourceFiles: number;
+  removedOriginalFiles: number;
+  removedThumbnailFiles: number;
+  removedTempFiles: number;
 }
 
 export interface RejectedImportFile {

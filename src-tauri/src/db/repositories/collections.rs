@@ -2,9 +2,13 @@ use std::collections::HashMap;
 
 use rusqlite::{params, Connection, OptionalExtension, Row, Transaction};
 
+use crate::db::repositories::source_files::{
+    import_source_file_from_bytes, SourceFileImportOptions,
+};
 use crate::error::{AppError, AppResult};
 use crate::ids::create_id;
-use crate::models::CollectionDto;
+use crate::models::{CollectionDto, ImportImageFilePayload, UpdateCollectionSettingsPayload};
+use crate::paths::AppPaths;
 
 pub fn list_collections(connection: &Connection) -> AppResult<Vec<CollectionDto>> {
     let mut statement = connection.prepare(
@@ -28,6 +32,7 @@ pub fn list_collections(connection: &Connection) -> AppResult<Vec<CollectionDto>
                AND i.deleted_at IS NULL
            ) AS icon_count,
            COALESCE(
+             cover_icon.thumbnail_override_path,
              cover_icon.current_preview_path,
              cover_icon.thumbnail_path,
              cover_source.original_path_in_library,
@@ -75,6 +80,7 @@ pub fn get_collection(connection: &Connection, collection_id: &str) -> AppResult
                    AND i.deleted_at IS NULL
                ) AS icon_count,
                COALESCE(
+                 cover_icon.thumbnail_override_path,
                  cover_icon.current_preview_path,
                  cover_icon.thumbnail_path,
                  cover_source.original_path_in_library,
@@ -297,6 +303,97 @@ pub fn set_collection_cover_icon(
     get_collection(connection, collection_id)
 }
 
+pub fn update_collection_settings(
+    connection: &Connection,
+    collection_id: &str,
+    payload: UpdateCollectionSettingsPayload,
+) -> AppResult<CollectionDto> {
+    validate_collection_settings(&payload)?;
+    let export_format = normalized_export_format(&payload.export_format);
+
+    let changed = connection.execute(
+        "UPDATE collections
+         SET default_cell_width = ?1,
+             default_cell_height = ?2,
+             preview_width = ?3,
+             preview_height = ?4,
+             export_format = ?5,
+             max_bytes = ?6,
+             updated_at = strftime('%Y-%m-%dT%H:%M:%fZ', 'now')
+         WHERE id = ?7
+           AND deleted_at IS NULL",
+        params![
+            payload.default_cell_width,
+            payload.default_cell_height,
+            payload.preview_width,
+            payload.preview_height,
+            export_format,
+            payload.max_bytes,
+            collection_id,
+        ],
+    )?;
+
+    if changed == 0 {
+        return Err(AppError::not_found("설정을 저장할 모음을 찾을 수 없습니다."));
+    }
+
+    connection.execute(
+        "UPDATE export_profiles
+         SET target_format = ?1,
+             target_cell_width = ?2,
+             target_cell_height = ?3,
+             preview_width = ?4,
+             preview_height = ?5,
+             max_bytes = ?6,
+             updated_at = strftime('%Y-%m-%dT%H:%M:%fZ', 'now')
+         WHERE collection_id = ?7
+           AND profile_type = 'custom'",
+        params![
+            export_format,
+            payload.default_cell_width,
+            payload.default_cell_height,
+            payload.preview_width,
+            payload.preview_height,
+            payload.max_bytes,
+            collection_id,
+        ],
+    )?;
+
+    get_collection(connection, collection_id)
+}
+
+pub fn import_collection_cover_image(
+    connection: &mut Connection,
+    paths: &AppPaths,
+    collection_id: &str,
+    file: ImportImageFilePayload,
+) -> AppResult<CollectionDto> {
+    let transaction = connection.transaction()?;
+    ensure_collection_exists(&transaction, collection_id)?;
+    let source_file = import_source_file_from_bytes(
+        &transaction,
+        paths,
+        &file,
+        SourceFileImportOptions {
+            allow_gif: false,
+            exact_dimensions: Some((200, 200)),
+        },
+    )?;
+
+    transaction.execute(
+        "UPDATE collections
+         SET cover_source_file_id = ?1,
+             cover_icon_id = NULL,
+             updated_at = strftime('%Y-%m-%dT%H:%M:%fZ', 'now')
+         WHERE id = ?2
+           AND deleted_at IS NULL",
+        params![source_file.id, collection_id],
+    )?;
+    transaction.commit()?;
+
+    get_collection(connection, collection_id)
+}
+
 pub(crate) fn collection_from_row(row: &Row<'_>) -> rusqlite::Result<CollectionDto> {
     Ok(CollectionDto {
         id: row.get("id")?,
@@ -314,6 +411,63 @@ pub(crate) fn collection_from_row(row: &Row<'_>) -> rusqlite::Result<CollectionD
         created_at: row.get("created_at")?,
         updated_at: row.get("updated_at")?,
     })
+}
+
+fn ensure_collection_exists(connection: &Connection, collection_id: &str) -> AppResult<()> {
+    let exists = connection
+        .query_row(
+            "SELECT id
+             FROM collections
+             WHERE id = ?1
+               AND deleted_at IS NULL",
+            params![collection_id],
+            |row| row.get::<_, String>(0),
+        )
+        .optional()?
+        .is_some();
+
+    if exists {
+        Ok(())
+    } else {
+        Err(AppError::not_found("모음을 찾을 수 없습니다."))
+    }
+}
+
+fn validate_collection_settings(payload: &UpdateCollectionSettingsPayload) -> AppResult<()> {
+    if payload.default_cell_width <= 0
+        || payload.default_cell_height <= 0
+        || payload.preview_width <= 0
+        || payload.preview_height <= 0
+    {
+        return Err(AppError::new(
+            "validation",
+            "모음 기준 크기와 표시 크기는 1px 이상이어야 합니다.",
+        ));
+    }
+
+    if payload.max_bytes <= 0 {
+        return Err(AppError::new(
+            "validation",
+            "파일 용량 제한은 1바이트 이상이어야 합니다.",
+        ));
+    }
+
+    match payload.export_format.as_str() {
+        "jpg" | "jpeg" | "png" | "gif" | "source" => Ok(()),
+        _ => Err(AppError::new(
+            "validation",
+            "지원하지 않는 기본 내보내기 형식입니다.",
+        )),
+    }
+}
+
+fn normalized_export_format(format: &str) -> String {
+    match format.trim().to_ascii_lowercase().as_str() {
+        "jpeg" | "jpg" => "jpg".to_string(),
+        "gif" => "gif".to_string(),
+        "source" => "source".to_string(),
+        _ => "png".to_string(),
+    }
 }
 
 fn normalized_name(name: Option<String>) -> Option<String> {
@@ -503,6 +657,8 @@ struct IconRecord {
     cell_width_override: Option<i64>,
     cell_height_override: Option<i64>,
     thumbnail_path: Option<String>,
+    thumbnail_override_source_file_id: Option<String>,
+    thumbnail_override_path: Option<String>,
     current_preview_path: Option<String>,
     gif_loop_mode: String,
     gif_loop_count: Option<i64>,
@@ -548,6 +704,8 @@ fn duplicate_icons(
                cell_width_override,
                cell_height_override,
                thumbnail_path,
+               thumbnail_override_source_file_id,
+               thumbnail_override_path,
                current_preview_path,
                gif_loop_mode,
                gif_loop_count
@@ -568,6 +726,9 @@ fn duplicate_icons(
                     cell_width_override: row.get("cell_width_override")?,
                     cell_height_override: row.get("cell_height_override")?,
                     thumbnail_path: row.get("thumbnail_path")?,
+                    thumbnail_override_source_file_id: row
+                        .get("thumbnail_override_source_file_id")?,
+                    thumbnail_override_path: row.get("thumbnail_override_path")?,
                     current_preview_path: row.get("current_preview_path")?,
                     gif_loop_mode: row.get("gif_loop_mode")?,
                     gif_loop_count: row.get("gif_loop_count")?,
@@ -592,6 +753,8 @@ fn duplicate_icons(
                cell_width_override,
                cell_height_override,
                thumbnail_path,
+               thumbnail_override_source_file_id,
+               thumbnail_override_path,
                current_preview_path,
                gif_loop_mode,
                gif_loop_count,
@@ -611,6 +774,8 @@ fn duplicate_icons(
                ?10,
                ?11,
                ?12,
+               ?13,
+               ?14,
                strftime('%Y-%m-%dT%H:%M:%fZ', 'now'),
                strftime('%Y-%m-%dT%H:%M:%fZ', 'now')
              )",
@@ -624,6 +789,8 @@ fn duplicate_icons(
                 icon.cell_width_override,
                 icon.cell_height_override,
                 icon.thumbnail_path,
+                icon.thumbnail_override_source_file_id,
+                icon.thumbnail_override_path,
                 icon.current_preview_path,
                 icon.gif_loop_mode,
                 icon.gif_loop_count,
@@ -806,19 +973,43 @@ fn duplicate_crop_settings(
 
 #[cfg(test)]
 mod tests {
+    use std::io::Cursor;
+    use std::time::{SystemTime, UNIX_EPOCH};
+
+    use image::{DynamicImage, ImageBuffer, ImageFormat, Rgba};
     use rusqlite::Connection;
 
     use crate::db::migrations;
+    use crate::models::{ImportImageFilePayload, UpdateCollectionSettingsPayload};
+    use crate::paths::AppPaths;
 
     use super::{
         create_collection, delete_collection, duplicate_collection, list_collections,
-        rename_collection,
+        import_collection_cover_image, rename_collection, update_collection_settings,
     };
 
     fn connection() -> Connection {
         let mut connection = Connection::open_in_memory().unwrap();
         migrations::run(&mut connection).unwrap();
         connection
+    }
+
+    fn temp_paths() -> AppPaths {
+        let suffix = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap()
+            .as_nanos();
+        AppPaths::prepare(std::env::temp_dir().join(format!("pmtconcon-collections-{suffix}")))
+            .unwrap()
+    }
+
+    fn png_bytes(width: u32, height: u32) -> Vec<u8> {
+        let image = ImageBuffer::from_pixel(width, height, Rgba([255, 0, 0, 255]));
+        let mut cursor = Cursor::new(Vec::new());
+        DynamicImage::ImageRgba8(image)
+            .write_to(&mut cursor, ImageFormat::Png)
+            .unwrap();
+        cursor.into_inner()
     }
 
     #[test]
@@ -858,5 +1049,65 @@ mod tests {
             )
             .unwrap();
         assert_eq!(profile_count, 1);
+    }
+
+    #[test]
+    fn update_collection_settings_persists_standard_sizes() {
+        let mut connection = connection();
+        let created = create_collection(&mut connection, Some("크기".to_string())).unwrap();
+
+        let updated = update_collection_settings(
+            &connection,
+            &created.id,
+            UpdateCollectionSettingsPayload {
+                default_cell_width: 180,
+                default_cell_height: 160,
+                preview_width: 90,
+                preview_height: 80,
+                export_format: "png".to_string(),
+                max_bytes: 1_000_000,
+            },
+        )
+        .unwrap();
+
+        assert_eq!(updated.default_cell_width, 180);
+        assert_eq!(updated.default_cell_height, 160);
+        assert_eq!(updated.preview_width, 90);
+        assert_eq!(updated.preview_height, 80);
+    }
+
+    #[test]
+    fn import_collection_cover_image_accepts_only_exact_200_png_or_jpg() {
+        let mut connection = connection();
+        let paths = temp_paths();
+        let created = create_collection(&mut connection, Some("대표".to_string())).unwrap();
+
+        let wrong_size = import_collection_cover_image(
+            &mut connection,
+            &paths,
+            &created.id,
+            ImportImageFilePayload {
+                original_filename: "wrong.png".to_string(),
+                bytes: png_bytes(100, 100),
+            },
+        );
+        assert!(wrong_size.is_err());
+
+        let updated = import_collection_cover_image(
+            &mut connection,
+            &paths,
+            &created.id,
+            ImportImageFilePayload {
+                original_filename: "cover.png".to_string(),
+                bytes: png_bytes(200, 200),
+            },
+        )
+        .unwrap();
+
+        assert!(updated.cover_source_file_id.is_some());
+        assert_eq!(updated.cover_icon_id, None);
+        assert!(updated.cover_image_url.is_some());
+
+        std::fs::remove_dir_all(paths.root).unwrap();
     }
 }

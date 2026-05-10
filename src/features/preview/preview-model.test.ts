@@ -3,6 +3,7 @@ import { describe, expect, it } from "vitest";
 import type { CollectionSummary, IconSummary } from "@/features/collections/types";
 import {
   appendUsagePreviewIcon,
+  appendUsagePreviewPiece,
   buildUsagePreviewIcons,
   DCINSIDE_USAGE_DISPLAY_SIZE,
   hasAnimatedPreview,
@@ -77,6 +78,30 @@ describe("usage preview model", () => {
 
     expect(hasAnimatedPreview([], inserted)).toBe(true);
   });
+
+  it("can insert one piece from a multi-piece icon as a single preview item", () => {
+    const [previewIcon] = buildUsagePreviewIcons(collection, [
+      icon({
+        shape: "horizontal_double",
+        pieces: [
+          piece({ id: "left", pieceIndex: 0, pieceRole: "left", altText: "좌" }),
+          piece({ id: "right", pieceIndex: 1, pieceRole: "right", altText: "우" }),
+        ],
+      }),
+    ]);
+
+    const inserted = appendUsagePreviewPiece(
+      [],
+      previewIcon,
+      previewIcon.pieces[1],
+      "piece",
+    );
+
+    expect(inserted).toHaveLength(1);
+    expect(inserted[0].shape).toBe("single");
+    expect(inserted[0].pieces).toHaveLength(1);
+    expect(inserted[0].pieces[0].pieceRole).toBe("right");
+  });
 });
 
 function icon(overrides: Partial<IconSummary> = {}): IconSummary {
@@ -90,6 +115,7 @@ function icon(overrides: Partial<IconSummary> = {}): IconSummary {
     cellWidthOverride: null,
     cellHeightOverride: null,
     thumbnailUrl: "asset://thumb.png",
+    thumbnailOverrideUrl: null,
     currentPreviewUrl: null,
     gifLoopMode: "preserve",
     gifLoopCount: null,
@@ -110,6 +136,7 @@ function piece(
     pieceRole: "single",
     altText: "가",
     generatedPreviewUrl: null,
+    lastExportUrl: null,
     exportStatus: "not_exported",
     createdAt: "2026-05-10T00:00:00.000Z",
     updatedAt: "2026-05-10T00:00:00.000Z",

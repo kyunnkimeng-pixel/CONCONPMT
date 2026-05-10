@@ -1,17 +1,29 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import type { InputHTMLAttributes } from "react";
 import { Link, useParams } from "@tanstack/react-router";
 import {
   ChevronLeft,
   Download,
   FileImage,
+  FolderPlus,
+  ImagePlus,
   Images,
   LayoutGrid,
   MessageSquareText,
+  Settings,
 } from "lucide-react";
 
-import { listCollections, setCollectionCoverIcon } from "@/features/collections/api";
+import {
+  getAppSettings,
+  importCollectionCoverImage,
+  listCollections,
+  saveAppSettings,
+  setCollectionCoverIcon,
+  updateCollectionSettings,
+} from "@/features/collections/api";
 import { DropImportZone } from "@/features/collections/components/DropImportZone";
 import type {
+  CollectionSettingsPayload,
   CollectionSummary,
   IconPieceSummary,
   IconSummary,
@@ -23,14 +35,21 @@ import {
   duplicateIcon,
   importImagesIntoCollection,
   listIcons,
+  renameIcon,
   reorderIcons,
+  revealIconExportResult,
+  revealIconOriginal,
+  setIconThumbnailOverride,
   updateIconPieceAlt,
 } from "@/features/icons/api";
 import { IconGrid } from "@/features/icons/components/IconGrid";
 import { DcinsidePreview } from "@/features/preview/components/DcinsidePreview";
 import {
   IMPORTABLE_IMAGE_ACCEPT,
+  COVER_IMAGE_ACCEPT,
+  isCoverImageFile,
   partitionImportableImageFiles,
+  sortFilesForImport,
 } from "@/lib/file-types";
 import { getCommandErrorMessage } from "@/lib/tauri";
 import { cn } from "@/lib/utils";
@@ -41,9 +60,21 @@ import {
   validateDcinsideAltText,
 } from "@/lib/validation";
 
+const folderInputProps = {
+  webkitdirectory: "",
+  directory: "",
+} as InputHTMLAttributes<HTMLInputElement> & {
+  webkitdirectory: string;
+  directory: string;
+};
+
 export function CollectionRoute() {
   const { collectionId } = useParams({ from: "/collections/$collectionId" });
   const fileInputRef = useRef<HTMLInputElement>(null);
+  const folderInputRef = useRef<HTMLInputElement>(null);
+  const coverInputRef = useRef<HTMLInputElement>(null);
+  const thumbnailInputRef = useRef<HTMLInputElement>(null);
+  const hasLoadedRouteSettingsRef = useRef(false);
   const [collection, setCollection] = useState<CollectionSummary | null>(null);
   const [icons, setIcons] = useState<IconSummary[]>([]);
   const [isLoading, setIsLoading] = useState(true);
@@ -51,10 +82,12 @@ export function CollectionRoute() {
   const [isImporting, setIsImporting] = useState(false);
   const [editingIconId, setEditingIconId] = useState<string | null>(null);
   const [isExportDialogOpen, setIsExportDialogOpen] = useState(false);
+  const [isSettingsOpen, setIsSettingsOpen] = useState(false);
   const [viewMode, setViewMode] = useState<"explorer" | "usagePreview">("explorer");
   const [importStatus, setImportStatus] = useState<string | null>(null);
   const [errorMessage, setErrorMessage] = useState<string | null>(null);
-  const duplicatePieceIds = useMemo(() => findDuplicateAltPieceIds(icons), [icons]);
+  const [thumbnailOverrideIconId, setThumbnailOverrideIconId] = useState<string | null>(null);
+const duplicatePieceIds = useMemo(() => findDuplicateAltPieceIds(icons), [icons]);
 
   const refreshCollectionAndIcons = useCallback(async () => {
     const [collections, nextIcons] = await Promise.all([
@@ -75,8 +108,17 @@ export function CollectionRoute() {
     setErrorMessage(null);
 
     try {
-      await refreshCollectionAndIcons();
+      hasLoadedRouteSettingsRef.current = false;
+      const [nextCollection, settings] = await Promise.all([
+        refreshCollectionAndIcons(),
+        getAppSettings(),
+      ]);
+      if (nextCollection && settings.lastOpenCollectionId === collectionId) {
+        setViewMode(settings.lastViewMode);
+      }
+      hasLoadedRouteSettingsRef.current = true;
     } catch (error) {
+      hasLoadedRouteSettingsRef.current = true;
       setErrorMessage(getCommandErrorMessage(error));
     } finally {
       setIsLoading(false);
@@ -87,9 +129,22 @@ export function CollectionRoute() {
     void loadCollection();
   }, [loadCollection]);
 
+  useEffect(() => {
+    if (!collection || !hasLoadedRouteSettingsRef.current) {
+      return;
+    }
+
+    void saveAppSettings({
+      lastOpenCollectionId: collection.id,
+      lastViewMode: viewMode,
+    }).catch(() => {
+      // Route restore is a convenience; regular editing should not be interrupted.
+    });
+  }, [collection, viewMode]);
+
   const handleImportFiles = useCallback(
     async (files: File[]) => {
-      const { accepted, rejected } = partitionImportableImageFiles(files);
+      const { accepted, rejected } = partitionImportableImageFiles(sortFilesForImport(files));
       setErrorMessage(null);
       setImportStatus(null);
 
@@ -138,12 +193,6 @@ export function CollectionRoute() {
 
   const handleAltCommit = useCallback(
     async (pieceId: string, value: string) => {
-      const validationMessage = validateAltDraft(pieceId, value);
-      if (validationMessage) {
-        setErrorMessage(validationMessage);
-        return false;
-      }
-
       setErrorMessage(null);
 
       try {
@@ -162,7 +211,38 @@ export function CollectionRoute() {
         return false;
       }
     },
-    [collectionId, validateAltDraft],
+    [collectionId],
+  );
+
+  const handleBatchAltCommit = useCallback(
+    async (iconIds: string[], value: string) => {
+      const targetPieceIds = icons
+        .filter((icon) => iconIds.includes(icon.id))
+        .flatMap((icon) => icon.pieces.map((piece) => piece.id));
+
+      if (targetPieceIds.length === 0) {
+        return false;
+      }
+
+      setErrorMessage(null);
+
+      try {
+        await Promise.all(
+          targetPieceIds.map((pieceId) =>
+            updateIconPieceAlt(collectionId, pieceId, normalizeAltText(value)),
+          ),
+        );
+        setIcons(await listIcons(collectionId));
+        setImportStatus(
+          `${targetPieceIds.length}개의 alt 값을 일괄 변경했습니다.`,
+        );
+        return true;
+      } catch (error) {
+        setErrorMessage(getCommandErrorMessage(error));
+        return false;
+      }
+    },
+    [collectionId, icons],
   );
 
   const handleDeleteIcons = useCallback(
@@ -200,6 +280,26 @@ export function CollectionRoute() {
       }
     },
     [collectionId, refreshCollectionAndIcons],
+  );
+
+  const handleRenameIcon = useCallback(
+    async (iconId: string, displayName: string) => {
+      setErrorMessage(null);
+      setImportStatus(null);
+
+      try {
+        const updatedIcon = await renameIcon(collectionId, iconId, displayName);
+        setIcons((currentIcons) =>
+          currentIcons.map((icon) => (icon.id === updatedIcon.id ? updatedIcon : icon)),
+        );
+        setImportStatus("아이콘 이름을 저장했습니다.");
+        return true;
+      } catch (error) {
+        setErrorMessage(getCommandErrorMessage(error));
+        return false;
+      }
+    },
+    [collectionId],
   );
 
   const handleEditIcon = useCallback(
@@ -251,8 +351,88 @@ export function CollectionRoute() {
     }
   };
 
+  const handleImportCoverImage = async (files: File[]) => {
+    const file = files[0];
+    setErrorMessage(null);
+    setImportStatus(null);
+
+    if (!file) {
+      return;
+    }
+    if (!isCoverImageFile(file)) {
+      setImportStatus("대표 이미지는 200×200 JPG 또는 PNG 파일만 사용할 수 있습니다.");
+      return;
+    }
+
+    try {
+      setCollection(await importCollectionCoverImage(collectionId, file));
+      setImportStatus("모음 대표 이미지를 가져왔습니다.");
+    } catch (error) {
+      setErrorMessage(getCommandErrorMessage(error));
+    }
+  };
+
+  const handleSetThumbnailOverride = (iconId: string) => {
+    setThumbnailOverrideIconId(iconId);
+    thumbnailInputRef.current?.click();
+  };
+
+  const handleThumbnailOverrideFile = async (files: File[]) => {
+    const file = files[0];
+    const iconId = thumbnailOverrideIconId;
+    setThumbnailOverrideIconId(null);
+    setErrorMessage(null);
+    setImportStatus(null);
+
+    if (!file || !iconId) {
+      return;
+    }
+
+    try {
+      const updatedIcon = await setIconThumbnailOverride(collectionId, iconId, file);
+      setIcons((currentIcons) =>
+        currentIcons.map((icon) => (icon.id === updatedIcon.id ? updatedIcon : icon)),
+      );
+      setImportStatus("아이콘 썸네일을 바꿨습니다.");
+    } catch (error) {
+      setErrorMessage(getCommandErrorMessage(error));
+    }
+  };
+
+  const handleRevealOriginal = useCallback(
+    async (iconId: string) => {
+      setErrorMessage(null);
+      try {
+        await revealIconOriginal(collectionId, iconId);
+      } catch (error) {
+        setErrorMessage(getCommandErrorMessage(error));
+      }
+    },
+    [collectionId],
+  );
+
+  const handleRevealExportResult = useCallback(
+    async (iconId: string) => {
+      setErrorMessage(null);
+      try {
+        await revealIconExportResult(collectionId, iconId);
+      } catch (error) {
+        setErrorMessage(getCommandErrorMessage(error));
+      }
+    },
+    [collectionId],
+  );
+
   const openImportPicker = () => {
     fileInputRef.current?.click();
+  };
+
+  const openFolderImportPicker = () => {
+    folderInputRef.current?.click();
+  };
+
+  const openCoverImportPicker = () => {
+    coverInputRef.current?.click();
   };
 
   const handleExported = useCallback(async () => {
@@ -269,7 +449,7 @@ export function CollectionRoute() {
 
   if (isLoading) {
     return (
-      <div className="flex min-h-screen flex-col">
+      <div className="flex h-screen flex-col overflow-hidden">
         <header className="border-b border-border bg-surface px-8 py-5">
           <BackLink />
         </header>
@@ -282,7 +462,7 @@ export function CollectionRoute() {
 
   if (!collection) {
     return (
-      <div className="flex min-h-screen flex-col">
+      <div className="flex h-screen flex-col overflow-hidden">
         <header className="border-b border-border bg-surface px-8 py-5">
           <BackLink />
         </header>
@@ -294,7 +474,7 @@ export function CollectionRoute() {
   }
 
   return (
-    <div className="flex min-h-screen flex-col">
+    <div className="flex h-screen flex-col overflow-hidden">
       <header className="border-b border-border bg-surface/95 px-8 py-5">
         <div className="mb-3 flex items-center gap-2 text-sm text-muted">
           <Link
@@ -347,6 +527,31 @@ export function CollectionRoute() {
               내보내기
             </button>
             <button
+              className={viewModeButtonClass(isSettingsOpen)}
+              type="button"
+              onClick={() => setIsSettingsOpen((isOpen) => !isOpen)}
+            >
+              <Settings aria-hidden="true" />
+              설정
+            </button>
+            <button
+              className="inline-flex items-center gap-2 rounded-md border border-border bg-white px-3 py-2 text-sm font-medium hover:bg-menu-hover focus-visible:outline focus-visible:outline-2 focus-visible:outline-focus"
+              type="button"
+              onClick={openCoverImportPicker}
+            >
+              <ImagePlus aria-hidden="true" />
+              대표 이미지
+            </button>
+            <button
+              className="inline-flex items-center gap-2 rounded-md border border-border bg-white px-3 py-2 text-sm font-medium hover:bg-menu-hover focus-visible:outline focus-visible:outline-2 focus-visible:outline-focus disabled:cursor-not-allowed disabled:text-muted"
+              disabled={isImporting}
+              type="button"
+              onClick={openFolderImportPicker}
+            >
+              <FolderPlus aria-hidden="true" />
+              폴더 추가
+            </button>
+            <button
               className="inline-flex items-center gap-2 rounded-md border border-border bg-white px-3 py-2 text-sm font-medium hover:bg-menu-hover focus-visible:outline focus-visible:outline-2 focus-visible:outline-focus disabled:cursor-not-allowed disabled:text-muted"
               disabled={isImporting}
               type="button"
@@ -358,6 +563,16 @@ export function CollectionRoute() {
             <BackLink label="뒤로" />
           </div>
         </div>
+        {isSettingsOpen ? (
+          <CollectionSettingsPanel
+            collection={collection}
+            onSave={async (payload) => {
+              const updatedCollection = await updateCollectionSettings(collection.id, payload);
+              setCollection(updatedCollection);
+              setImportStatus("모음 기준 크기 설정을 저장했습니다.");
+            }}
+          />
+        ) : null}
       </header>
 
       <input
@@ -370,6 +585,41 @@ export function CollectionRoute() {
           const files = Array.from(event.currentTarget.files ?? []);
           event.currentTarget.value = "";
           void handleImportFiles(files);
+        }}
+      />
+      <input
+        ref={folderInputRef}
+        accept={IMPORTABLE_IMAGE_ACCEPT}
+        className="hidden"
+        multiple
+        type="file"
+        {...folderInputProps}
+        onChange={(event) => {
+          const files = Array.from(event.currentTarget.files ?? []);
+          event.currentTarget.value = "";
+          void handleImportFiles(files);
+        }}
+      />
+      <input
+        ref={coverInputRef}
+        accept={COVER_IMAGE_ACCEPT}
+        className="hidden"
+        type="file"
+        onChange={(event) => {
+          const files = Array.from(event.currentTarget.files ?? []);
+          event.currentTarget.value = "";
+          void handleImportCoverImage(files);
+        }}
+      />
+      <input
+        ref={thumbnailInputRef}
+        accept={IMPORTABLE_IMAGE_ACCEPT}
+        className="hidden"
+        type="file"
+        onChange={(event) => {
+          const files = Array.from(event.currentTarget.files ?? []);
+          event.currentTarget.value = "";
+          void handleThumbnailOverrideFile(files);
         }}
       />
 
@@ -395,11 +645,16 @@ export function CollectionRoute() {
                   validateAltDraft={validateAltDraft}
                   validateCurrentAlt={validateCurrentAlt}
                   onAltCommit={handleAltCommit}
+                  onBatchAltCommit={handleBatchAltCommit}
                   onDeleteIcons={handleDeleteIcons}
                   onDuplicateIcon={handleDuplicateIcon}
                   onEditIcon={handleEditIcon}
+                  onRenameIcon={handleRenameIcon}
                   onReorderIcons={handleReorderIcons}
+                  onRevealExportResult={handleRevealExportResult}
+                  onRevealOriginal={handleRevealOriginal}
                   onSetCover={handleSetCover}
+                  onSetThumbnailOverride={handleSetThumbnailOverride}
                 />
               ) : (
                 <div className="flex min-h-[360px] items-center justify-center">
@@ -451,6 +706,166 @@ export function CollectionRoute() {
         />
       ) : null}
     </div>
+  );
+}
+
+function CollectionSettingsPanel({
+  collection,
+  onSave,
+}: {
+  collection: CollectionSummary;
+  onSave: (payload: CollectionSettingsPayload) => Promise<void>;
+}) {
+  const [draft, setDraft] = useState<CollectionSettingsPayload>(() => ({
+    defaultCellWidth: collection.defaultCellWidth,
+    defaultCellHeight: collection.defaultCellHeight,
+    previewWidth: collection.previewWidth,
+    previewHeight: collection.previewHeight,
+    exportFormat: collection.exportFormat,
+    maxBytes: collection.maxBytes,
+  }));
+  const [isSaving, setIsSaving] = useState(false);
+  const [errorMessage, setErrorMessage] = useState<string | null>(null);
+
+  useEffect(() => {
+    setDraft({
+      defaultCellWidth: collection.defaultCellWidth,
+      defaultCellHeight: collection.defaultCellHeight,
+      previewWidth: collection.previewWidth,
+      previewHeight: collection.previewHeight,
+      exportFormat: collection.exportFormat,
+      maxBytes: collection.maxBytes,
+    });
+  }, [collection]);
+
+  const updateNumber = (
+    field: keyof Omit<CollectionSettingsPayload, "exportFormat">,
+    value: number,
+  ) => {
+    setDraft((current) => ({
+      ...current,
+      [field]: Number.isFinite(value) ? Math.max(1, Math.round(value)) : 1,
+    }));
+  };
+
+  return (
+    <section className="mt-4 grid gap-3 rounded-md border border-border bg-white p-3">
+      <div className="grid gap-3 md:grid-cols-6">
+        <SettingsNumberField
+          label="기준 너비"
+          value={draft.defaultCellWidth}
+          onChange={(value) => updateNumber("defaultCellWidth", value)}
+        />
+        <SettingsNumberField
+          label="기준 높이"
+          value={draft.defaultCellHeight}
+          onChange={(value) => updateNumber("defaultCellHeight", value)}
+        />
+        <SettingsNumberField
+          label="표시 너비"
+          value={draft.previewWidth}
+          onChange={(value) => updateNumber("previewWidth", value)}
+        />
+        <SettingsNumberField
+          label="표시 높이"
+          value={draft.previewHeight}
+          onChange={(value) => updateNumber("previewHeight", value)}
+        />
+        <label className="flex min-w-0 flex-col gap-1 text-xs font-medium text-muted">
+          기본 형식
+          <select
+            className="rounded-md border border-border bg-white px-2 py-2 text-sm text-foreground focus-visible:outline focus-visible:outline-2 focus-visible:outline-focus"
+            value={draft.exportFormat}
+            onChange={(event) =>
+              setDraft((current) => ({
+                ...current,
+                exportFormat: event.currentTarget.value as CollectionSummary["exportFormat"],
+              }))
+            }
+          >
+            <option value="png">PNG</option>
+            <option value="jpg">JPG</option>
+            <option value="gif">GIF</option>
+            <option value="source">원본</option>
+          </select>
+        </label>
+        <SettingsNumberField
+          label="최대 용량"
+          value={draft.maxBytes}
+          onChange={(value) => updateNumber("maxBytes", value)}
+        />
+      </div>
+      <div className="flex items-center justify-between gap-3">
+        {errorMessage ? (
+          <p className="text-sm text-danger" role="alert">
+            {errorMessage}
+          </p>
+        ) : (
+          <p className="text-xs text-muted">
+            아이콘별 크기 변경은 오른쪽 편집 패널의 셀 크기에서 저장됩니다.
+          </p>
+        )}
+        <button
+          className="inline-flex items-center gap-2 rounded-md bg-accent px-3 py-2 text-sm font-semibold text-accent-foreground hover:bg-accent-strong focus-visible:outline focus-visible:outline-2 focus-visible:outline-focus disabled:cursor-not-allowed disabled:opacity-60"
+          disabled={isSaving}
+          type="button"
+          onClick={() => {
+            setIsSaving(true);
+            setErrorMessage(null);
+            void onSave(draft)
+              .catch((error) => setErrorMessage(getCommandErrorMessage(error)))
+              .finally(() => setIsSaving(false));
+          }}
+        >
+          {isSaving ? "저장 중" : "설정 저장"}
+        </button>
+      </div>
+    </section>
+  );
+}
+
+function SettingsNumberField({
+  label,
+  value,
+  onChange,
+}: {
+  label: string;
+  value: number;
+  onChange: (value: number) => void;
+}) {
+  const [draft, setDraft] = useState(String(value));
+
+  useEffect(() => {
+    setDraft(String(value));
+  }, [value]);
+
+  return (
+    <label className="flex min-w-0 flex-col gap-1 text-xs font-medium text-muted">
+      {label}
+      <input
+        className="min-w-0 select-text rounded-md border border-border bg-white px-2 py-2 text-sm text-foreground focus-visible:outline focus-visible:outline-2 focus-visible:outline-focus"
+        min={1}
+        type="number"
+        value={draft}
+        onBlur={() => {
+          const parsed = Number.parseInt(draft, 10);
+          if (!Number.isFinite(parsed) || parsed < 1) {
+            setDraft(String(value));
+          }
+        }}
+        onChange={(event) => {
+          const nextValue = event.currentTarget.value;
+          setDraft(nextValue);
+          if (nextValue.trim() === "") {
+            return;
+          }
+          const parsed = Number.parseInt(nextValue, 10);
+          if (Number.isFinite(parsed) && parsed >= 1) {
+            onChange(parsed);
+          }
+        }}
+      />
+    </label>
   );
 }
 

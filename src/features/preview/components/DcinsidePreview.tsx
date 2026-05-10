@@ -4,10 +4,13 @@ import { ImagePlus, MessageSquareText } from "lucide-react";
 import type { CollectionSummary, IconSummary } from "@/features/collections/types";
 import {
   appendUsagePreviewIcon,
+  appendUsagePreviewPiece,
   buildUsagePreviewIcons,
   hasAnimatedPreview,
+  pieceRoleLabel,
   type InsertedPreviewIcon,
   type UsagePreviewIcon,
+  type UsagePreviewPiece,
 } from "@/features/preview/preview-model";
 import {
   PreviewComposer,
@@ -38,6 +41,18 @@ export function DcinsidePreview({ collection, icons }: DcinsidePreviewProps) {
     setActiveIconId(icon.id);
   };
 
+  const insertPiece = (icon: UsagePreviewIcon, piece: UsagePreviewPiece) => {
+    setInsertedItems((currentItems) =>
+      appendUsagePreviewPiece(
+        currentItems,
+        icon,
+        piece,
+        `${Date.now()}-${currentItems.length}`,
+      ),
+    );
+    setActiveIconId(icon.id);
+  };
+
   return (
     <div className="flex min-h-full flex-col gap-5">
       <header className="flex items-end justify-between gap-4">
@@ -60,7 +75,7 @@ export function DcinsidePreview({ collection, icons }: DcinsidePreviewProps) {
               <h3 className="truncate text-base font-semibold tracking-normal">
                 아이콘 팔레트
               </h3>
-              <p className="mt-1 text-xs text-muted">노출 크기 100×100</p>
+              <p className="mt-1 text-xs text-muted">호출 크기 100x100</p>
             </div>
             <ImagePlus aria-hidden="true" className="text-muted" />
           </header>
@@ -69,15 +84,23 @@ export function DcinsidePreview({ collection, icons }: DcinsidePreviewProps) {
             {previewIcons.length > 0 ? (
               <div className="grid gap-3">
                 {previewIcons.map((icon) => (
-                  <button
+                  <div
                     aria-label={`${icon.displayName} 댓글 미리보기에 삽입`}
                     className={cn(
                       "flex w-full flex-col items-start gap-3 rounded-md border border-border bg-white p-3 text-left transition hover:border-border-strong hover:bg-menu-hover focus-visible:outline focus-visible:outline-2 focus-visible:outline-focus",
                       activeIconId === icon.id && "border-focus bg-selected",
                     )}
+                    data-testid="usage-preview-icon-choice"
                     key={icon.id}
-                    type="button"
+                    role="button"
+                    tabIndex={0}
                     onClick={() => insertIcon(icon)}
+                    onKeyDown={(event) => {
+                      if (event.key === "Enter" || event.key === " ") {
+                        event.preventDefault();
+                        insertIcon(icon);
+                      }
+                    }}
                   >
                     <div className="flex w-full items-center justify-between gap-3">
                       <span className="min-w-0 truncate text-sm font-semibold">
@@ -104,7 +127,27 @@ export function DcinsidePreview({ collection, icons }: DcinsidePreviewProps) {
                         />
                       ))}
                     </div>
-                  </button>
+
+                    {icon.pieces.length > 1 ? (
+                      <div className="flex flex-wrap gap-1">
+                        {icon.pieces.map((piece) => (
+                          <button
+                            aria-label={`${icon.displayName} ${pieceRoleLabel(piece.pieceRole)} 조각 삽입`}
+                            className="rounded border border-border bg-surface px-2 py-1 text-xs font-medium text-foreground hover:bg-menu-hover focus-visible:outline focus-visible:outline-2 focus-visible:outline-focus"
+                            data-testid="usage-preview-piece-choice"
+                            key={piece.id}
+                            type="button"
+                            onClick={(event) => {
+                              event.stopPropagation();
+                              insertPiece(icon, piece);
+                            }}
+                          >
+                            {pieceRoleLabel(piece.pieceRole)}
+                          </button>
+                        ))}
+                      </div>
+                    ) : null}
+                  </div>
                 ))}
               </div>
             ) : (

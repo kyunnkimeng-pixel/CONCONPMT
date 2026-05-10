@@ -32,13 +32,16 @@ export function InlineNameEditor({ value, ariaLabel, onCommit }: InlineNameEdito
       <input
         ref={inputRef}
         aria-label={ariaLabel}
-        className="w-full rounded-md border border-focus bg-white px-2 py-1 text-center text-sm font-semibold text-foreground outline-none"
+        className="w-full select-text rounded-md border border-focus bg-white px-2 py-1 text-center text-sm font-semibold text-foreground outline-none"
         value={draft}
         onChange={(event) => setDraft(event.target.value)}
         onBlur={commit}
         onClick={(event) => event.stopPropagation()}
+        onContextMenu={(event) => event.stopPropagation()}
         onDoubleClick={(event) => event.stopPropagation()}
+        onPointerDown={(event) => event.stopPropagation()}
         onKeyDown={(event) => {
+          event.stopPropagation();
           if (event.key === "Enter") {
             commit();
           }
@@ -61,7 +64,10 @@ export function InlineNameEditor({ value, ariaLabel, onCommit }: InlineNameEdito
         event.stopPropagation();
         setIsEditing(true);
       }}
+      onContextMenu={(event) => event.stopPropagation()}
       onDoubleClick={(event) => event.stopPropagation()}
+      onPointerDown={(event) => event.stopPropagation()}
+      onKeyDown={(event) => event.stopPropagation()}
     >
       {value}
     </button>

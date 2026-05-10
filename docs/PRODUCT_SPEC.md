@@ -149,3 +149,6 @@ Custom profile에서는 별도 규칙을 설정할 수 있다.
 - UI는 Windows 11 Explorer 감성을 따른다: 좌측 navigation, 상단 toolbar, breadcrumb, grid cards, context menu, inline rename.
 - 기능을 숨기지 말고, 비활성화 상태에는 이유를 표시한다.
 - 오류 메시지는 한국어로 명확하게 제공한다.
+## 2026-05-10 QA stabilization policy note
+
+- Latest user direction for export UX: DCInside output count and alt-text validity/duplication should be shown as warnings in sequence filename export, not as hard blockers. Truly mechanical export blockers still block: empty collection, missing source files, unsupported output mechanics, unsafe alt filename mode collisions/empty stems, invalid dimensions where output cannot be produced safely, and encoded file size over the configured hard byte limit.

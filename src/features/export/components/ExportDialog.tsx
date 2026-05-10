@@ -14,6 +14,7 @@ import {
   exportCollection,
   listExportProfiles,
   openExportPath,
+  pickExportDirectory,
   saveExportProfileSettings,
   validateExportCollection,
 } from "@/features/export/api";
@@ -136,6 +137,24 @@ export function ExportDialog({ collection, onClose, onExported }: ExportDialogPr
     setValidation(null);
     setExportResult(null);
     setStatusMessage(null);
+  };
+
+  const handlePickOutputDirectory = async () => {
+    if (!draft) {
+      return;
+    }
+
+    setErrorMessage(null);
+    try {
+      const selectedDirectory = await pickExportDirectory(
+        draft.outputDirectory.trim() ? draft.outputDirectory.trim() : null,
+      );
+      if (selectedDirectory) {
+        updateDraft({ outputDirectory: selectedDirectory });
+      }
+    } catch (error) {
+      setErrorMessage(getCommandErrorMessage(error));
+    }
   };
 
   const handleSave = async () => {
@@ -321,11 +340,20 @@ export function ExportDialog({ collection, onClose, onExported }: ExportDialogPr
                     <input
                       className="rounded-md border border-border bg-white px-3 py-2 text-sm text-foreground focus-visible:outline focus-visible:outline-2 focus-visible:outline-focus"
                       placeholder="기본 exports 폴더"
+                      readOnly
                       value={draft.outputDirectory}
-                      onChange={(event) =>
-                        updateDraft({ outputDirectory: event.currentTarget.value })
-                      }
                     />
+                    <button
+                      className="mt-2 inline-flex items-center gap-2 rounded-md border border-border bg-white px-3 py-2 text-sm font-medium text-foreground hover:bg-menu-hover focus-visible:outline focus-visible:outline-2 focus-visible:outline-focus disabled:cursor-not-allowed disabled:text-muted"
+                      disabled={isBusy}
+                      type="button"
+                      onClick={() => {
+                        void handlePickOutputDirectory();
+                      }}
+                    >
+                      <FolderOpen aria-hidden="true" />
+                      폴더 선택
+                    </button>
                   </label>
                 </section>
 
@@ -337,7 +365,7 @@ export function ExportDialog({ collection, onClose, onExported }: ExportDialogPr
                   />
                   <CheckboxField
                     checked={draft.strictWarnings}
-                    label="경고도 차단"
+                    label="경고시 내보내기 차단"
                     onChange={(strictWarnings) => updateDraft({ strictWarnings })}
                   />
                   <CheckboxField
@@ -531,15 +559,37 @@ function NumberField({
   value: number;
   onChange: (value: number) => void;
 }) {
+  const [draft, setDraft] = useState(String(value));
+
+  useEffect(() => {
+    setDraft(String(value));
+  }, [value]);
+
   return (
     <label className="flex flex-col gap-1 text-xs font-medium text-muted">
       {label}
       <input
-        className="min-w-0 rounded-md border border-border bg-white px-3 py-2 text-sm text-foreground focus-visible:outline focus-visible:outline-2 focus-visible:outline-focus"
+        className="min-w-0 select-text rounded-md border border-border bg-white px-3 py-2 text-sm text-foreground focus-visible:outline focus-visible:outline-2 focus-visible:outline-focus"
         min={min}
         type="number"
-        value={value}
-        onChange={(event) => onChange(event.currentTarget.valueAsNumber)}
+        value={draft}
+        onBlur={() => {
+          const parsed = Number.parseInt(draft, 10);
+          if (!Number.isFinite(parsed) || parsed < min) {
+            setDraft(String(value));
+          }
+        }}
+        onChange={(event) => {
+          const nextValue = event.currentTarget.value;
+          setDraft(nextValue);
+          if (nextValue.trim() === "") {
+            return;
+          }
+          const parsed = Number.parseInt(nextValue, 10);
+          if (Number.isFinite(parsed) && parsed >= min) {
+            onChange(parsed);
+          }
+        }}
       />
     </label>
   );

@@ -40,3 +40,9 @@ export function exportCollection(collectionId: string, payload: ExportRequestPay
 export function openExportPath(path: string) {
   return invokeCommand<void>("open_export_path", { path });
 }
+
+export function pickExportDirectory(initialDirectory: string | null) {
+  return invokeCommand<string | null>("pick_export_directory", {
+    initialDirectory,
+  });
+}

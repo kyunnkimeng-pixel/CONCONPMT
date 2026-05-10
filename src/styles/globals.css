@@ -43,6 +43,11 @@ body {
   min-height: 100vh;
 }
 
+img {
+  -webkit-user-drag: none;
+  user-select: none;
+}
+
 #root {
   min-height: 100vh;
 }

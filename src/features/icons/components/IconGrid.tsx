@@ -38,11 +38,16 @@ interface IconGridProps {
   validateAltDraft: (pieceId: string, value: string) => string | null;
   validateCurrentAlt: (piece: IconPieceSummary) => string | null;
   onAltCommit: (pieceId: string, value: string) => Promise<boolean>;
+  onBatchAltCommit: (iconIds: string[], value: string) => Promise<boolean>;
   onDeleteIcons: (iconIds: string[]) => Promise<boolean>;
   onDuplicateIcon: (iconId: string) => Promise<void>;
   onEditIcon: (iconId: string) => void;
+  onRenameIcon: (iconId: string, displayName: string) => Promise<boolean>;
   onReorderIcons: (orderedIconIds: string[]) => Promise<void>;
+  onRevealExportResult: (iconId: string) => Promise<void>;
+  onRevealOriginal: (iconId: string) => Promise<void>;
   onSetCover: (iconId: string) => Promise<void>;
+  onSetThumbnailOverride: (iconId: string) => void;
 }
 
 export function IconGrid({
@@ -53,11 +58,16 @@ export function IconGrid({
   validateAltDraft,
   validateCurrentAlt,
   onAltCommit,
+  onBatchAltCommit,
   onDeleteIcons,
   onDuplicateIcon,
   onEditIcon,
+  onRenameIcon,
   onReorderIcons,
+  onRevealExportResult,
+  onRevealOriginal,
   onSetCover,
+  onSetThumbnailOverride,
 }: IconGridProps) {
   const gridRef = useRef<HTMLDivElement>(null);
   const orderedIds = useMemo(() => icons.map((icon) => icon.id), [icons]);
@@ -82,7 +92,11 @@ export function IconGrid({
       coordinateGetter: sortableKeyboardCoordinates,
     }),
   );
-  const minTileWidth = Math.max(148, collection.previewWidth + 48);
+  const hasHorizontalDouble = icons.some((icon) => icon.shape === "horizontal_double");
+  const minTileWidth = Math.max(
+    148,
+    (hasHorizontalDouble ? collection.previewWidth * 2 : collection.previewWidth) + 48,
+  );
 
   useEffect(() => {
     setSelection((current) => {
@@ -135,6 +149,22 @@ export function IconGrid({
     }
   };
 
+  const handleBatchAltEdit = async (iconIds: string[]) => {
+    if (iconIds.length === 0) {
+      return;
+    }
+
+    const nextAlt = window.prompt(
+      `${iconIds.length}개 아이콘의 모든 alt 값을 변경합니다. 빈칸도 저장됩니다.`,
+      "",
+    );
+    if (nextAlt === null) {
+      return;
+    }
+
+    await onBatchAltCommit(iconIds, nextAlt);
+  };
+
   const handleDragEnd = (event: DragEndEvent) => {
     const { active, over } = event;
     if (!over || active.id === over.id) {
@@ -172,7 +202,7 @@ export function IconGrid({
           <div
             ref={gridRef}
             aria-label={`${collection.name} 아이콘`}
-            className="grid gap-4 focus:outline-none"
+            className="grid select-none gap-4 focus:outline-none"
             role="listbox"
             style={{
               gridTemplateColumns: `repeat(auto-fill, minmax(${minTileWidth}px, 1fr))`,
@@ -205,6 +235,7 @@ export function IconGrid({
                 onAltCommit={onAltCommit}
                 onContextMenu={handleContextMenu}
                 onOpenEditor={onEditIcon}
+                onRename={onRenameIcon}
                 onSelect={handleSelect}
               />
             ))}
@@ -215,6 +246,7 @@ export function IconGrid({
       {contextMenu && targetIcon ? (
         <IconContextMenu
           isCover={collection.coverIconId === targetIcon.id}
+          hasExportResult={targetIcon.pieces.some((piece) => piece.lastExportUrl)}
           selectionCount={contextSelectionIds.length}
           x={contextMenu.x}
           y={contextMenu.y}
@@ -222,13 +254,29 @@ export function IconGrid({
           onDelete={() => {
             void handleDelete(contextSelectionIds);
           }}
+          onBatchAltEdit={() => {
+            void handleBatchAltEdit(contextSelectionIds);
+          }}
           onDuplicate={() => {
             void onDuplicateIcon(targetIcon.id);
           }}
           onEdit={() => onEditIcon(targetIcon.id)}
+          onRevealExportResult={() => {
+            void onRevealExportResult(targetIcon.id);
+          }}
+          onRevealOriginal={() => {
+            void onRevealOriginal(targetIcon.id);
+          }}
+          onRename={() => {
+            const nextName = window.prompt("아이콘 이름", targetIcon.displayName);
+            if (nextName !== null) {
+              void onRenameIcon(targetIcon.id, nextName);
+            }
+          }}
           onSetCover={() => {
             void onSetCover(targetIcon.id);
           }}
+          onSetThumbnailOverride={() => onSetThumbnailOverride(targetIcon.id)}
         />
       ) : null}
     </>

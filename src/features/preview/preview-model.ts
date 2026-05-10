@@ -83,6 +83,24 @@ export function appendUsagePreviewIcon(
   ];
 }
 
+export function appendUsagePreviewPiece(
+  currentItems: InsertedPreviewIcon[],
+  icon: UsagePreviewIcon,
+  piece: UsagePreviewPiece,
+  idSuffix = `${Date.now()}`,
+): InsertedPreviewIcon[] {
+  return [
+    ...currentItems,
+    {
+      id: `${piece.id}-${idSuffix}`,
+      sourceIconId: icon.id,
+      displayName: `${icon.displayName} ${pieceRoleLabel(piece.pieceRole)}`,
+      shape: "single",
+      pieces: [piece],
+    },
+  ];
+}
+
 export function hasAnimatedPreview(
   icons: UsagePreviewIcon[],
   insertedItems: InsertedPreviewIcon[] = [],
@@ -94,6 +112,21 @@ export function hasAnimatedPreview(
 
 export function isGifPreviewUrl(url: string | null) {
   return Boolean(url?.match(/\.gif(?:[?#]|$)/i));
+}
+
+export function pieceRoleLabel(pieceRole: IconPieceSummary["pieceRole"]) {
+  switch (pieceRole) {
+    case "left":
+      return "왼쪽";
+    case "right":
+      return "오른쪽";
+    case "top":
+      return "위쪽";
+    case "bottom":
+      return "아래쪽";
+    case "single":
+      return "단일";
+  }
 }
 
 function buildUsagePreviewPiece(
