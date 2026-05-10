@@ -55,7 +55,7 @@ Codex는 파일을 구현하는 동안 이 표를 계속 갱신해야 한다. `S
 | F049 | import original copied into app library | done | `db/repositories/imports.rs` | `cargo test` |
 | F050 | SQLite migrations | done | `src-tauri/migrations/001_app_data.sql` + `db/migrations.rs` | Rust test |
 | F051 | no generated UI-only dead menus | done | implemented import, folder import, cleanup, duplicate, reveal, cover, and settings actions; no `준비 중` app menu remains | review + source search |
-| F052 | UI image generation reference workflow | done | `docs/UI_IMAGE_PROMPT.md` + `docs/UI_TRACE.md` + `docs/ui-references/` | manual |
+| F052 | UI image generation reference workflow | done | local-only UI prompt + `docs/UI_TRACE.md` + `docs/ui-references/` | manual |
 | F053 | 상단 `+` 메뉴: 폴더 가져오기 | done | home/collection folder inputs and dropped folder traversal import sorted jpg/jpeg/png/gif files and skip unsupported files with status | `npm.cmd run test` / `npm.cmd run lint` |
 | F054 | 현재 선택한 모음에 파일 추가 | done | main selected collection import + collection route import | `npm.cmd run lint` |
 | F055 | 가져오기 SHA-256 중복 판정 | done | `db/repositories/imports.rs` reuses `source_files` by hash | `cargo test` |

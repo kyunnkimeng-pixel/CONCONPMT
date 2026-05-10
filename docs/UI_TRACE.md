@@ -87,7 +87,7 @@ omitted visual element must not remove a required feature.
 | F049 | Import entry points plus `commands/import.rs` original-copy behavior | R1, R2 | UI starts import; source preservation is backend behavior. |
 | F050 | No standalone UI; SQLite migrations support all durable UI state | R1-R4 | Required backend foundation, not a menu item. |
 | F051 | This trace plus component review for dead/generated-only menus | R1-R4 | Generated-only controls must be ignored or removed before implementation. |
-| F052 | `docs/UI_IMAGE_PROMPT.md`, `docs/ui-references/`, and this trace | R1-R4 | Stage 06 documentation workflow output. |
+| F052 | local-only UI image prompt, `docs/ui-references/`, and this trace | R1-R4 | Stage 06 documentation workflow output. |
 | F053 | Main `+` menu and collection toolbar action: `폴더 가져오기` | R1 | Folder picker and dropped-folder traversal import valid images in deterministic path order and report skips. |
 | F054 | Collection toolbar `파일 추가` action for current collection | R2 | Must add files to the selected collection, not always create a new one. |
 | F055 | Import result/validation feedback plus `commands/import.rs` hashing | R1, R2 | SHA-256 duplicate handling is backend-led; show clear Korean feedback. |
