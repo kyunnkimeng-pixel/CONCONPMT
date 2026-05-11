@@ -173,3 +173,11 @@ Done when: `F011`, `F012`, `F024`, `F035`, `F053`, `F059`, `F060`,
 4. Confirm GIF, image resize, and rescale pipeline crates are explicitly covered and forbidden optimizer packages remain absent.
 
 Done when: license generation records the manual resolutions, image/GIF/resize coverage is documented, and license guardrail commands pass or mark optional missing tools as skipped.
+
+## Stage 16D - Public user manual and GitHub Pages docs
+1. Add a static HTML manual at `docs/index.html` for GitHub Pages `/docs` publishing.
+2. Capture fresh, wide screenshots from the `디시콘 모음 3` collection so the app toolbar, sidebar, grid, editor, preview, and export workspace are visible without narrow-window layout breakage.
+3. Include enough screenshots to explain selection, alt batch editing, context menus, blank/working icons, single crop box resizing, horizontal double icons, advanced GIF/text editing, usage preview, and export validation.
+4. Update README documentation links and screenshots to point at the new manual assets instead of rejected crop/full-box imagery.
+
+Done when: the manual references only the new `docs/manual-assets/manual-*` screenshots, all linked assets exist, and docs-only checks pass.

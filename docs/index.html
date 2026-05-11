@@ -1,0 +1,865 @@
+<!doctype html>
+<html lang="ko">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>PMTCONCON Studio 사용 설명서</title>
+    <meta
+      name="description"
+      content="PMTCONCON Studio에서 디시콘 모음을 가져오고, 편집하고, 미리보고, 검증한 뒤 내보내는 과정을 스크린샷 중심으로 설명합니다."
+    />
+    <style>
+      :root {
+        color-scheme: light;
+        --bg: #f4f7fb;
+        --surface: #ffffff;
+        --surface-soft: #eef4fb;
+        --text: #111827;
+        --muted: #526178;
+        --line: #d5deec;
+        --line-strong: #b7c4d8;
+        --blue: #2563eb;
+        --blue-dark: #1748b5;
+        --teal: #007f89;
+        --green: #16805c;
+        --amber: #a96618;
+        --red: #c6352b;
+        --shadow: 0 18px 46px rgba(20, 36, 61, 0.13);
+        --radius: 8px;
+        --content: 1180px;
+      }
+
+      * {
+        box-sizing: border-box;
+      }
+
+      html {
+        scroll-behavior: smooth;
+      }
+
+      body {
+        margin: 0;
+        background: var(--bg);
+        color: var(--text);
+        font-family:
+          "Segoe UI",
+          "Noto Sans KR",
+          "Apple SD Gothic Neo",
+          system-ui,
+          sans-serif;
+        font-size: 16px;
+        line-height: 1.7;
+      }
+
+      a {
+        color: var(--blue);
+        text-decoration: none;
+      }
+
+      a:hover {
+        text-decoration: underline;
+      }
+
+      img {
+        display: block;
+        max-width: 100%;
+        height: auto;
+      }
+
+      code {
+        border: 1px solid var(--line);
+        border-radius: 5px;
+        background: #f8fafc;
+        padding: 0.08rem 0.32rem;
+        font-family: "Cascadia Code", "Consolas", monospace;
+        font-size: 0.92em;
+      }
+
+      .topbar {
+        position: sticky;
+        top: 0;
+        z-index: 20;
+        border-bottom: 1px solid rgba(183, 196, 216, 0.76);
+        background: rgba(255, 255, 255, 0.94);
+        backdrop-filter: blur(14px);
+      }
+
+      .topbar-inner {
+        display: flex;
+        max-width: var(--content);
+        margin: 0 auto;
+        align-items: center;
+        justify-content: space-between;
+        gap: 1rem;
+        padding: 0.82rem 1.25rem;
+      }
+
+      .brand {
+        display: flex;
+        min-width: 0;
+        align-items: center;
+        gap: 0.72rem;
+        color: var(--text);
+        font-weight: 900;
+      }
+
+      .brand-mark {
+        display: inline-flex;
+        width: 34px;
+        height: 34px;
+        flex: 0 0 auto;
+        align-items: center;
+        justify-content: center;
+        border-radius: 8px;
+        background: var(--blue);
+        color: #fff;
+        font-weight: 900;
+      }
+
+      .nav {
+        display: flex;
+        flex-wrap: wrap;
+        justify-content: flex-end;
+        gap: 0.72rem;
+        font-size: 0.92rem;
+        font-weight: 800;
+      }
+
+      .nav a {
+        color: #334155;
+      }
+
+      .hero {
+        border-bottom: 1px solid var(--line);
+        background: linear-gradient(180deg, #fff 0%, #f7faff 100%);
+      }
+
+      .hero-inner {
+        display: grid;
+        max-width: var(--content);
+        margin: 0 auto;
+        grid-template-columns: minmax(0, 0.88fr) minmax(380px, 1.12fr);
+        gap: 2rem;
+        padding: 4.1rem 1.25rem 2.4rem;
+        align-items: center;
+      }
+
+      .eyebrow {
+        margin: 0 0 0.78rem;
+        color: var(--blue-dark);
+        font-size: 0.88rem;
+        font-weight: 900;
+        letter-spacing: 0;
+      }
+
+      h1 {
+        margin: 0;
+        max-width: 720px;
+        font-size: clamp(2.15rem, 4vw, 4rem);
+        line-height: 1.12;
+        font-weight: 950;
+      }
+
+      .lead {
+        max-width: 680px;
+        margin: 1.1rem 0 0;
+        color: var(--muted);
+        font-size: 1.06rem;
+      }
+
+      .hero-actions,
+      .button-row {
+        display: flex;
+        flex-wrap: wrap;
+        gap: 0.68rem;
+        margin-top: 1.45rem;
+      }
+
+      .button {
+        display: inline-flex;
+        min-height: 42px;
+        align-items: center;
+        justify-content: center;
+        border: 1px solid var(--line-strong);
+        border-radius: 7px;
+        background: #fff;
+        color: var(--text);
+        padding: 0.58rem 0.9rem;
+        font-weight: 850;
+      }
+
+      .button.primary {
+        border-color: var(--blue);
+        background: var(--blue);
+        color: #fff;
+      }
+
+      .shot,
+      .hero-shot {
+        overflow: hidden;
+        border: 1px solid var(--line-strong);
+        border-radius: var(--radius);
+        background: var(--surface);
+        box-shadow: var(--shadow);
+      }
+
+      .hero-shot img,
+      .shot img {
+        width: 100%;
+      }
+
+      .page {
+        max-width: var(--content);
+        margin: 0 auto;
+        padding: 2.6rem 1.25rem 4rem;
+      }
+
+      .section {
+        margin-top: 3.3rem;
+      }
+
+      .section:first-child {
+        margin-top: 0;
+      }
+
+      .section h2 {
+        margin: 0 0 0.72rem;
+        font-size: clamp(1.55rem, 2.3vw, 2.18rem);
+        line-height: 1.25;
+      }
+
+      .section h3 {
+        margin: 1.7rem 0 0.58rem;
+        font-size: 1.2rem;
+        line-height: 1.35;
+      }
+
+      .section p {
+        margin: 0.58rem 0;
+        color: var(--muted);
+      }
+
+      .toc,
+      .panel,
+      .callout {
+        border: 1px solid var(--line);
+        border-radius: var(--radius);
+        background: var(--surface);
+      }
+
+      .toc {
+        display: grid;
+        grid-template-columns: repeat(4, minmax(0, 1fr));
+        gap: 0.72rem;
+        padding: 1rem;
+      }
+
+      .toc a {
+        display: block;
+        border: 1px solid var(--line);
+        border-radius: 7px;
+        background: #f8fafc;
+        padding: 0.72rem 0.78rem;
+        color: var(--text);
+        font-weight: 850;
+      }
+
+      .grid-2 {
+        display: grid;
+        grid-template-columns: repeat(2, minmax(0, 1fr));
+        gap: 1rem;
+        align-items: start;
+      }
+
+      .grid-3 {
+        display: grid;
+        grid-template-columns: repeat(3, minmax(0, 1fr));
+        gap: 1rem;
+      }
+
+      .panel {
+        padding: 1rem;
+      }
+
+      .panel strong {
+        color: var(--text);
+      }
+
+      .steps,
+      .checks {
+        margin: 0.8rem 0 0;
+        padding-left: 1.25rem;
+        color: var(--muted);
+      }
+
+      .steps li,
+      .checks li {
+        margin: 0.34rem 0;
+      }
+
+      .callout {
+        margin: 1rem 0;
+        padding: 0.95rem 1rem;
+        background: var(--surface-soft);
+      }
+
+      .callout strong {
+        color: var(--text);
+      }
+
+      .callout.warning {
+        border-color: #f0c878;
+        background: #fff8e8;
+      }
+
+      .callout.good {
+        border-color: #9bd5c3;
+        background: #effbf6;
+      }
+
+      figure {
+        margin: 1.15rem 0 0;
+      }
+
+      figcaption {
+        border-top: 1px solid var(--line);
+        background: #f8fafc;
+        color: var(--muted);
+        font-size: 0.92rem;
+        padding: 0.66rem 0.82rem;
+      }
+
+      .tagline {
+        display: flex;
+        flex-wrap: wrap;
+        gap: 0.5rem;
+        margin-top: 0.95rem;
+      }
+
+      .tag {
+        border: 1px solid var(--line);
+        border-radius: 999px;
+        background: #fff;
+        color: #334155;
+        padding: 0.26rem 0.62rem;
+        font-size: 0.84rem;
+        font-weight: 850;
+      }
+
+      .table-wrap {
+        overflow-x: auto;
+        border: 1px solid var(--line);
+        border-radius: var(--radius);
+        background: #fff;
+      }
+
+      table {
+        width: 100%;
+        min-width: 760px;
+        border-collapse: collapse;
+        font-size: 0.95rem;
+      }
+
+      th,
+      td {
+        border-bottom: 1px solid var(--line);
+        padding: 0.72rem 0.85rem;
+        text-align: left;
+        vertical-align: top;
+      }
+
+      th {
+        background: #f8fafc;
+        color: #334155;
+        font-weight: 900;
+      }
+
+      tr:last-child td {
+        border-bottom: 0;
+      }
+
+      .footer {
+        border-top: 1px solid var(--line);
+        background: #fff;
+        color: var(--muted);
+      }
+
+      .footer-inner {
+        max-width: var(--content);
+        margin: 0 auto;
+        padding: 1.5rem 1.25rem;
+      }
+
+      @media (max-width: 940px) {
+        .hero-inner,
+        .grid-2,
+        .grid-3 {
+          grid-template-columns: 1fr;
+        }
+
+        .toc {
+          grid-template-columns: repeat(2, minmax(0, 1fr));
+        }
+
+        .topbar-inner {
+          align-items: flex-start;
+          flex-direction: column;
+        }
+      }
+
+      @media (max-width: 620px) {
+        body {
+          font-size: 15px;
+        }
+
+        .hero-inner {
+          padding-top: 2.6rem;
+        }
+
+        .toc {
+          grid-template-columns: 1fr;
+        }
+      }
+    </style>
+  </head>
+  <body>
+    <header class="topbar">
+      <div class="topbar-inner">
+        <a class="brand" href="#top" aria-label="PMTCONCON Studio 사용 설명서 처음으로">
+          <span class="brand-mark">P</span>
+          <span>PMTCONCON Studio</span>
+        </a>
+        <nav class="nav" aria-label="문서 목차">
+          <a href="#overview">화면 구성</a>
+          <a href="#organize">정리 작업</a>
+          <a href="#edit">편집</a>
+          <a href="#preview">미리보기</a>
+          <a href="#export">내보내기</a>
+          <a href="#pages">GitHub Pages</a>
+        </nav>
+      </div>
+    </header>
+
+    <main id="top">
+      <section class="hero">
+        <div class="hero-inner">
+          <div>
+            <p class="eyebrow">디시콘 제작 작업공간 안내서</p>
+            <h1>PMTCONCON Studio 사용 설명서</h1>
+            <p class="lead">
+              이 문서는 <strong>디시콘 모음 3</strong>을 기준으로 캡처한 화면을 따라가며,
+              가져오기, 선택, alt 정리, 빈 디시콘 추가, crop 편집, 가로 2칸 적용,
+              사용 미리보기, 내보내기 검증까지 실제 작업 흐름을 설명합니다.
+            </p>
+            <div class="tagline" aria-label="문서 특징">
+              <span class="tag">새로 촬영한 스크린샷 11장</span>
+              <span class="tag">단일콘 crop 박스 축소 예시 포함</span>
+              <span class="tag">가로 2칸 실제 적용 화면 포함</span>
+              <span class="tag">GitHub Pages 배포용 HTML</span>
+            </div>
+            <div class="hero-actions">
+              <a class="button primary" href="#quick-start">바로 시작하기</a>
+              <a class="button" href="#capture-note">스크린샷 기준 보기</a>
+            </div>
+          </div>
+          <figure class="hero-shot">
+            <img
+              src="manual-assets/manual-01-explorer-wide-disicon-3.png"
+              alt="디시콘 모음 3 탐색 화면 전체. 상단 메뉴와 왼쪽 사이드바, 아이콘 격자가 함께 보인다."
+            />
+            <figcaption>넓은 창에서 새로 촬영한 `디시콘 모음 3` 기본 탐색 화면입니다.</figcaption>
+          </figure>
+        </div>
+      </section>
+
+      <div class="page">
+        <section id="quick-start" class="section">
+          <h2>빠른 작업 순서</h2>
+          <p>
+            처음 사용하는 경우 아래 순서대로 따라가면 한 모음을 가져와 정리하고, crop을 조정한 뒤,
+            DCInside 업로드용 파일과 <code>alts.txt</code>를 확인할 수 있습니다.
+          </p>
+          <ol class="steps">
+            <li>홈에서 모음을 만들거나 기존 모음인 <strong>디시콘 모음 3</strong>을 엽니다.</li>
+            <li><strong>이미지 추가</strong> 또는 <strong>폴더 추가</strong>로 파일을 가져옵니다.</li>
+            <li>아이콘을 Ctrl 또는 Shift로 선택하고, 우클릭 메뉴나 alt 일괄 변경으로 이름과 alt를 정리합니다.</li>
+            <li>필요하면 <strong>빈 디시콘</strong>을 추가해 아직 준비되지 않은 칸을 작업중 상태로 표시합니다.</li>
+            <li>아이콘 편집 패널에서 단일, 가로 2칸, 세로 2칸 모양과 crop 박스를 조정합니다.</li>
+            <li><strong>사용 미리보기</strong>에서 댓글 화면에 실제 호출 형태로 삽입해 봅니다.</li>
+            <li><strong>내보내기</strong>에서 DCInside 규칙, 파일명, alt, 용량, 경고를 확인한 뒤 내보냅니다.</li>
+          </ol>
+        </section>
+
+        <section class="section">
+          <h2>목차</h2>
+          <div class="toc">
+            <a href="#overview">1. 화면 구성과 탐색</a>
+            <a href="#organize">2. 선택, 메뉴, alt 정리</a>
+            <a href="#placeholder">3. 빈 디시콘과 작업중 상태</a>
+            <a href="#edit">4. 단일콘 crop 편집</a>
+            <a href="#horizontal">5. 가로 2칸 디시콘</a>
+            <a href="#advanced">6. GIF와 텍스트 고급 편집</a>
+            <a href="#preview">7. 사용 미리보기</a>
+            <a href="#export">8. 내보내기 작업공간</a>
+          </div>
+        </section>
+
+        <section id="capture-note" class="section">
+          <h2>스크린샷 기준</h2>
+          <div class="callout good">
+            <strong>이 설명서의 본문 이미지는 모두 새로 촬영한 화면입니다.</strong>
+            프로그램 창을 약 1800×1050 크기로 넓게 열어 상단 메뉴, 왼쪽 탐색, 편집 패널이 무너지지 않도록 했고,
+            본문 캡처는 <strong>디시콘 모음 3</strong> 화면에서 진행했습니다.
+          </div>
+          <p>
+            특히 단일콘 crop 예시는 crop 박스가 이미지 전체를 차지하지 않도록 셀 크기를 120×120으로 낮춘 상태에서 촬영했습니다.
+            따라서 crop 박스 크기 조절이 가능하다는 점을 화면에서 바로 확인할 수 있습니다.
+          </p>
+        </section>
+
+        <section id="overview" class="section">
+          <h2>1. 화면 구성과 탐색</h2>
+          <p>
+            PMTCONCON Studio는 파일 탐색기처럼 모음을 열고, 아이콘을 격자로 보고, 선택한 항목을 편집하는 구조입니다.
+            상단에는 탐색, 썸네일만, 사용 미리보기, 내보내기, 정렬, 설정, 빈 디시콘, 대표 이미지, 폴더 추가, 이미지 추가가 배치됩니다.
+          </p>
+          <figure class="shot">
+            <img
+              src="manual-assets/manual-01-explorer-wide-disicon-3.png"
+              alt="디시콘 모음 3의 전체 탐색 화면. 상단 메뉴가 모두 보이고 아이콘 격자가 넓게 표시된다."
+            />
+            <figcaption>
+              전체 화면을 보면 현재 모음 이름, 항목 수, 작업 버튼, 사이드바, 아이콘 카드가 한 번에 보입니다.
+            </figcaption>
+          </figure>
+
+          <div class="grid-3">
+            <div class="panel">
+              <strong>상단 작업 버튼</strong>
+              <p>가져오기, 빈 디시콘 추가, 대표 이미지 설정, 내보내기, 사용 미리보기로 바로 이동합니다.</p>
+            </div>
+            <div class="panel">
+              <strong>아이콘 격자</strong>
+              <p>각 카드는 썸네일, 표시 이름, alt 값을 보여주며 더블클릭하면 편집 패널이 열립니다.</p>
+            </div>
+            <div class="panel">
+              <strong>사이드바</strong>
+              <p>홈과 모음 목록을 전환합니다. 현재 문서의 설명 화면은 모두 `디시콘 모음 3`에서 촬영했습니다.</p>
+            </div>
+          </div>
+        </section>
+
+        <section id="organize" class="section">
+          <h2>2. 선택, 메뉴, alt 정리</h2>
+          <p>
+            Ctrl 클릭으로 여러 아이콘을 하나씩 추가 선택하고, Shift 클릭으로 범위를 선택합니다.
+            선택 후 우클릭하면 선택 개수에 맞는 메뉴가 열리며, 여러 alt 값을 한 번에 넣을 수 있습니다.
+          </p>
+
+          <figure class="shot">
+            <img
+              src="manual-assets/manual-02-batch-alt-dialog-disicon-3.png"
+              alt="디시콘 모음 3에서 세 아이콘을 선택하고 alt 값을 일괄 변경하는 대화상자."
+            />
+            <figcaption>
+              쉼표로 alt를 입력하면 선택된 아이콘에 순서대로 적용됩니다. 입력 개수가 부족하면 남은 값은 자동 번호로 채워집니다.
+            </figcaption>
+          </figure>
+
+          <figure class="shot">
+            <img
+              src="manual-assets/manual-03-context-menu-disicon-3.png"
+              alt="디시콘 모음 3 아이콘 우클릭 메뉴. 편집, 이름 변경, alt 일괄 변경, 썸네일 바꾸기, 작업중, 완료, 복제, 대표 이미지, 원본 위치, 삭제 메뉴가 보인다."
+            />
+            <figcaption>
+              우클릭 메뉴에는 구현된 기능만 표시됩니다. 여러 개를 선택하면 `선택 3개 alt 일괄 변경`, `선택 3개 작업중`,
+              `선택 3개 삭제`처럼 메뉴 문구가 선택 범위에 맞게 바뀝니다.
+            </figcaption>
+          </figure>
+
+          <div class="table-wrap">
+            <table>
+              <thead>
+                <tr>
+                  <th>메뉴</th>
+                  <th>용도</th>
+                  <th>확인할 점</th>
+                </tr>
+              </thead>
+              <tbody>
+                <tr>
+                  <td>편집</td>
+                  <td>오른쪽 편집 패널을 열어 crop, 모양, 셀 크기, GIF 반복을 조정합니다.</td>
+                  <td>적용 전까지 원본 파일은 보존됩니다.</td>
+                </tr>
+                <tr>
+                  <td>alt 일괄 변경</td>
+                  <td>여러 아이콘의 alt를 순서대로 입력합니다.</td>
+                  <td>DCInside 기준에서는 1~3글자, 중복 없음, 허용 특수문자만 사용해야 합니다.</td>
+                </tr>
+                <tr>
+                  <td>작업중 / 완료</td>
+                  <td>아직 대체 이미지나 alt가 준비되지 않은 아이콘을 표시합니다.</td>
+                  <td>내보내기 전에는 작업중 항목을 다시 확인하는 것이 좋습니다.</td>
+                </tr>
+                <tr>
+                  <td>대표 이미지로 설정</td>
+                  <td>모음 카드의 표지 이미지를 바꿉니다.</td>
+                  <td>첫 imported 아이콘이 기본 표지이며, 나중에 원하는 아이콘으로 바꿀 수 있습니다.</td>
+                </tr>
+              </tbody>
+            </table>
+          </div>
+        </section>
+
+        <section id="placeholder" class="section">
+          <h2>3. 빈 디시콘과 작업중 디시콘</h2>
+          <p>
+            <strong>빈 디시콘</strong>은 아직 이미지가 없지만 순서와 alt 자리를 먼저 잡아야 할 때 사용합니다.
+            추가한 빈 디시콘은 `작업중` 배지를 달고 격자에 들어가며, alt가 비어 있거나 규칙에 맞지 않으면 카드 아래에 오류가 표시됩니다.
+          </p>
+          <figure class="shot">
+            <img
+              src="manual-assets/manual-04-placeholder-working-disicon-3.png"
+              alt="디시콘 모음 3에서 설명서 빈 디시콘이 작업중 상태로 추가된 화면."
+            />
+            <figcaption>
+              새로 추가한 `설명서 빈 디시콘`은 작업중 상태로 보이며, alt 입력이 필요한 상태가 카드에서 바로 드러납니다.
+            </figcaption>
+          </figure>
+
+          <div class="callout warning">
+            <strong>사용 팁:</strong> 빈 디시콘은 제작 중인 칸을 미리 배치할 때 편합니다.
+            이후 우클릭 메뉴의 이미지 대체하기나 편집 흐름으로 실제 이미지를 연결하고 완료 상태로 바꾸면 됩니다.
+          </div>
+        </section>
+
+        <section id="edit" class="section">
+          <h2>4. 단일콘 crop 편집</h2>
+          <p>
+            아이콘을 더블클릭하면 오른쪽에 <strong>아이콘 편집</strong> 패널이 열립니다.
+            단일콘은 한 개의 출력 파일을 만들며, 셀 크기와 crop 박스 크기를 조정해 원본의 일부만 선택할 수 있습니다.
+          </p>
+          <figure class="shot">
+            <img
+              src="manual-assets/manual-05-single-crop-resized-disicon-3.png"
+              alt="디시콘 모음 3의 단일콘 편집 화면. 셀 크기를 120×120으로 낮춰 crop 박스가 원본 이미지의 일부 영역만 잡고 있다."
+            />
+            <figcaption>
+              단일콘 crop 예시입니다. 셀 크기를 120×120으로 조정해 crop 박스가 원본 이미지 전체가 아니라 부분 영역만 선택하도록 새로 촬영했습니다.
+            </figcaption>
+          </figure>
+
+          <div class="grid-2">
+            <div class="panel">
+              <strong>자유 모드</strong>
+              <p>crop 박스의 위치와 크기를 직접 조절합니다. 모양이 단일이면 1:1 비율, 가로 2칸이면 2:1 비율, 세로 2칸이면 1:2 비율을 유지합니다.</p>
+            </div>
+            <div class="panel">
+              <strong>고정 모드</strong>
+              <p>선택한 셀 크기에 맞춰 crop 박스 크기를 고정하고, 위치만 움직입니다. 정렬 버튼으로 모서리와 중앙에 빠르게 배치할 수 있습니다.</p>
+            </div>
+          </div>
+
+          <ol class="steps">
+            <li>아이콘을 더블클릭해 편집 패널을 엽니다.</li>
+            <li>모양에서 <strong>단일</strong>을 선택합니다.</li>
+            <li>셀 크기 입력칸에서 너비와 높이를 조정합니다. 기본값은 DCInside 기준 200×200입니다.</li>
+            <li>crop 박스를 움직이거나 크기 조절 핸들을 드래그합니다.</li>
+            <li><strong>적용</strong>을 누르면 preview와 export 후보가 갱신됩니다.</li>
+          </ol>
+        </section>
+
+        <section id="horizontal" class="section">
+          <h2>5. 가로 2칸 디시콘</h2>
+          <p>
+            가로 2칸은 하나의 아이콘이 좌우 두 조각으로 나뉘는 형태입니다.
+            crop viewport는 셀 너비의 2배와 셀 높이로 잡히며, 내보내기에서는 왼쪽 조각과 오른쪽 조각이 별도 파일로 생성됩니다.
+          </p>
+          <figure class="shot">
+            <img
+              src="manual-assets/manual-06-horizontal-double-crop-disicon-3.png"
+              alt="디시콘 모음 3의 가로 2칸 crop 편집 화면. crop 박스 안에 좌우 분할선이 보인다."
+            />
+            <figcaption>
+              `가로 2칸`을 선택하면 crop 박스 안에 가운데 분할선이 표시됩니다. 이 선을 기준으로 왼쪽과 오른쪽 export 조각이 나뉩니다.
+            </figcaption>
+          </figure>
+
+          <figure class="shot">
+            <img
+              src="manual-assets/manual-07-horizontal-applied-grid-disicon-3.png"
+              alt="디시콘 모음 3에서 가로 2칸 설정을 적용 중인 화면."
+            />
+            <figcaption>
+              `적용`을 누르면 해당 아이콘의 shape, preview, export 후보가 갱신됩니다. 처리가 끝난 뒤 실제 사용 화면에서는 좌우 조각을 버튼으로 개별 호출할 수 있습니다.
+            </figcaption>
+          </figure>
+
+          <div class="callout">
+            <strong>가로 2칸 export 의미:</strong> 셀 크기가 200×200이면 crop 영역은 400×200으로 처리됩니다.
+            export 결과는 `왼쪽 200×200`, `오른쪽 200×200` 두 파일이며, 순서와 alt도 두 piece 기준으로 검증됩니다.
+          </div>
+        </section>
+
+        <section id="advanced" class="section">
+          <h2>6. GIF와 텍스트 고급 편집</h2>
+          <p>
+            고급 편집에서는 GIF 재생 FPS, 색상 수, 실제 export 후보 생성, 텍스트 추가, 글자색과 외곽선, 폰트 파일을 다룹니다.
+            GIF는 preview와 export에서 애니메이션을 유지해야 하므로, 반복 방식과 frame 처리 결과를 확인하는 것이 중요합니다.
+          </p>
+          <figure class="shot">
+            <img
+              src="manual-assets/manual-08-advanced-gif-text-disicon-3.png"
+              alt="디시콘 모음 3의 고급 편집 화면. GIF 재생 FPS, 최대 색상 수, 텍스트 추가, 글자색과 외곽선 설정이 보인다."
+            />
+            <figcaption>
+              고급 편집은 용량 추정, GIF 옵션, 텍스트 오버레이를 한 화면에서 확인하는 작업 패널입니다.
+            </figcaption>
+          </figure>
+
+          <div class="grid-3">
+            <div class="panel">
+              <strong>GIF 재생 FPS</strong>
+              <p>원본 frame 간격을 유지하거나 지정 FPS 기준으로 다시 인코딩할 수 있습니다.</p>
+            </div>
+            <div class="panel">
+              <strong>최대 색상 수</strong>
+              <p>GIF 용량을 줄여야 할 때 색상 수를 낮춰 export 후보를 다시 만듭니다.</p>
+            </div>
+            <div class="panel">
+              <strong>텍스트 추가</strong>
+              <p>문구, 크기, 위치, 글자색, 외곽선색, 외곽선 두께를 조정해 이미지 위에 자막을 얹습니다.</p>
+            </div>
+          </div>
+        </section>
+
+        <section id="preview" class="section">
+          <h2>7. 사용 미리보기</h2>
+          <p>
+            <strong>사용 미리보기</strong>는 실제 DCInside 댓글 화면에 가까운 형태로 아이콘을 호출해 보는 공간입니다.
+            가로 2칸 아이콘은 팔레트에서 한 항목으로 보이지만, 왼쪽과 오른쪽 piece를 따로 삽입할 수 있습니다.
+          </p>
+          <figure class="shot">
+            <img
+              src="manual-assets/manual-09-usage-preview-horizontal-disicon-3.png"
+              alt="디시콘 모음 3 사용 미리보기 화면. 가로 2칸 아이콘이 팔레트와 댓글 미리보기 영역에 삽입되어 있다."
+            />
+            <figcaption>
+              가로 2칸 적용 결과가 사용 미리보기에서 좌우 조각으로 표시됩니다. 댓글 미리보기 영역에서 실제 호출 순서를 확인할 수 있습니다.
+            </figcaption>
+          </figure>
+
+          <ol class="steps">
+            <li>상단의 <strong>사용 미리보기</strong>를 누릅니다.</li>
+            <li>왼쪽 아이콘 팔레트에서 원하는 아이콘을 찾습니다.</li>
+            <li>단일콘은 아이콘을 클릭하고, 가로 2칸은 왼쪽 또는 오른쪽 piece 버튼을 선택합니다.</li>
+            <li>오른쪽 댓글 미리보기에서 크기, 순서, alt 표시를 확인합니다.</li>
+          </ol>
+        </section>
+
+        <section id="export" class="section">
+          <h2>8. 내보내기 작업공간</h2>
+          <p>
+            내보내기 작업공간은 현재 모음과 export 결과를 나란히 보여줍니다.
+            DCInside profile 기준으로 출력 수, 파일 형식, 셀 크기, 용량 제한, alt 중복, alt 길이와 허용 문자를 검사합니다.
+          </p>
+          <figure class="shot">
+            <img
+              src="manual-assets/manual-10-export-workspace-disicon-3.png"
+              alt="디시콘 모음 3 내보내기 작업공간. 설정, 검증 요약, 현재 디시콘, 내보내기 결과, 선택 항목 패널이 보인다."
+            />
+            <figcaption>
+              상단에서 profile, 출력 폴더, 파일명 방식, 형식, 리사이즈 방식, alts.txt 생성 여부를 설정합니다.
+              가운데 표는 각 export 후보의 상태와 경고를 보여줍니다.
+            </figcaption>
+          </figure>
+
+          <figure class="shot">
+            <img
+              src="manual-assets/manual-11-export-selection-disicon-3.png"
+              alt="디시콘 모음 3 내보내기 작업공간에서 여러 export 후보가 체크된 화면."
+            />
+            <figcaption>
+              각 export 후보를 포함하거나 제외할 수 있고, 선택 항목 패널에서 이미지, 파일명, alt, 상태, 경고를 확인한 뒤 편집기로 돌아갈 수 있습니다.
+            </figcaption>
+          </figure>
+
+          <div class="table-wrap">
+            <table>
+              <thead>
+                <tr>
+                  <th>검증 항목</th>
+                  <th>DCInside 기본 기준</th>
+                  <th>작업공간에서 보는 위치</th>
+                </tr>
+              </thead>
+              <tbody>
+                <tr>
+                  <td>출력 개수</td>
+                  <td>10개 이상 200개 이하</td>
+                  <td>상단 요약의 포함, 제외, 업로드 가능, 경고, 업로드 불가</td>
+                </tr>
+                <tr>
+                  <td>셀 크기</td>
+                  <td>기본 200×200</td>
+                  <td>상단 `셀 너비`, `셀 높이` 입력칸과 결과 표의 크기 제한 열</td>
+                </tr>
+                <tr>
+                  <td>형식</td>
+                  <td>jpg, png, gif</td>
+                  <td>상단 형식 선택과 결과 표의 형식 열</td>
+                </tr>
+                <tr>
+                  <td>용량</td>
+                  <td>파일당 최대 2MB</td>
+                  <td>용량 제한 입력칸, 결과 표의 크기/제한 열, 선택 항목 경고</td>
+                </tr>
+                <tr>
+                  <td>alt</td>
+                  <td>중복 없음, 한글 1~3글자, 허용 특수문자 <code>* ^ ! ~ +</code></td>
+                  <td>격자 카드, alt 일괄 변경 대화상자, 결과 표의 alt 열</td>
+                </tr>
+              </tbody>
+            </table>
+          </div>
+        </section>
+
+        <section id="pages" class="section">
+          <h2>GitHub Pages로 공개하기</h2>
+          <p>
+            이 파일은 정적 HTML이므로 공개 저장소의 <code>docs/index.html</code>로 포함하면 GitHub Pages에서 바로 배포할 수 있습니다.
+            저장소 설정에서 Pages source를 배포할 브랜치의 <code>/docs</code> 폴더로 지정하면 됩니다.
+          </p>
+          <ol class="steps">
+            <li>이 저장소에 <code>docs/index.html</code>과 <code>docs/manual-assets/</code> 이미지를 커밋합니다.</li>
+            <li>GitHub 저장소의 <strong>Settings → Pages</strong>로 이동합니다.</li>
+            <li>Source를 <strong>Deploy from a branch</strong>로 두고, branch는 공개할 브랜치, folder는 <strong>/docs</strong>를 선택합니다.</li>
+            <li>저장 후 생성되는 URL에서 설명서를 확인합니다. 보통 <code>https://계정명.github.io/저장소명/</code> 형태입니다.</li>
+          </ol>
+          <div class="callout">
+            <strong>이미지 경로:</strong> 본문 이미지는 모두 상대 경로인 <code>manual-assets/manual-*.png</code>를 사용합니다.
+            GitHub Pages에서 HTML과 이미지 폴더가 함께 배포되면 별도 설정 없이 표시됩니다.
+          </div>
+        </section>
+
+        <section class="section">
+          <h2>마무리 점검표</h2>
+          <ul class="checks">
+            <li>모든 screenshot 본문 이미지는 `디시콘 모음 3` 화면에서 새로 촬영한 `manual-*` 파일입니다.</li>
+            <li>단일콘 crop 설명에는 crop 박스가 원본 전체를 차지하지 않는 화면을 사용했습니다.</li>
+            <li>가로 2칸은 편집 화면, 적용 화면, 사용 미리보기, 내보내기 결과에서 모두 확인할 수 있습니다.</li>
+            <li>빈 디시콘과 작업중 상태는 별도 섹션에서 실제 추가 화면으로 설명했습니다.</li>
+            <li>내보내기 섹션은 설정, 검증 요약, 결과 표, 선택 항목 패널을 함께 설명합니다.</li>
+          </ul>
+        </section>
+      </div>
+    </main>
+
+    <footer class="footer">
+      <div class="footer-inner">
+        PMTCONCON Studio 사용 설명서. 이 문서는 저장소의 <code>docs/index.html</code>에서 관리합니다.
+      </div>
+    </footer>
+  </body>
+</html>

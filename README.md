@@ -4,39 +4,39 @@ PMTCONCON Studio는 DCInside 스타일 디시콘과 커스텀 이모티콘 모�
 
 최신 Windows 설치파일은 [GitHub Releases](https://github.com/kyunnkimeng-pixel/CONCONPMT/releases)에서 받을 수 있습니다.
 
+상세 사용 설명서는 [docs/index.html](docs/index.html)에서 볼 수 있으며, GitHub Pages의 `/docs` 배포 소스로 바로 사용할 수 있습니다.
+
 ## 화면
 
 ### 모음 탐색과 alt 일괄 변경
 
 아이콘을 카드형 탐색 화면에서 확인하고, alt 값 오류나 중복 상태를 바로 볼 수 있습니다. 여러 아이콘을 선택한 뒤 쉼표로 구분한 alt 값을 순서대로 일괄 적용할 수 있고, 파일/폴더 추가, 정렬, 대표 이미지 설정, 빈 디시콘 생성, 내보내기 작업으로 이어지는 도구 모음을 제공합니다.
 
-![PMTCONCON Studio main collection view](docs/screenshots/pmtconcon-main-disicon-3.png)
+![PMTCONCON Studio main collection view](docs/manual-assets/manual-01-explorer-wide-disicon-3.png)
 
-### 200x200 crop 박스 편집
+### crop 박스 크기 조절
 
 원본 이미지는 그대로 보존하고, 출력용 crop 박스만 별도로 저장합니다. 기본 DCInside 셀 크기는 200x200이며, crop 박스는 이미지 위에서 원하는 위치로 옮기거나 크기를 조정한 뒤 적용할 수 있습니다.
 
-![PMTCONCON Studio 200x200 crop editor](docs/screenshots/pmtconcon-editor-crop-disicon-3.png)
+![PMTCONCON Studio crop editor with resized box](docs/manual-assets/manual-05-single-crop-resized-disicon-3.png)
 
 ### 가로 2칸 자르기
 
 한 아이콘을 2개의 200x200 조각으로 내보내야 하는 경우, 가로 2칸 모양을 선택해 400x200 crop 영역을 잡을 수 있습니다. 편집 화면은 분할선을 표시하고, 내보내기 단계에서는 왼쪽과 오른쪽 조각을 export 순서에 맞춰 생성합니다.
 
-![PMTCONCON Studio horizontal double crop editor](docs/screenshots/pmtconcon-editor-horizontal-disicon-3.png)
+![PMTCONCON Studio horizontal double crop editor](docs/manual-assets/manual-06-horizontal-double-crop-disicon-3.png)
 
 ### 텍스트 추가와 고급 편집
 
 텍스트 오버레이를 켜고 문구, 크기, 위치, 글자색, 외곽선, 폰트를 조정할 수 있습니다. 같은 고급 편집 화면에서 실제 export 후보를 생성해 용량을 측정하고, GIF 재생 FPS, 색상 수, JPG 품질 같은 압축 옵션도 적용할 수 있습니다.
 
-![PMTCONCON Studio text overlay editor](docs/screenshots/pmtconcon-editor-text-disicon-3.png)
-
-![PMTCONCON Studio editor flow](docs/screenshots/pmtconcon-editor-flow-disicon-3.gif)
+![PMTCONCON Studio text overlay editor](docs/manual-assets/manual-08-advanced-gif-text-disicon-3.png)
 
 ### 내보내기 작업공간
 
 내보낼 원본과 생성 결과를 나란히 보며, 파일명, 형식, 리사이즈 필터, MB 단위 용량 제한, `alts.txt` 생성 여부를 확인합니다. 항목별 업로드 가능 여부, 경고, 용량 초과, 수정 진입점을 분리해서 표시하고, 선택한 항목만 다시 내보내거나 용량 압축 후보를 일괄 적용할 수 있습니다.
 
-![PMTCONCON Studio export workspace](docs/screenshots/pmtconcon-export-disicon-3.png)
+![PMTCONCON Studio export workspace](docs/manual-assets/manual-10-export-workspace-disicon-3.png)
 
 ## 주요 기능
 
