@@ -4,7 +4,7 @@ PMTCONCON Studio는 DCInside 스타일 디시콘과 커스텀 이모티콘 모�
 
 최신 Windows 설치파일은 [GitHub Releases](https://github.com/kyunnkimeng-pixel/CONCONPMT/releases)에서 받을 수 있습니다.
 
-상세 사용 설명서는 [docs/index.html](docs/index.html)에서 볼 수 있으며, GitHub Pages의 `/docs` 배포 소스로 바로 사용할 수 있습니다.
+상세 사용 설명서는 [docs/index.html](docs/index.html)에서 볼 수 있습니다.
 
 ## 화면
 
