@@ -30,6 +30,16 @@ These require manual review before adding or upgrading:
 - Unclear transitive native dependencies
 - NOASSERTION or unknown metadata
 
+## Current Manual Review Resolutions
+
+The following current dependency review notes were reviewed on 2026-05-11 and are acceptable for PMTCONCON Studio under the stated conditions:
+
+- `@fontsource-variable/geist` 5.2.8: OFL-1.1 bundled font package. Acceptable only when the upstream OFL notice and copyright notice are preserved.
+- `brotli` 8.0.2: `BSD-3-Clause AND MIT`. Both required license parts are permissive and allowed by policy.
+- `dpi` 0.1.2: `Apache-2.0 AND MIT`. The current dependency tree enables default/std features; upstream documents the std build as Apache-2.0 code. If no_std is enabled later, preserve the MIT libm notice too.
+- `r-efi` 5.3.0: `MIT OR Apache-2.0 OR LGPL-2.1-or-later`. Use the permissive MIT/Apache-2.0 path only; do not rely on the LGPL alternative.
+- `unicode-ident` 1.0.24: `(MIT OR Apache-2.0) AND Unicode-3.0`. Both the code license path and the Unicode data license are allowed by policy, and all required license files are present.
+
 ## Denied by Default
 
 Do not add dependencies under:
@@ -46,6 +56,8 @@ Do not add dependencies under:
 ## Built-In Optimizer Policy
 
 Built-in GIF, PNG, and JPG optimization must preserve PMTCONCON Studio's MIT licensing posture. The optimizer should reuse the existing Rust imaging pipeline first. It may use only clearly permissive-compatible crates.
+
+Current GIF/image resize and rescale coverage is documented in `THIRD_PARTY_LICENSES.md`. The built-in path uses permissive-compatible Rust crates such as `image`, `gif`, `fast_image_resize`, `png`, `zune-jpeg`, `zune-core`, `color_quant`, and `fontdue`.
 
 The following are not allowed as bundled, linked, or default dependencies for this MIT app:
 

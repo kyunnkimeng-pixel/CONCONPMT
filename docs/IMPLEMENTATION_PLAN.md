@@ -165,3 +165,11 @@ Done when: MVP is usable end-to-end and feature inventory has no accidental gaps
 
 Done when: `F011`, `F012`, `F024`, `F035`, `F053`, `F059`, `F060`,
 `F061`, and `F062` are implemented and verified; `F048` is correctly mapped.
+
+## Stage 15L - Dependency license review note closure
+1. Review dependency license notes against upstream npm/crates metadata and installed license files.
+2. Convert resolved notes into durable manual review resolutions in the license notice generator.
+3. Regenerate `THIRD_PARTY_LICENSES.md` so public/internal tracked docs show no unresolved notes for reviewed dependencies.
+4. Confirm GIF, image resize, and rescale pipeline crates are explicitly covered and forbidden optimizer packages remain absent.
+
+Done when: license generation records the manual resolutions, image/GIF/resize coverage is documented, and license guardrail commands pass or mark optional missing tools as skipped.

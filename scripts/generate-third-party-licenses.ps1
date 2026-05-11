@@ -304,7 +304,121 @@ function Get-CrateLicense([string] $name, [string] $version) {
   }
 }
 
+$manualReviewResolutions = @(
+  [pscustomobject]@{
+    Name = "@fontsource-variable/geist"
+    Version = "5.2.8"
+    Source = "npm"
+    Resolution = 'Reviewed 2026-05-11: OFL-1.1 is acceptable for PMTCONCON Studio only when the bundled font notice is preserved. The installed package ships LICENSE and README notice files with the upstream notice "Copyright 2024 The Geist Project Authors (https://github.com/vercel/geist-font.git)".'
+  },
+  [pscustomobject]@{
+    Name = "brotli"
+    Version = "8.0.2"
+    Source = "Rust"
+    Resolution = 'Reviewed 2026-05-11: "BSD-3-Clause AND MIT" means both permissive license notices apply. Both licenses are allowed by PMTCONCON Studio policy, and there is no copyleft, source-available, or external optimizer binary dependency.'
+  },
+  [pscustomobject]@{
+    Name = "dpi"
+    Version = "0.1.2"
+    Source = "Rust"
+    Resolution = 'Reviewed 2026-05-11: "Apache-2.0 AND MIT" is acceptable. The current dependency tree enables dpi default/std features, where upstream documents Apache-2.0-only compiled code; if no_std is ever enabled, the MIT libm notice must also be preserved.'
+  },
+  [pscustomobject]@{
+    Name = "r-efi"
+    Version = "5.3.0"
+    Source = "Rust"
+    Resolution = 'Reviewed 2026-05-11: "MIT OR Apache-2.0 OR LGPL-2.1-or-later" includes permissive alternatives. PMTCONCON Studio uses the permissive MIT/Apache-2.0 license path and does not rely on the LGPL alternative.'
+  },
+  [pscustomobject]@{
+    Name = "r-efi"
+    Version = "6.0.0"
+    Source = "Rust"
+    Resolution = 'Reviewed 2026-05-11: same upstream license shape as r-efi 5.3.0. PMTCONCON Studio uses the permissive MIT/Apache-2.0 license path and does not rely on the LGPL alternative.'
+  },
+  [pscustomobject]@{
+    Name = "unicode-ident"
+    Version = "1.0.24"
+    Source = "Rust"
+    Resolution = 'Reviewed 2026-05-11: "(MIT OR Apache-2.0) AND Unicode-3.0" is acceptable because the crate code is MIT/Apache-2.0 and the generated Unicode database data is covered by Unicode-3.0; all required license files are present in the crate package.'
+  }
+)
+
+$imagePipelineReviews = @(
+  [pscustomobject]@{
+    Name = "image"
+    Version = "0.25.10"
+    Source = "Rust"
+    Role = "Static image decode/encode layer used for PNG/JPG processing and metadata."
+  },
+  [pscustomobject]@{
+    Name = "gif"
+    Version = "0.14.2"
+    Source = "Rust"
+    Role = "Animated GIF decode/encode layer used for frame timing, crop/resize, and loop metadata."
+  },
+  [pscustomobject]@{
+    Name = "fast_image_resize"
+    Version = "6.0.0"
+    Source = "Rust"
+    Role = "Resize/rescale filter implementation used by the built-in image pipeline."
+  },
+  [pscustomobject]@{
+    Name = "png"
+    Version = "0.18.1"
+    Source = "Rust"
+    Role = "PNG codec pulled by the Rust image pipeline."
+  },
+  [pscustomobject]@{
+    Name = "zune-jpeg"
+    Version = "0.5.15"
+    Source = "Rust"
+    Role = "JPEG codec pulled by the Rust image pipeline."
+  },
+  [pscustomobject]@{
+    Name = "zune-core"
+    Version = "0.5.1"
+    Source = "Rust"
+    Role = "Shared zune codec support pulled by zune-jpeg."
+  },
+  [pscustomobject]@{
+    Name = "color_quant"
+    Version = "1.1.0"
+    Source = "Rust"
+    Role = "GIF palette quantization support pulled by the gif crate."
+  },
+  [pscustomobject]@{
+    Name = "fontdue"
+    Version = "0.9.3"
+    Source = "Rust"
+    Role = "Text overlay rasterization before image/GIF preview and export rendering."
+  }
+)
+
+function Get-ManualReviewResolution([string] $name, [string] $version, [string] $source) {
+  foreach ($resolution in $manualReviewResolutions) {
+    if ($resolution.Name -eq $name -and $resolution.Version -eq $version -and $resolution.Source -eq $source) {
+      return $resolution
+    }
+  }
+
+  return $null
+}
+
+function Test-ResolvedPackagePresent($packages, [string] $name, [string] $version, [string] $source) {
+  foreach ($package in $packages) {
+    if ($package.Name -eq $name -and $package.Version -eq $version -and $package.Source -eq $source) {
+      return $true
+    }
+  }
+
+  return $false
+}
+
 function Get-LicenseReviewNote([string] $name, [string] $version, [string] $license, [string] $source) {
+  if (Get-ManualReviewResolution $name $version $source) {
+    return $null
+  }
+
   if ($license -eq "UNKNOWN" -or $license -match "NOASSERTION") {
     return "{0} {1} ({2}): license metadata is unavailable and needs manual review." -f $name, $version, $source
   }
@@ -334,6 +448,7 @@ function Get-LicenseReviewNote([string] $name, [string] $version, [string] $lice
 
 $lines = New-Object System.Collections.Generic.List[string]
 $reviewNotes = New-Object System.Collections.Generic.List[string]
+$resolvedPackages = New-Object System.Collections.Generic.List[object]
 Add-Line $lines "# Third-Party Licenses"
 Add-Line $lines
 Add-Line $lines "Generated: $generatedAt"
@@ -366,6 +481,12 @@ if (Test-Path -LiteralPath $packageJsonPath) {
   }
   foreach ($dep in ($allNpm | Sort-Object Name)) {
     Add-Line $lines ("- {0} {1} ({2}, declared {3}): {4}; {5}." -f $dep.Name, $dep.InstalledVersion, $dep.Scope, $dep.DeclaredVersion, $dep.License, $dep.Notice)
+    $resolvedPackages.Add([pscustomobject]@{
+      Name = $dep.Name
+      Version = $dep.InstalledVersion
+      Source = "npm"
+      License = $dep.License
+    }) | Out-Null
     $note = Get-LicenseReviewNote $dep.Name $dep.InstalledVersion $dep.License "npm"
     if ($note) {
       $reviewNotes.Add($note) | Out-Null
@@ -380,6 +501,12 @@ if (Test-Path -LiteralPath $cargoLockPath) {
   foreach ($crate in Get-CargoPackagesForNotice $cargoLockPath) {
     $licenseInfo = Get-CrateLicense $crate.Name $crate.Version
     Add-Line $lines ("- {0} {1}: {2}; {3}." -f $crate.Name, $crate.Version, $licenseInfo.License, $licenseInfo.Notice)
+    $resolvedPackages.Add([pscustomobject]@{
+      Name = $crate.Name
+      Version = $crate.Version
+      Source = "Rust"
+      License = $licenseInfo.License
+    }) | Out-Null
     $note = Get-LicenseReviewNote $crate.Name $crate.Version $licenseInfo.License "Rust"
     if ($note) {
       $reviewNotes.Add($note) | Out-Null
@@ -387,6 +514,36 @@ if (Test-Path -LiteralPath $cargoLockPath) {
   }
   Add-Line $lines
 }
+
+Add-Line $lines "## Manual Review Resolutions"
+Add-Line $lines
+$activeManualReviews = $resolvedPackages | ForEach-Object {
+  Get-ManualReviewResolution $_.Name $_.Version $_.Source
+} | Where-Object { $_ } | Sort-Object Source, Name, Version -Unique
+if ($activeManualReviews.Count -eq 0) {
+  Add-Line $lines "- No manual review resolutions matched the generated dependency set."
+} else {
+  foreach ($resolution in $activeManualReviews) {
+    Add-Line $lines ("- {0} {1} ({2}): {3}" -f $resolution.Name, $resolution.Version, $resolution.Source, $resolution.Resolution)
+  }
+}
+Add-Line $lines
+
+Add-Line $lines "## Image, GIF, and Resize License Coverage"
+Add-Line $lines
+Add-Line $lines "The built-in GIF and image resize/rescale pipeline uses the Rust crates below. Their license metadata is included above, and PMTCONCON Studio does not bundle or link gifski, gifsicle, libimagequant/imagequant, pngquant, or ffmpeg as default dependencies."
+Add-Line $lines
+$activeImageReviews = $imagePipelineReviews | Where-Object {
+  Test-ResolvedPackagePresent $resolvedPackages $_.Name $_.Version $_.Source
+}
+if ($activeImageReviews.Count -eq 0) {
+  Add-Line $lines "- No image pipeline packages matched the generated dependency set."
+} else {
+  foreach ($review in ($activeImageReviews | Sort-Object Name, Version)) {
+    Add-Line $lines ("- {0} {1} ({2}): {3}" -f $review.Name, $review.Version, $review.Source, $review.Role)
+  }
+}
+Add-Line $lines
 
 Add-Line $lines "## Review Notes"
 Add-Line $lines

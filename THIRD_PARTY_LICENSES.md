@@ -1,6 +1,6 @@
 ﻿# Third-Party Licenses
 
-Generated: 2026-05-11T01:47:09Z
+Generated: 2026-05-11T13:20:10Z
 
 This file is a best-effort notice index for PMTCONCON Studio. It does not replace legal review. Preserve upstream copyright and license notices when distributing binaries.
 
@@ -397,13 +397,30 @@ PMTCONCON Studio is MIT licensed. Built-in optimization must not bundle or link 
 - zune-inflate 0.2.54: MIT OR Apache-2.0 OR Zlib; from local cargo registry Cargo.toml.
 - zune-jpeg 0.5.15: MIT OR Apache-2.0 OR Zlib; from local cargo registry Cargo.toml.
 
+## Manual Review Resolutions
+
+- @fontsource-variable/geist 5.2.8 (npm): Reviewed 2026-05-11: OFL-1.1 is acceptable for PMTCONCON Studio only when the bundled font notice is preserved. The installed package ships LICENSE and README notice files with the upstream notice "Copyright 2024 The Geist Project Authors (https://github.com/vercel/geist-font.git)".
+- brotli 8.0.2 (Rust): Reviewed 2026-05-11: "BSD-3-Clause AND MIT" means both permissive license notices apply. Both licenses are allowed by PMTCONCON Studio policy, and there is no copyleft, source-available, or external optimizer binary dependency.
+- dpi 0.1.2 (Rust): Reviewed 2026-05-11: "Apache-2.0 AND MIT" is acceptable. The current dependency tree enables dpi default/std features, where upstream documents Apache-2.0-only compiled code; if no_std is ever enabled, the MIT libm notice must also be preserved.
+- r-efi 5.3.0 (Rust): Reviewed 2026-05-11: "MIT OR Apache-2.0 OR LGPL-2.1-or-later" includes permissive alternatives. PMTCONCON Studio uses the permissive MIT/Apache-2.0 license path and does not rely on the LGPL alternative.
+- unicode-ident 1.0.24 (Rust): Reviewed 2026-05-11: "(MIT OR Apache-2.0) AND Unicode-3.0" is acceptable because the crate code is MIT/Apache-2.0 and the generated Unicode database data is covered by Unicode-3.0; all required license files are present in the crate package.
+
+## Image, GIF, and Resize License Coverage
+
+The built-in GIF and image resize/rescale pipeline uses the Rust crates below. Their license metadata is included above, and PMTCONCON Studio does not bundle or link gifski, gifsicle, libimagequant/imagequant, pngquant, or ffmpeg as default dependencies.
+
+- color_quant 1.1.0 (Rust): GIF palette quantization support pulled by the gif crate.
+- fast_image_resize 6.0.0 (Rust): Resize/rescale filter implementation used by the built-in image pipeline.
+- fontdue 0.9.3 (Rust): Text overlay rasterization before image/GIF preview and export rendering.
+- gif 0.14.2 (Rust): Animated GIF decode/encode layer used for frame timing, crop/resize, and loop metadata.
+- image 0.25.10 (Rust): Static image decode/encode layer used for PNG/JPG processing and metadata.
+- png 0.18.1 (Rust): PNG codec pulled by the Rust image pipeline.
+- zune-core 0.5.1 (Rust): Shared zune codec support pulled by zune-jpeg.
+- zune-jpeg 0.5.15 (Rust): JPEG codec pulled by the Rust image pipeline.
+
 ## Review Notes
 
-- @fontsource-variable/geist 5.2.8 (npm): OFL-1.1 font license; acceptable for bundled fonts only after preserving font notices.
-- brotli 8.0.2 (Rust): compound AND license expression needs manual review.
-- dpi 0.1.2 (Rust): compound AND license expression needs manual review.
-- r-efi 5.3.0 (Rust): expression includes a copyleft alternative, but also a permissive alternative. Review once and use the permissive license path.
-- unicode-ident 1.0.24 (Rust): compound AND license expression needs manual review.
+- No generated review notes.
 
 ## Skipped Tooling
 

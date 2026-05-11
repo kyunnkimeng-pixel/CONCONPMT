@@ -21,6 +21,10 @@ If a license expression includes a permissive alternative, such as `MIT OR Apach
 
 OFL-1.1 font packages require notice preservation review, but they are not external optimizer binaries.
 
+Current reviewed exceptions are listed in `docs/LICENSE_POLICY.md` and regenerated into `THIRD_PARTY_LICENSES.md` by `scripts/generate-third-party-licenses.ps1`. Do not remove them from the generator; otherwise the unresolved review notes will return on the next license notice refresh.
+
+For GIF/image resize or rescale changes, confirm that the generated `Image, GIF, and Resize License Coverage` section includes the Rust crates used by the built-in pipeline and that no forbidden external optimizer package has been added.
+
 Review scope:
 
 - Review libraries bundled, linked, or used for PMTCONCON Studio's build/runtime.
