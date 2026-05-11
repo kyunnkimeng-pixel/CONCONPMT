@@ -41,6 +41,20 @@ export function exportCollection(collectionId: string, payload: ExportRequestPay
   });
 }
 
+export function exportSelectedCollectionItems(
+  collectionId: string,
+  payload: ExportRequestPayload,
+  selectedPieceIds: string[],
+  exportDirectory: string,
+) {
+  return invokeCommand<ExportCollectionResult>("export_selected_collection_items", {
+    collectionId,
+    payload,
+    selectedPieceIds,
+    exportDirectory,
+  });
+}
+
 export function openExportPath(path: string) {
   return invokeCommand<void>("open_export_path", { path });
 }

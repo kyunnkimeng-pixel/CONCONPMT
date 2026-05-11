@@ -37,12 +37,17 @@ pub fn generate_candidates(
 ) -> AppResult<Vec<OptimizationCandidateDto>> {
     let decoded = decode_gif(&baseline.path)?;
     let mut candidates = Vec::new();
+    let presets = if is_playback_fps_only_request(advanced_settings) {
+        vec![OptimizationPreset::Quality]
+    } else {
+        vec![
+            OptimizationPreset::Quality,
+            OptimizationPreset::Balanced,
+            OptimizationPreset::Smallest,
+        ]
+    };
 
-    for preset in [
-        OptimizationPreset::Quality,
-        OptimizationPreset::Balanced,
-        OptimizationPreset::Smallest,
-    ] {
+    for preset in presets {
         match encode_candidate(
             connection,
             paths,
@@ -68,6 +73,17 @@ pub fn generate_candidates(
     Ok(candidates)
 }
 
+fn is_playback_fps_only_request(
+    advanced_settings: Option<&OptimizationAdvancedSettingsPayload>,
+) -> bool {
+    advanced_settings.is_some_and(|settings| {
+        settings.playback_fps.is_some()
+            && settings.fps_limit.is_none()
+            && settings.frame_step.is_none()
+            && settings.color_limit.is_none()
+    })
+}
+
 fn encode_candidate(
     connection: &Connection,
     paths: &AppPaths,
@@ -84,6 +100,12 @@ fn encode_candidate(
             settings.frame_step = frame_step_for_fps(decoded, fps_limit);
             settings.fps_limit = Some(fps_limit.max(1));
         }
+        if let Some(color_limit) = advanced_settings.color_limit {
+            settings.color_limit = Some(color_limit.clamp(2, 256));
+        }
+        if let Some(playback_fps) = advanced_settings.playback_fps {
+            settings.playback_fps = Some(playback_fps.clamp(1, 60));
+        }
     }
     let settings_json = serde_json::to_string(&settings)
         .map_err(|error| AppError::new("json", error.to_string()))?;
@@ -97,6 +119,8 @@ fn encode_candidate(
         decoded,
         settings.frame_step,
         settings.encoder_speed,
+        settings.color_limit,
+        settings.playback_fps,
     )?;
     move_temp_file(&temp_path, &final_path)?;
     let byte_size = file_size(&final_path)?;
@@ -183,6 +207,8 @@ fn write_gif_candidate(
     decoded: &DecodedGif,
     frame_step: usize,
     encoder_speed: i32,
+    color_limit: Option<i64>,
+    playback_fps: Option<i64>,
 ) -> AppResult<()> {
     if let Some(parent) = path.parent() {
         fs::create_dir_all(parent)?;
@@ -206,9 +232,11 @@ fn write_gif_candidate(
         }
 
         let mut rgba = frame.rgba.clone();
+        quantize_rgba_in_place(&mut rgba, color_limit);
         let mut output_frame =
             Frame::from_rgba_speed(decoded.width, decoded.height, &mut rgba, encoder_speed);
-        output_frame.delay = pending_delay.min(u32::from(u16::MAX)) as u16;
+        output_frame.delay = playback_delay_cs(playback_fps)
+            .unwrap_or_else(|| pending_delay.min(u32::from(u16::MAX)) as u16);
         pending_delay = 0;
         encoder
             .write_frame(&output_frame)
@@ -223,6 +251,59 @@ fn write_gif_candidate(
     Ok(())
 }
 
+fn playback_delay_cs(playback_fps: Option<i64>) -> Option<u16> {
+    playback_fps.map(|fps| {
+        let fps = fps.clamp(1, 60) as f64;
+        ((100.0 / fps).round() as u16).max(1)
+    })
+}
+
+fn quantize_rgba_in_place(rgba: &mut [u8], color_limit: Option<i64>) {
+    let Some(color_limit) = color_limit else {
+        return;
+    };
+    if color_limit >= 256 {
+        return;
+    }
+
+    let levels = levels_for_color_limit(color_limit);
+    if levels >= 256 {
+        return;
+    }
+
+    for pixel in rgba.chunks_exact_mut(4) {
+        if pixel[3] == 0 {
+            pixel[0] = 0;
+            pixel[1] = 0;
+            pixel[2] = 0;
+            continue;
+        }
+        pixel[0] = quantize_channel(pixel[0], levels);
+        pixel[1] = quantize_channel(pixel[1], levels);
+        pixel[2] = quantize_channel(pixel[2], levels);
+    }
+}
+
+fn levels_for_color_limit(color_limit: i64) -> u16 {
+    match color_limit {
+        0..=32 => 3,
+        33..=64 => 4,
+        65..=128 => 5,
+        129..=192 => 6,
+        193..=224 => 7,
+        _ => 8,
+    }
+}
+
+fn quantize_channel(value: u8, levels: u16) -> u8 {
+    if levels <= 1 {
+        return 0;
+    }
+    let max_index = levels - 1;
+    let index = ((u16::from(value) * max_index) + 127) / 255;
+    ((index * 255) / max_index) as u8
+}
+
 fn temp_path_for(final_path: &Path) -> PathBuf {
     final_path.with_extension("tmp")
 }
@@ -233,4 +314,30 @@ fn file_size(path: &Path) -> AppResult<i64> {
 
 fn path_string(path: &Path) -> String {
     path.to_string_lossy().to_string()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{levels_for_color_limit, playback_delay_cs, quantize_rgba_in_place};
+
+    #[test]
+    fn color_limit_quantization_reduces_channel_variants_and_preserves_alpha() {
+        let mut rgba = vec![12, 34, 56, 255, 200, 210, 220, 0];
+
+        quantize_rgba_in_place(&mut rgba, Some(64));
+
+        assert_eq!(levels_for_color_limit(64), 4);
+        assert_eq!(rgba[3], 255);
+        assert_eq!(&rgba[4..8], &[0, 0, 0, 0]);
+        assert!(rgba[0] % 85 == 0);
+        assert!(rgba[1] % 85 == 0);
+        assert!(rgba[2] % 85 == 0);
+    }
+
+    #[test]
+    fn playback_fps_maps_to_centisecond_delay() {
+        assert_eq!(playback_delay_cs(Some(25)), Some(4));
+        assert_eq!(playback_delay_cs(Some(10)), Some(10));
+        assert_eq!(playback_delay_cs(None), None);
+    }
 }

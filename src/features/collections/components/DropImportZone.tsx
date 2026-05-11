@@ -1,4 +1,5 @@
-import { Upload } from "lucide-react";
+import { Plus, Upload } from "lucide-react";
+import { useRef } from "react";
 import type { DragEvent, ReactNode } from "react";
 
 interface DropImportZoneProps {
@@ -16,13 +17,42 @@ export function DropImportZone({
   onDragStateChange,
   onFilesDropped,
 }: DropImportZoneProps) {
-  const handleDragOver = (event: DragEvent<HTMLDivElement>) => {
+  const dragDepthRef = useRef(0);
+
+  const handleDragEnter = (event: DragEvent<HTMLDivElement>) => {
+    if (!hasFileDrag(event.dataTransfer)) {
+      return;
+    }
+
     event.preventDefault();
+    dragDepthRef.current += 1;
     onDragStateChange(true);
+  };
+
+  const handleDragOver = (event: DragEvent<HTMLDivElement>) => {
+    if (!hasFileDrag(event.dataTransfer)) {
+      return;
+    }
+
+    event.preventDefault();
+    event.dataTransfer.dropEffect = "copy";
+  };
+
+  const handleDragLeave = (event: DragEvent<HTMLDivElement>) => {
+    if (!hasFileDrag(event.dataTransfer)) {
+      return;
+    }
+
+    event.preventDefault();
+    dragDepthRef.current = Math.max(0, dragDepthRef.current - 1);
+    if (dragDepthRef.current === 0) {
+      onDragStateChange(false);
+    }
   };
 
   const handleDrop = (event: DragEvent<HTMLDivElement>) => {
     event.preventDefault();
+    dragDepthRef.current = 0;
     onDragStateChange(false);
     void droppedFiles(event.dataTransfer).then(onFilesDropped);
   };
@@ -30,22 +60,32 @@ export function DropImportZone({
   return (
     <div
       className="relative min-h-[420px] rounded-xl border border-dashed border-dropzone bg-surface/75 p-5"
-      onDragLeave={() => onDragStateChange(false)}
+      onDragEnter={handleDragEnter}
+      onDragLeave={handleDragLeave}
       onDragOver={handleDragOver}
       onDrop={handleDrop}
     >
       {children}
 
       {isDragging ? (
-        <div className="absolute inset-3 flex items-center justify-center rounded-lg border border-focus bg-selected/90 text-focus">
+        <div className="pointer-events-none absolute inset-3 flex items-center justify-center rounded-lg border-2 border-dashed border-focus bg-blue-100/80 text-focus shadow-inner">
           <div className="flex flex-col items-center gap-3 text-sm font-semibold">
-            <Upload aria-hidden="true" />
-            {label}
+            <span className="flex size-14 items-center justify-center rounded-full border border-focus bg-white/90 shadow-sm">
+              <Plus aria-hidden="true" className="size-7" />
+            </span>
+            <span className="inline-flex items-center gap-2 rounded-full bg-white/90 px-4 py-2 shadow-sm">
+              <Upload aria-hidden="true" className="size-4" />
+              {label}
+            </span>
           </div>
         </div>
       ) : null}
     </div>
   );
+}
+
+function hasFileDrag(dataTransfer: DataTransfer) {
+  return Array.from(dataTransfer.types).includes("Files");
 }
 
 interface FileSystemEntryLike {

@@ -244,6 +244,12 @@ pub struct ExportRequestPayload {
     pub open_alt_txt_after_export: bool,
     #[serde(default)]
     pub excluded_piece_ids: Vec<String>,
+    #[serde(default = "default_resize_filter")]
+    pub resize_filter: String,
+}
+
+fn default_resize_filter() -> String {
+    "lanczos3".to_string()
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -309,7 +315,9 @@ pub struct OptimizationAdvancedSettingsPayload {
     pub target_max_bytes: Option<i64>,
     pub safety_margin_percent: Option<f64>,
     pub fps_limit: Option<i64>,
+    pub playback_fps: Option<i64>,
     pub frame_step: Option<i64>,
+    pub color_limit: Option<i64>,
     pub jpeg_quality: Option<i64>,
 }
 

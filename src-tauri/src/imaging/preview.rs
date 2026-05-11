@@ -84,9 +84,8 @@ fn generate_static_preview(
     piece_count: usize,
 ) -> AppResult<GeneratedPreview> {
     let image = image::open(request.source_path)?;
+    let image = image_with_text_overlay(image, request.text_overlay.as_ref())?;
     let viewport = crop_and_resize(&image, request.crop, viewport_width, viewport_height)?;
-    let mut viewport = viewport;
-    apply_text_overlay(&mut viewport, request.text_overlay.as_ref())?;
     let current_preview_path = preview_dir.join("preview.png");
     viewport.save_with_format(&current_preview_path, ImageFormat::Png)?;
 
@@ -133,10 +132,9 @@ fn generate_gif_preview(
     for frame in frames {
         let delay = frame.delay();
         let source_frame = DynamicImage::ImageRgba8(frame.into_buffer());
+        let source_frame = image_with_text_overlay(source_frame, request.text_overlay.as_ref())?;
         let viewport =
             crop_and_resize(&source_frame, request.crop, viewport_width, viewport_height)?;
-        let mut viewport = viewport;
-        apply_text_overlay(&mut viewport, request.text_overlay.as_ref())?;
         viewport_frames.push(Frame::from_parts(viewport.clone(), 0, 0, delay));
 
         for (piece_index, piece) in split_viewport(
@@ -174,6 +172,19 @@ fn generate_gif_preview(
         current_preview_path,
         piece_paths,
     })
+}
+
+fn image_with_text_overlay(
+    image: DynamicImage,
+    text_overlay: Option<&TextOverlayRenderSpec>,
+) -> AppResult<DynamicImage> {
+    if text_overlay.is_none() {
+        return Ok(image);
+    }
+
+    let mut source = image.to_rgba8();
+    apply_text_overlay(&mut source, text_overlay)?;
+    Ok(DynamicImage::ImageRgba8(source))
 }
 
 fn crop_and_resize(

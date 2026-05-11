@@ -39,7 +39,9 @@ pub fn generate_gif_optimization_candidates(
     advanced_settings: Option<OptimizationAdvancedSettingsPayload>,
 ) -> AppResult<OptimizationResultDto> {
     let baseline = analyzer::render_baseline(connection, paths, icon_id, profile_id, piece_id)?;
-    if baseline.analysis.baseline_bytes <= baseline.analysis.target_max_bytes {
+    if advanced_settings.is_none()
+        && baseline.analysis.baseline_bytes <= baseline.analysis.target_max_bytes
+    {
         return Ok(OptimizationResultDto {
             analysis: baseline.analysis,
             candidates: Vec::new(),
@@ -76,7 +78,9 @@ pub fn generate_static_optimization_candidates(
     advanced_settings: Option<OptimizationAdvancedSettingsPayload>,
 ) -> AppResult<OptimizationResultDto> {
     let baseline = analyzer::render_baseline(connection, paths, icon_id, profile_id, piece_id)?;
-    if baseline.analysis.baseline_bytes <= baseline.analysis.target_max_bytes {
+    if advanced_settings.is_none()
+        && baseline.analysis.baseline_bytes <= baseline.analysis.target_max_bytes
+    {
         return Ok(OptimizationResultDto {
             analysis: baseline.analysis,
             candidates: Vec::new(),
@@ -258,7 +262,9 @@ mod tests {
     };
     use crate::db::repositories::imports::import_image_files;
     use crate::export::export_collection;
-    use crate::models::{ExportRequestPayload, ImportImageFilePayload};
+    use crate::models::{
+        ExportRequestPayload, ImportImageFilePayload, OptimizationAdvancedSettingsPayload,
+    };
     use crate::paths::AppPaths;
 
     #[test]
@@ -374,6 +380,60 @@ mod tests {
         std::fs::remove_dir_all(paths.root).unwrap();
     }
 
+    #[test]
+    fn gif_advanced_playback_fps_generates_candidate_even_when_baseline_passes() {
+        let mut connection = connection();
+        let paths = temp_paths("pmtconcon-gif-playback-fps");
+        let collection =
+            create_collection(&mut connection, Some("gif playback fps".to_string())).unwrap();
+        let imported = import_image_files(
+            &mut connection,
+            &paths,
+            &collection.id,
+            vec![ImportImageFilePayload {
+                original_filename: "source.gif".to_string(),
+                bytes: animated_gif_bytes(),
+            }],
+        )
+        .unwrap();
+        let icon_id = imported.imported_icons[0].id.clone();
+        let piece_id = imported.imported_icons[0].pieces[0].id.clone();
+        let profile_id = custom_profile_id(&connection, &collection.id);
+        let payload = payload(&profile_id, "gif", 10_000_000);
+        update_export_profile_settings(&connection, &collection.id, &payload).unwrap();
+
+        let result = generate_gif_optimization_candidates(
+            &connection,
+            &paths,
+            &icon_id,
+            &profile_id,
+            Some(&piece_id),
+            Some("custom".to_string()),
+            Some(OptimizationAdvancedSettingsPayload {
+                target_max_bytes: None,
+                safety_margin_percent: None,
+                fps_limit: None,
+                playback_fps: Some(10),
+                frame_step: None,
+                color_limit: None,
+                jpeg_quality: None,
+            }),
+        )
+        .unwrap();
+
+        assert!(!result.already_passes);
+        assert_eq!(result.candidates.len(), 1);
+        let quality = result
+            .candidates
+            .iter()
+            .find(|candidate| candidate.preset == "quality")
+            .unwrap();
+        assert_eq!(quality.frame_count, Some(8));
+        assert!(quality.duration_ms.unwrap_or_default() >= 780);
+
+        std::fs::remove_dir_all(paths.root).unwrap();
+    }
+
     fn connection() -> Connection {
         let mut connection = Connection::open_in_memory().unwrap();
         migrations::run(&mut connection).unwrap();
@@ -411,6 +471,7 @@ mod tests {
             open_folder_after_export: false,
             open_alt_txt_after_export: false,
             excluded_piece_ids: Vec::new(),
+            resize_filter: "lanczos3".to_string(),
         }
     }
 

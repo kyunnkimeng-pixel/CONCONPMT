@@ -52,6 +52,26 @@ pub fn export_collection(
 }
 
 #[tauri::command]
+pub fn export_selected_collection_items(
+    state: State<'_, AppState>,
+    collection_id: String,
+    payload: ExportRequestPayload,
+    selected_piece_ids: Vec<String>,
+    export_directory: String,
+) -> AppResult<ExportCollectionResultDto> {
+    let paths = state.paths().clone();
+    let mut connection = state.connection()?;
+    crate::export::export_selected_collection_items(
+        &mut connection,
+        &paths,
+        &collection_id,
+        &payload,
+        &selected_piece_ids,
+        &export_directory,
+    )
+}
+
+#[tauri::command]
 pub fn open_export_path(_state: State<'_, AppState>, path: String) -> AppResult<()> {
     crate::export::open_export_path(&path)
 }

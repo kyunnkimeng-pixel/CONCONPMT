@@ -22,6 +22,7 @@ interface IconContextMenuProps {
   isCover: boolean;
   hasExportResult: boolean;
   selectionCount: number;
+  altSelectionCount: number;
   onClose: () => void;
   onBatchAltEdit: () => void;
   onDelete: () => void;
@@ -42,6 +43,7 @@ export function IconContextMenu({
   isCover,
   hasExportResult,
   selectionCount,
+  altSelectionCount,
   onClose,
   onBatchAltEdit,
   onDelete,
@@ -197,7 +199,7 @@ export function IconContextMenu({
       </MenuButton>
       <MenuButton testId="icon-context-batch-alt" onClick={() => runAction(onBatchAltEdit)}>
         <Pencil aria-hidden="true" />
-        {selectionCount > 1 ? `선택 ${selectionCount}개 alt 일괄 변경` : "alt 변경"}
+        {altSelectionCount > 1 ? `선택 ${altSelectionCount}개 alt 일괄 변경` : "alt 변경"}
       </MenuButton>
       <MenuButton testId="icon-context-thumbnail" onClick={() => runAction(onSetThumbnailOverride)}>
         <ImagePlus aria-hidden="true" />

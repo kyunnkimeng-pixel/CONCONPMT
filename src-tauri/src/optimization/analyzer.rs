@@ -179,6 +179,7 @@ pub fn load_target(
         &output_format,
         cell_width,
         cell_height,
+        "lanczos3",
     );
 
     Ok(OptimizationTarget {
@@ -231,6 +232,7 @@ pub fn render_baseline(
         cell_width: target.cell_width,
         cell_height: target.cell_height,
         output_format: &target.output_format,
+        resize_filter: "lanczos3",
         gif_loop_mode: &target.gif_loop_mode,
         gif_loop_count: target.gif_loop_count,
         source_gif_loop_mode: &target.source_gif_loop_mode,
@@ -587,6 +589,7 @@ fn profile_hash(
     output_format: &str,
     cell_width: i64,
     cell_height: i64,
+    resize_filter: &str,
 ) -> String {
     hash_text(&[
         profile.id.clone(),
@@ -594,6 +597,7 @@ fn profile_hash(
         profile.max_bytes.to_string(),
         cell_width.to_string(),
         cell_height.to_string(),
+        resize_filter.to_string(),
     ])
 }
 

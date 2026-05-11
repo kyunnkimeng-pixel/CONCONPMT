@@ -1,6 +1,12 @@
 export type ExportFormat = "jpg" | "png" | "gif" | "source";
 export type ExportProfileType = "dcinside" | "custom";
 export type FilenameMode = "sequence" | "alt";
+export type ResizeFilter =
+  | "nearest"
+  | "triangle"
+  | "catmull_rom"
+  | "gaussian"
+  | "lanczos3";
 export type ExportItemStatus =
   | "pending"
   | "excluded"
@@ -47,6 +53,7 @@ export interface ExportRequestPayload {
   openFolderAfterExport: boolean;
   openAltTxtAfterExport: boolean;
   excludedPieceIds: string[];
+  resizeFilter: ResizeFilter;
 }
 
 export interface ExportValidationIssue {
@@ -158,7 +165,9 @@ export interface OptimizationAdvancedSettings {
   targetMaxBytes?: number | null;
   safetyMarginPercent?: number | null;
   fpsLimit?: number | null;
+  playbackFps?: number | null;
   frameStep?: number | null;
+  colorLimit?: number | null;
   jpegQuality?: number | null;
 }
 

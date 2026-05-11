@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useState } from "react";
-import type { MouseEvent } from "react";
+import type { MouseEvent, ReactNode } from "react";
 import {
   AlertTriangle,
   CheckCircle2,
@@ -19,6 +19,7 @@ import {
   applyOptimizationCandidate,
   clearOptimizationCandidate,
   exportCollection,
+  exportSelectedCollectionItems,
   generateGifOptimizationCandidates,
   generateStaticOptimizationCandidates,
   listExportProfiles,
@@ -34,6 +35,7 @@ import {
   hasOversizedIssue,
   issueSummary,
   issuesForItem,
+  mergeExportSessionValidation,
   problemExportNumbers,
   statusLabel,
   statusTone,
@@ -50,8 +52,13 @@ import type {
   FilenameMode,
   OptimizationCandidate,
   OptimizationResult,
+  ResizeFilter,
 } from "@/features/export/types";
 import { filePathToAssetUrl } from "@/lib/asset-url";
+import {
+  bytesToMegabytesInput,
+  megabytesInputToBytes,
+} from "@/lib/byte-size";
 import { getCommandErrorMessage } from "@/lib/tauri";
 import { cn } from "@/lib/utils";
 
@@ -74,6 +81,7 @@ interface ExportDraft {
   outputDirectory: string;
   openFolderAfterExport: boolean;
   openAltTxtAfterExport: boolean;
+  resizeFilter: ResizeFilter;
 }
 
 const FORMAT_OPTIONS: Array<{ value: ExportFormat; label: string }> = [
@@ -88,10 +96,20 @@ const FILENAME_OPTIONS: Array<{ value: FilenameMode; label: string }> = [
   { value: "alt", label: "alt 값" },
 ];
 
+const RESIZE_FILTER_OPTIONS: Array<{ value: ResizeFilter; label: string }> = [
+  { value: "nearest", label: "Nearest" },
+  { value: "triangle", label: "Bilinear" },
+  { value: "catmull_rom", label: "Bicubic" },
+  { value: "gaussian", label: "Gaussian" },
+  { value: "lanczos3", label: "Lanczos" },
+];
+
 const FILTERS: ExportWorkspaceFilter[] = [
   "all",
   "included",
   "excluded",
+  "completed",
+  "pending",
   "warnings",
   "not_upload_ready",
   "failed",
@@ -208,6 +226,13 @@ export function ExportDialog({
     () => filteredItems.filter((item) => selectedPieceIds.has(item.pieceId)),
     [filteredItems, selectedPieceIds],
   );
+  const selectedIncludedCount = useMemo(
+    () =>
+      (validation?.items ?? []).filter(
+        (item) => selectedPieceIds.has(item.pieceId) && item.included,
+      ).length,
+    [selectedPieceIds, validation],
+  );
   const selectedItem =
     filteredItems.find((item) => item.pieceId === selectedPieceId) ??
     selectedExportItems[0] ??
@@ -216,6 +241,20 @@ export function ExportDialog({
   const selectedIssues = selectedItem ? issuesForItem(validation, selectedItem) : [];
   const problemNumbers = problemExportNumbers(validation);
   const canStartExport = Boolean(payload && summary.included > 0 && !isBusy);
+  const selectedOversizedItems = useMemo(
+    () =>
+      selectedExportItems.filter(
+        (item) => item.included && hasOversizedIssue(validation, item),
+      ),
+    [selectedExportItems, validation],
+  );
+  const canOptimizeSelected = selectedOversizedItems.length > 0 && !isBusy;
+  const canRerunSelected = Boolean(
+    payload &&
+      exportResult?.exportDirectory &&
+      selectedIncludedCount > 0 &&
+      !isBusy,
+  );
 
   useEffect(() => {
     const validPieceIds = new Set(allPieceIds);
@@ -236,7 +275,13 @@ export function ExportDialog({
   const runValidation = async (
     nextDraft: ExportDraft,
     nextExcludedPieceIds: Set<string>,
-    options: { quiet?: boolean } = {},
+    options: {
+      dirtyIconIds?: Set<string>;
+      dirtyPieceIds?: Set<string>;
+      preserveNonDirtyExcluded?: boolean;
+      preserveSession?: boolean;
+      quiet?: boolean;
+    } = {},
   ) => {
     setIsValidating(true);
     setErrorMessage(null);
@@ -249,8 +294,17 @@ export function ExportDialog({
         collection.id,
         payloadFromDraft(nextDraft, nextExcludedPieceIds),
       );
-      setValidation(result);
-      setExportResult(null);
+      const nextValidation = options.preserveSession
+        ? mergeExportSessionValidation(result, validation, {
+            dirtyIconIds: options.dirtyIconIds,
+            dirtyPieceIds: options.dirtyPieceIds,
+            preserveNonDirtyExcluded: options.preserveNonDirtyExcluded,
+          })
+        : result;
+      setValidation(nextValidation);
+      if (!options.preserveSession) {
+        setExportResult(null);
+      }
       setSelectedPieceId((current) => current ?? result.items[0]?.pieceId ?? null);
       if (!options.quiet) {
         setStatusMessage("사전 확인을 완료했습니다.");
@@ -297,8 +351,11 @@ export function ExportDialog({
       }
     }
     setExcludedPieceIds(nextExcludedPieceIds);
-    setExportResult(null);
-    void runValidation(draft, nextExcludedPieceIds, { quiet: true });
+    void runValidation(draft, nextExcludedPieceIds, {
+      dirtyPieceIds: new Set(pieceIds),
+      preserveSession: Boolean(exportResult),
+      quiet: true,
+    });
   };
 
   const setPieceIncluded = (pieceId: string, included: boolean) => {
@@ -396,7 +453,9 @@ export function ExportDialog({
 
   const handleValidate = async () => {
     if (draft) {
-      await runValidation(draft, excludedPieceIds);
+      await runValidation(draft, excludedPieceIds, {
+        preserveSession: Boolean(exportResult),
+      });
     }
   };
 
@@ -428,6 +487,57 @@ export function ExportDialog({
     }
   };
 
+  const handleExportPieces = async (pieceIds: string[]) => {
+    if (!draft || !payload || !exportResult?.exportDirectory || pieceIds.length === 0) {
+      return;
+    }
+    const requestedPieceIds = new Set(pieceIds);
+    const selectedIncludedPieceIds = (validation?.items ?? [])
+      .filter((item) => requestedPieceIds.has(item.pieceId) && item.included)
+      .map((item) => item.pieceId);
+    if (selectedIncludedPieceIds.length === 0) {
+      return;
+    }
+
+    setIsExporting(true);
+    setErrorMessage(null);
+    setStatusMessage(`선택 항목 ${selectedIncludedPieceIds.length}개를 다시 내보내는 중입니다.`);
+
+    try {
+      const result = await exportSelectedCollectionItems(
+        collection.id,
+        payloadFromDraft(draft, excludedPieceIds),
+        selectedIncludedPieceIds,
+        exportResult.exportDirectory,
+      );
+      const mergedValidation = mergeExportSessionValidation(
+        result.validation,
+        validation,
+        {
+          dirtyPieceIds: new Set(selectedIncludedPieceIds),
+          preserveNonDirtyExcluded: true,
+        },
+      );
+      setValidation(mergedValidation);
+      setExportResult({
+        ...result,
+        validation: mergedValidation,
+      });
+      await onExported();
+      setStatusMessage(
+        `선택 항목 ${selectedIncludedPieceIds.length}개를 다시 내보냈습니다. 나머지 완료 상태는 유지했습니다.`,
+      );
+    } catch (error) {
+      setErrorMessage(getCommandErrorMessage(error));
+    } finally {
+      setIsExporting(false);
+    }
+  };
+
+  const handleExportSelected = async () => {
+    await handleExportPieces(Array.from(selectedPieceIds));
+  };
+
   const handleOpenOptimization = async (item: ExportPlanItem) => {
     if (!draft) {
       return;
@@ -455,6 +565,59 @@ export function ExportDialog({
     }
   };
 
+  const handleOptimizeSelected = async () => {
+    if (!draft || selectedOversizedItems.length === 0) {
+      return;
+    }
+
+    setIsOptimizing(true);
+    setErrorMessage(null);
+    setStatusMessage(`선택 항목 ${selectedOversizedItems.length}개의 용량 후보를 생성하는 중입니다.`);
+
+    const failures: string[] = [];
+    let appliedCount = 0;
+
+    for (const item of selectedOversizedItems) {
+      try {
+        const result =
+          item.outputFormat === "gif"
+            ? await generateGifOptimizationCandidates(item.iconId, draft.profileId, item.pieceId)
+            : await generateStaticOptimizationCandidates(
+                item.iconId,
+                draft.profileId,
+                item.pieceId,
+              );
+        const candidate = chooseBatchCandidate(result.candidates);
+        if (!candidate) {
+          failures.push(`${formatExportIndex(item)} 후보 없음`);
+          continue;
+        }
+        await applyOptimizationCandidate(candidate.id);
+        appliedCount += 1;
+      } catch (error) {
+        failures.push(`${formatExportIndex(item)} ${getCommandErrorMessage(error)}`);
+      }
+    }
+
+    try {
+      await runValidation(draft, excludedPieceIds, {
+        dirtyPieceIds: new Set(selectedOversizedItems.map((item) => item.pieceId)),
+        preserveSession: Boolean(exportResult),
+        quiet: true,
+      });
+    } finally {
+      setIsOptimizing(false);
+    }
+
+    setStatusMessage(
+      failures.length > 0
+        ? `용량 압축 ${appliedCount}개 적용, ${failures.length}개 실패: ${failures
+            .slice(0, 3)
+            .join(" / ")}`
+        : `용량 압축 후보 ${appliedCount}개를 적용했습니다. 필요한 항목만 다시 내보내세요.`,
+    );
+  };
+
   const handleApplyOptimization = async (candidate: OptimizationCandidate) => {
     if (!draft) {
       return;
@@ -464,7 +627,11 @@ export function ExportDialog({
     setOptimizationError(null);
     try {
       const applied = await applyOptimizationCandidate(candidate.id);
-      await runValidation(draft, excludedPieceIds, { quiet: true });
+      await runValidation(draft, excludedPieceIds, {
+        dirtyPieceIds: new Set([candidate.pieceId]),
+        preserveSession: Boolean(exportResult),
+        quiet: true,
+      });
       setStatusMessage(applied.message);
       setOptimizationResult((current) =>
         current
@@ -497,7 +664,11 @@ export function ExportDialog({
         draft.profileId,
         optimizationItem.pieceId,
       );
-      await runValidation(draft, excludedPieceIds, { quiet: true });
+      await runValidation(draft, excludedPieceIds, {
+        dirtyPieceIds: new Set([optimizationItem.pieceId]),
+        preserveSession: Boolean(exportResult),
+        quiet: true,
+      });
       setStatusMessage(cleared.message);
       setOptimizationResult(null);
     } catch (error) {
@@ -510,7 +681,11 @@ export function ExportDialog({
   const handleEditedIcon = (icon: IconSummary) => {
     onIconUpdated(icon);
     if (draft) {
-      void runValidation(draft, excludedPieceIds, { quiet: true });
+      void runValidation(draft, excludedPieceIds, {
+        dirtyIconIds: new Set([icon.id]),
+        preserveSession: Boolean(exportResult),
+        quiet: true,
+      });
     }
   };
 
@@ -544,7 +719,7 @@ export function ExportDialog({
 
           {draft && selectedProfile ? (
             <div className="grid gap-3 xl:grid-cols-[minmax(0,1fr)_auto]">
-              <div className="grid gap-2 md:grid-cols-[180px_minmax(180px,1fr)_180px_170px]">
+              <div className="grid gap-2 md:grid-cols-[180px_minmax(180px,1fr)_180px_170px_160px]">
                 <label className="flex min-w-0 flex-col gap-1 text-xs font-medium text-muted">
                   프로필
                   <select
@@ -617,6 +792,24 @@ export function ExportDialog({
                     ))}
                   </select>
                 </label>
+                <label className="flex min-w-0 flex-col gap-1 text-xs font-medium text-muted">
+                  리사이즈
+                  <select
+                    className="h-9 rounded-md border border-border bg-white px-2 text-sm text-foreground focus-visible:outline focus-visible:outline-2 focus-visible:outline-focus"
+                    value={draft.resizeFilter}
+                    onChange={(event) =>
+                      updateDraft({
+                        resizeFilter: event.currentTarget.value as ResizeFilter,
+                      })
+                    }
+                  >
+                    {RESIZE_FILTER_OPTIONS.map((option) => (
+                      <option key={option.value} value={option.value}>
+                        {option.label}
+                      </option>
+                    ))}
+                  </select>
+                </label>
               </div>
 
               <div className="flex flex-wrap items-end gap-2">
@@ -671,9 +864,8 @@ export function ExportDialog({
                 value={draft.targetCellHeight}
                 onChange={(targetCellHeight) => updateDraft({ targetCellHeight })}
               />
-              <NumberField
+              <MegabytesField
                 label="용량 제한"
-                min={1}
                 value={draft.maxBytes}
                 onChange={(maxBytes) => updateDraft({ maxBytes })}
               />
@@ -720,19 +912,29 @@ export function ExportDialog({
 
           <ExportSelectionToolbar
             allCount={allPieceIds.length}
+            canOptimizeSelected={canOptimizeSelected}
+            canRerunSelected={canRerunSelected}
             isBusy={isBusy}
             selectedCount={selectedPieceIds.size}
+            selectedIncludedCount={selectedIncludedCount}
+            selectedOversizedCount={selectedOversizedItems.length}
             visibleCount={filteredItems.length}
             onClearSelection={clearSelection}
             onExcludeAll={() => setPiecesIncluded(allPieceIds, false)}
-            onExcludeSelected={() =>
-              setPiecesIncluded(Array.from(selectedPieceIds), false)
-            }
             onIncludeAll={() => setPiecesIncluded(allPieceIds, true)}
-            onIncludeSelected={() =>
-              setPiecesIncluded(Array.from(selectedPieceIds), true)
-            }
+            onOptimizeSelected={() => {
+              void handleOptimizeSelected();
+            }}
+            onRerunSelected={() => {
+              void handleExportSelected();
+            }}
             onSelectVisible={selectVisibleItems}
+            onToggleSelectedIncluded={() =>
+              setPiecesIncluded(
+                Array.from(selectedPieceIds),
+                selectedIncludedCount === 0,
+              )
+            }
           />
 
           <div className="grid min-h-0 gap-4 xl:grid-cols-[minmax(300px,0.95fr)_minmax(460px,1.35fr)_320px]">
@@ -744,6 +946,7 @@ export function ExportDialog({
                     item={item}
                     key={item.pieceId}
                     selected={selectedPieceIds.has(item.pieceId)}
+                    onToggleIncluded={setPieceIncluded}
                     onSelect={handleSelectItem}
                   />
                 ))}
@@ -801,7 +1004,7 @@ export function ExportDialog({
                         result={validation}
                         disabled={isBusy}
                         selected={selectedPieceIds.has(item.pieceId)}
-                        canRerunExport={Boolean(exportResult?.exportDirectory)}
+                        canRerunExport={Boolean(exportResult?.exportDirectory && item.included)}
                         onEditIcon={setEditingIconId}
                         onIncludedChange={setPieceIncluded}
                         onOptimize={(nextItem) => {
@@ -809,7 +1012,7 @@ export function ExportDialog({
                         }}
                         onOpenPath={openExportPath}
                         onRerunExport={() => {
-                          void handleExport();
+                          void handleExportPieces([item.pieceId]);
                         }}
                         onSelect={handleSelectItem}
                       />
@@ -836,7 +1039,9 @@ export function ExportDialog({
               }}
               onOpenPath={openExportPath}
               onRerunExport={() => {
-                void handleExport();
+                if (selectedItem) {
+                  void handleExportPieces([selectedItem.pieceId]);
+                }
               }}
               onSetFilter={setFilter}
             />
@@ -896,29 +1101,42 @@ export function ExportDialog({
 
 function ExportSelectionToolbar({
   allCount,
+  canOptimizeSelected,
+  canRerunSelected,
   isBusy,
   selectedCount,
+  selectedIncludedCount,
+  selectedOversizedCount,
   visibleCount,
   onClearSelection,
   onExcludeAll,
-  onExcludeSelected,
   onIncludeAll,
-  onIncludeSelected,
+  onOptimizeSelected,
+  onRerunSelected,
   onSelectVisible,
+  onToggleSelectedIncluded,
 }: {
   allCount: number;
+  canOptimizeSelected: boolean;
+  canRerunSelected: boolean;
   isBusy: boolean;
   selectedCount: number;
+  selectedIncludedCount: number;
+  selectedOversizedCount: number;
   visibleCount: number;
   onClearSelection: () => void;
   onExcludeAll: () => void;
-  onExcludeSelected: () => void;
   onIncludeAll: () => void;
-  onIncludeSelected: () => void;
+  onOptimizeSelected: () => void;
+  onRerunSelected: () => void;
   onSelectVisible: () => void;
+  onToggleSelectedIncluded: () => void;
 }) {
+  const selectedIncludeAction =
+    selectedIncludedCount > 0 ? "선택 항목 제외" : "선택 항목 포함";
+
   return (
-    <section className="flex flex-wrap items-center justify-between gap-2 rounded-md border border-border bg-surface px-3 py-2">
+    <section className="flex max-h-28 select-none flex-wrap items-center justify-between gap-2 overflow-auto rounded-md border border-border bg-surface px-3 py-2">
       <div className="text-sm">
         <span className="font-semibold">선택 {selectedCount}개</span>
         <span className="ml-2 text-xs text-muted">
@@ -928,28 +1146,30 @@ function ExportSelectionToolbar({
       </div>
       <div className="flex flex-wrap gap-1">
         <ToolbarButton disabled={isBusy || visibleCount === 0} onClick={onSelectVisible}>
-          화면 전체 선택
+          보이는 항목 선택
         </ToolbarButton>
         <ToolbarButton disabled={isBusy || selectedCount === 0} onClick={onClearSelection}>
-          선택 해제
+          단순 선택 비우기
         </ToolbarButton>
         <ToolbarButton disabled={isBusy || allCount === 0} onClick={onIncludeAll}>
-          전체 선택
+          전체 내보내기 포함
         </ToolbarButton>
         <ToolbarButton disabled={isBusy || allCount === 0} onClick={onExcludeAll}>
-          전체 선택 해제
+          전체 내보내기 제외
         </ToolbarButton>
         <ToolbarButton
+          active={selectedCount > 0}
           disabled={isBusy || selectedCount === 0}
-          onClick={onIncludeSelected}
+          onClick={onToggleSelectedIncluded}
         >
-          선택 항목 포함
+          {selectedIncludeAction}
         </ToolbarButton>
-        <ToolbarButton
-          disabled={isBusy || selectedCount === 0}
-          onClick={onExcludeSelected}
-        >
-          선택 항목 제외
+        <ToolbarButton disabled={!canOptimizeSelected} onClick={onOptimizeSelected}>
+          선택 항목 용량 압축
+          {selectedOversizedCount > 0 ? ` (${selectedOversizedCount})` : ""}
+        </ToolbarButton>
+        <ToolbarButton disabled={!canRerunSelected} onClick={onRerunSelected}>
+          선택 항목 다시 내보내기
         </ToolbarButton>
       </div>
     </section>
@@ -957,17 +1177,24 @@ function ExportSelectionToolbar({
 }
 
 function ToolbarButton({
+  active = false,
   children,
   disabled,
   onClick,
 }: {
-  children: string;
+  active?: boolean;
+  children: ReactNode;
   disabled: boolean;
   onClick: () => void;
 }) {
   return (
     <button
-      className="rounded border border-border bg-white px-2 py-1 text-xs font-medium hover:bg-menu-hover focus-visible:outline focus-visible:outline-2 focus-visible:outline-focus disabled:cursor-not-allowed disabled:text-muted"
+      className={cn(
+        "rounded border px-2 py-1 text-xs font-medium focus-visible:outline focus-visible:outline-2 focus-visible:outline-focus disabled:cursor-not-allowed disabled:text-muted",
+        active && !disabled
+          ? "border-focus bg-selected text-focus hover:bg-selected/80"
+          : "border-border bg-white hover:bg-menu-hover",
+      )}
       disabled={disabled}
       type="button"
       onClick={onClick}
@@ -1025,21 +1252,27 @@ function SourceCard({
   item,
   selected,
   onSelect,
+  onToggleIncluded,
 }: {
   item: ExportPlanItem;
   selected: boolean;
   onSelect: (event: MouseEvent, item: ExportPlanItem) => void;
+  onToggleIncluded: (pieceId: string, included: boolean) => void;
 }) {
   return (
     <button
       aria-pressed={selected}
       className={cn(
-        "flex min-w-0 flex-col gap-2 rounded-md border border-border bg-white p-2 text-left hover:bg-menu-hover focus-visible:outline focus-visible:outline-2 focus-visible:outline-focus",
+        "flex min-w-0 select-none flex-col gap-2 rounded-md border border-border bg-white p-2 text-left hover:bg-menu-hover focus-visible:outline focus-visible:outline-2 focus-visible:outline-focus",
         selected && "border-focus bg-selected",
         !item.included && "opacity-55",
       )}
       type="button"
       onClick={(event) => onSelect(event, item)}
+      onDoubleClick={(event) => {
+        event.preventDefault();
+        onToggleIncluded(item.pieceId, !item.included);
+      }}
     >
       <PreviewImage src={item.sourcePreviewUrl} />
       <span className="truncate text-xs font-medium">{item.displayName}</span>
@@ -1086,10 +1319,12 @@ function ExportRow({
     <tr
       aria-selected={selected}
       className={cn(
-        "cursor-default border-b border-border/70 odd:bg-canvas",
-        selected && "bg-selected",
+        "cursor-default select-none border-b border-border/70",
+        selected ? "bg-selected odd:bg-selected" : "odd:bg-canvas",
         !item.included && "text-muted opacity-70",
       )}
+      data-testid="export-result-row"
+      tabIndex={0}
       onClick={(event) => onSelect(event, item)}
     >
       <td className="px-3 py-2">
@@ -1208,7 +1443,7 @@ function IssuePanel({
   onSetFilter: (filter: ExportWorkspaceFilter) => void;
 }) {
   return (
-    <aside className="flex min-h-0 flex-col gap-3 rounded-md border border-border bg-surface p-3">
+    <aside className="flex min-h-0 flex-col gap-3 overflow-auto rounded-md border border-border bg-surface p-3">
       <section>
         <h3 className="text-sm font-semibold tracking-normal">선택 항목</h3>
         {item ? (
@@ -1282,8 +1517,8 @@ function IssuePanel({
           <div className="grid gap-2">
             <button
               className="inline-flex items-center justify-center gap-2 rounded-md border border-border bg-white px-3 py-2 text-sm font-medium hover:bg-menu-hover focus-visible:outline focus-visible:outline-2 focus-visible:outline-focus disabled:cursor-not-allowed disabled:text-muted"
-              disabled={isBusy}
-              title="현재 포함 설정으로 다시 내보냅니다."
+              disabled={isBusy || !item?.included}
+              title="선택 항목만 기존 export 폴더에 다시 씁니다."
               type="button"
               onClick={onRerunExport}
             >
@@ -1638,6 +1873,51 @@ function NumberField({
   );
 }
 
+function MegabytesField({
+  label,
+  value,
+  onChange,
+}: {
+  label: string;
+  value: number;
+  onChange: (value: number) => void;
+}) {
+  const [draft, setDraft] = useState(() => bytesToMegabytesInput(value));
+
+  useEffect(() => {
+    setDraft(bytesToMegabytesInput(value));
+  }, [value]);
+
+  return (
+    <label className="flex items-center gap-2 text-xs font-medium text-muted">
+      {label}
+      <span className="inline-flex h-8 items-center rounded-md border border-border bg-white focus-within:outline focus-within:outline-2 focus-within:outline-focus">
+        <input
+          aria-label={`${label} MB`}
+          className="h-full w-20 min-w-0 select-text bg-transparent px-2 text-sm text-foreground outline-none"
+          inputMode="decimal"
+          type="text"
+          value={draft}
+          onBlur={() => {
+            if (megabytesInputToBytes(draft) === null) {
+              setDraft(bytesToMegabytesInput(value));
+            }
+          }}
+          onChange={(event) => {
+            const nextValue = event.currentTarget.value;
+            setDraft(nextValue);
+            const nextBytes = megabytesInputToBytes(nextValue);
+            if (nextBytes !== null) {
+              onChange(nextBytes);
+            }
+          }}
+        />
+        <span className="border-l border-border px-2 text-xs text-muted">MB</span>
+      </span>
+    </label>
+  );
+}
+
 function CheckboxField({
   checked,
   label,
@@ -1735,6 +2015,7 @@ function draftFromProfile(
     outputDirectory: "",
     openFolderAfterExport: true,
     openAltTxtAfterExport: profile.includeAltTxt,
+    resizeFilter: "lanczos3",
   };
 }
 
@@ -1755,6 +2036,7 @@ function payloadFromDraft(
     openFolderAfterExport: draft.openFolderAfterExport,
     openAltTxtAfterExport: draft.includeAltTxt && draft.openAltTxtAfterExport,
     excludedPieceIds: Array.from(excludedPieceIds),
+    resizeFilter: draft.resizeFilter,
   };
 }
 
@@ -1821,6 +2103,24 @@ function candidatePresetLabel(preset: string) {
     default:
       return "사용자 후보";
   }
+}
+
+function chooseBatchCandidate(candidates: OptimizationCandidate[]) {
+  const passingBalanced = candidates.find(
+    (candidate) => candidate.preset === "balanced" && candidate.passes,
+  );
+  if (passingBalanced) {
+    return passingBalanced;
+  }
+
+  const passing = candidates.find((candidate) => candidate.passes);
+  if (passing) {
+    return passing;
+  }
+
+  return [...candidates].sort(
+    (left, right) => left.measuredByteSize - right.measuredByteSize,
+  )[0];
 }
 
 function hasOversizedIssueFromIssues(issues: ReturnType<typeof issuesForItem>) {

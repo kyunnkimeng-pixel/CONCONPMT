@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useRef, useState } from "react";
-import type { MouseEvent } from "react";
+import type { FormEvent, MouseEvent, PointerEvent as ReactPointerEvent } from "react";
 import {
   closestCenter,
   DndContext,
@@ -93,6 +93,10 @@ export function IconGrid({
     x: number;
     y: number;
   } | null>(null);
+  const [batchAltDialog, setBatchAltDialog] = useState<{
+    iconIds: string[];
+    pieceCount: number;
+  } | null>(null);
   const sensors = useSensors(
     useSensor(PointerSensor, {
       activationConstraint: { distance: 6 },
@@ -162,20 +166,15 @@ export function IconGrid({
     }
   };
 
-  const handleBatchAltEdit = async (iconIds: string[]) => {
+  const handleBatchAltEdit = (iconIds: string[]) => {
     if (iconIds.length === 0) {
       return;
     }
 
-    const nextAlt = window.prompt(
-      `${iconIds.length}개 아이콘의 모든 alt 값을 변경합니다. 여러 alt가 바뀌는 경우 입력값 뒤에 1, 2...를 붙여 중복을 피합니다.`,
-      "",
-    );
-    if (nextAlt === null) {
-      return;
-    }
-
-    await onBatchAltCommit(iconIds, nextAlt);
+    setBatchAltDialog({
+      iconIds,
+      pieceCount: altPieceCountForIconIds(icons, iconIds),
+    });
   };
 
   const handleDragEnd = (event: DragEndEvent) => {
@@ -203,6 +202,7 @@ export function IconGrid({
       : targetIcon
         ? [targetIcon.id]
         : [];
+  const contextAltSelectionCount = altPieceCountForIconIds(icons, contextSelectionIds);
 
   return (
     <>
@@ -262,6 +262,7 @@ export function IconGrid({
           isCover={collection.coverIconId === targetIcon.id}
           hasExportResult={targetIcon.pieces.some((piece) => piece.lastExportUrl)}
           selectionCount={contextSelectionIds.length}
+          altSelectionCount={contextAltSelectionCount}
           x={contextMenu.x}
           y={contextMenu.y}
           onClose={() => setContextMenu(null)}
@@ -297,6 +298,168 @@ export function IconGrid({
           onSetThumbnailOverride={() => onSetThumbnailOverride(targetIcon.id)}
         />
       ) : null}
+      {batchAltDialog ? (
+        <BatchAltDialog
+          iconCount={batchAltDialog.iconIds.length}
+          pieceCount={batchAltDialog.pieceCount}
+          onClose={() => setBatchAltDialog(null)}
+          onSubmit={(value) => {
+            void onBatchAltCommit(batchAltDialog.iconIds, value).then((didCommit) => {
+              if (didCommit) {
+                setBatchAltDialog(null);
+              }
+            });
+          }}
+        />
+      ) : null}
     </>
+  );
+}
+
+function altPieceCountForIconIds(icons: IconSummary[], iconIds: string[]) {
+  const iconIdSet = new Set(iconIds);
+  return icons
+    .filter((icon) => iconIdSet.has(icon.id))
+    .reduce((count, icon) => count + icon.pieces.length, 0);
+}
+
+function BatchAltDialog({
+  iconCount,
+  pieceCount,
+  onClose,
+  onSubmit,
+}: {
+  iconCount: number;
+  pieceCount: number;
+  onClose: () => void;
+  onSubmit: (value: string) => void;
+}) {
+  const [value, setValue] = useState("");
+  const [position, setPosition] = useState({ x: 96, y: 96 });
+  const dragRef = useRef<{
+    pointerId: number;
+    startClientX: number;
+    startClientY: number;
+    startX: number;
+    startY: number;
+  } | null>(null);
+
+  useEffect(() => {
+    const handleKeyDown = (event: KeyboardEvent) => {
+      if (event.key === "Escape") {
+        onClose();
+      }
+    };
+
+    window.addEventListener("keydown", handleKeyDown);
+    return () => window.removeEventListener("keydown", handleKeyDown);
+  }, [onClose]);
+
+  const startDrag = (event: ReactPointerEvent<HTMLElement>) => {
+    const target = event.target;
+    if (target instanceof HTMLElement && target.closest("button,input,textarea,select")) {
+      return;
+    }
+    event.preventDefault();
+    event.currentTarget.setPointerCapture(event.pointerId);
+    dragRef.current = {
+      pointerId: event.pointerId,
+      startClientX: event.clientX,
+      startClientY: event.clientY,
+      startX: position.x,
+      startY: position.y,
+    };
+  };
+
+  const moveDialog = (event: ReactPointerEvent<HTMLElement>) => {
+    const dragState = dragRef.current;
+    if (!dragState) {
+      return;
+    }
+
+    event.preventDefault();
+    setPosition({
+      x: Math.max(8, dragState.startX + event.clientX - dragState.startClientX),
+      y: Math.max(8, dragState.startY + event.clientY - dragState.startClientY),
+    });
+  };
+
+  const stopDrag = (event: ReactPointerEvent<HTMLElement>) => {
+    if (dragRef.current?.pointerId === event.pointerId) {
+      dragRef.current = null;
+    }
+  };
+
+  const submit = (event: FormEvent) => {
+    event.preventDefault();
+    onSubmit(value);
+  };
+
+  return (
+    <div className="fixed inset-0 z-[60] pointer-events-none">
+      <form
+        className="pointer-events-auto fixed flex w-[min(420px,calc(100vw-32px))] flex-col rounded-md border border-border bg-white shadow-xl"
+        data-testid="batch-alt-dialog"
+        style={{
+          left: position.x,
+          top: position.y,
+        }}
+        onSubmit={submit}
+      >
+        <header
+          className="flex cursor-move select-none items-center justify-between gap-3 border-b border-border bg-canvas px-4 py-3"
+          onPointerCancel={stopDrag}
+          onPointerDown={startDrag}
+          onPointerMove={moveDialog}
+          onPointerUp={stopDrag}
+        >
+          <div className="min-w-0">
+            <h3 className="text-sm font-semibold tracking-normal">alt 값 일괄 변경</h3>
+            <p className="mt-1 text-xs text-muted">
+              선택 아이콘 {iconCount}개 · 실제 alt {pieceCount}개 변경
+            </p>
+          </div>
+          <button
+            aria-label="alt 일괄 변경 닫기"
+            className="rounded border border-border bg-white px-2 py-1 text-xs font-medium hover:bg-menu-hover focus-visible:outline focus-visible:outline-2 focus-visible:outline-focus"
+            type="button"
+            onClick={onClose}
+          >
+            닫기
+          </button>
+        </header>
+        <div className="flex flex-col gap-3 p-4">
+          <label className="flex flex-col gap-1 text-xs font-medium text-muted">
+            입력값
+            <textarea
+              autoFocus
+              className="min-h-24 resize-y rounded-md border border-border bg-white px-3 py-2 text-sm text-foreground focus-visible:outline focus-visible:outline-2 focus-visible:outline-focus"
+              placeholder="예: 가,나,다"
+              value={value}
+              onChange={(event) => setValue(event.currentTarget.value)}
+            />
+          </label>
+          <div className="rounded-md border border-border bg-canvas px-3 py-2 text-xs text-muted">
+            쉼표로 구분하면 실제 alt {pieceCount}개에 순서대로 적용됩니다. 입력 수가
+            부족하면 마지막 값에 1, 2...를 붙입니다. 빈칸이면 1, 2, 3... 순번을 넣습니다.
+          </div>
+          <div className="flex justify-end gap-2">
+            <button
+              className="rounded border border-border bg-white px-3 py-2 text-sm font-medium hover:bg-menu-hover focus-visible:outline focus-visible:outline-2 focus-visible:outline-focus"
+              type="button"
+              onClick={onClose}
+            >
+              취소
+            </button>
+            <button
+              className="rounded bg-accent px-3 py-2 text-sm font-semibold text-accent-foreground hover:bg-accent-strong focus-visible:outline focus-visible:outline-2 focus-visible:outline-focus"
+              type="submit"
+            >
+              적용
+            </button>
+          </div>
+        </div>
+      </form>
+    </div>
   );
 }

@@ -50,6 +50,10 @@ import { IconGrid } from "@/features/icons/components/IconGrid";
 import { createUniqueBatchAltUpdates } from "@/features/icons/batch-alt";
 import { DcinsidePreview } from "@/features/preview/components/DcinsidePreview";
 import {
+  bytesToMegabytesInput,
+  megabytesInputToBytes,
+} from "@/lib/byte-size";
+import {
   IMPORTABLE_IMAGE_ACCEPT,
   COVER_IMAGE_ACCEPT,
   isCoverImageFile,
@@ -280,7 +284,7 @@ export function CollectionRoute() {
         );
         setIcons(await listIcons(collectionId));
         setImportStatus(
-          `${targetPieceIds.length}개의 alt 값을 숫자 suffix로 중복 없이 일괄 변경했습니다.`,
+          `${targetPieceIds.length}개의 alt 값을 순서대로 중복 없이 일괄 변경했습니다.`,
         );
         return true;
       } catch (error) {
@@ -827,7 +831,7 @@ export function CollectionRoute() {
           ) : (
             <DropImportZone
               isDragging={isDragging}
-              label="이 모음에 이미지 파일 놓기"
+              label="썸네일 영역에 이미지 파일 놓기"
               onDragStateChange={setIsDragging}
               onFilesDropped={(files) => {
                 void handleImportFiles(files);
@@ -991,7 +995,7 @@ function CollectionSettingsPanel({
             <option value="source">원본</option>
           </select>
         </label>
-        <SettingsNumberField
+        <SettingsMegabytesField
           label="최대 용량"
           value={draft.maxBytes}
           onChange={(value) => updateNumber("maxBytes", value)}
@@ -1125,6 +1129,51 @@ function SettingsNumberField({
           }
         }}
       />
+    </label>
+  );
+}
+
+function SettingsMegabytesField({
+  label,
+  value,
+  onChange,
+}: {
+  label: string;
+  value: number;
+  onChange: (value: number) => void;
+}) {
+  const [draft, setDraft] = useState(() => bytesToMegabytesInput(value));
+
+  useEffect(() => {
+    setDraft(bytesToMegabytesInput(value));
+  }, [value]);
+
+  return (
+    <label className="flex min-w-0 flex-col gap-1 text-xs font-medium text-muted">
+      {label}
+      <span className="flex min-w-0 items-center rounded-md border border-border bg-white focus-within:outline focus-within:outline-2 focus-within:outline-focus">
+        <input
+          aria-label={`${label} MB`}
+          className="min-w-0 flex-1 select-text bg-transparent px-2 py-2 text-sm text-foreground outline-none"
+          inputMode="decimal"
+          type="text"
+          value={draft}
+          onBlur={() => {
+            if (megabytesInputToBytes(draft) === null) {
+              setDraft(bytesToMegabytesInput(value));
+            }
+          }}
+          onChange={(event) => {
+            const nextValue = event.currentTarget.value;
+            setDraft(nextValue);
+            const nextBytes = megabytesInputToBytes(nextValue);
+            if (nextBytes !== null) {
+              onChange(nextBytes);
+            }
+          }}
+        />
+        <span className="border-l border-border px-2 text-xs text-muted">MB</span>
+      </span>
     </label>
   );
 }

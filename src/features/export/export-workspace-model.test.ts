@@ -2,6 +2,7 @@ import { describe, expect, it } from "vitest";
 
 import {
   filterExportItems,
+  mergeExportSessionValidation,
   problemExportNumbers,
   summarizeExportWorkspace,
 } from "@/features/export/export-workspace-model";
@@ -44,7 +45,7 @@ describe("export workspace model", () => {
     });
   });
 
-  it("filters included, excluded, failed, gif, and oversized items", () => {
+  it("filters included, excluded, completed, pending, failed, gif, and oversized items", () => {
     const result = validationResult([
       item({ pieceId: "ok", status: "written_ok" }),
       item({
@@ -73,6 +74,11 @@ describe("export workspace model", () => {
     expect(filterExportItems(result, "excluded").map((next) => next.pieceId)).toEqual([
       "excluded",
     ]);
+    expect(filterExportItems(result, "completed").map((next) => next.pieceId)).toEqual([
+      "ok",
+      "gif",
+    ]);
+    expect(filterExportItems(result, "pending").map((next) => next.pieceId)).toEqual([]);
     expect(filterExportItems(result, "failed").map((next) => next.pieceId)).toEqual([
       "failed",
     ]);
@@ -93,6 +99,35 @@ describe("export workspace model", () => {
     ]);
 
     expect(problemExportNumbers(result)).toEqual(["002", "003"]);
+  });
+
+  it("preserves non-dirty written session rows after targeted revalidation", () => {
+    const previous = validationResult([
+      item({
+        byteSize: 1200,
+        exportPath: "C:/exports/files/001.png",
+        pieceId: "done",
+        status: "written_ok",
+      }),
+      item({ pieceId: "edited", status: "written_ok" }),
+    ]);
+    const next = validationResult([
+      item({ pieceId: "done", status: "preflight_ok" }),
+      item({ pieceId: "edited", status: "preflight_warning" }),
+    ]);
+
+    const merged = mergeExportSessionValidation(next, previous, {
+      dirtyPieceIds: new Set(["edited"]),
+    });
+
+    expect(merged.items.find((nextItem) => nextItem.pieceId === "done")).toMatchObject({
+      byteSize: 1200,
+      exportPath: "C:/exports/files/001.png",
+      status: "written_ok",
+    });
+    expect(merged.items.find((nextItem) => nextItem.pieceId === "edited")?.status).toBe(
+      "preflight_warning",
+    );
   });
 });
 

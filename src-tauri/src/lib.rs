@@ -38,6 +38,7 @@ pub fn run() {
             commands::export::save_export_profile_settings,
             commands::export::validate_export_collection,
             commands::export::export_collection,
+            commands::export::export_selected_collection_items,
             commands::export::open_export_path,
             commands::export::pick_export_directory,
             commands::export::analyze_export_asset_candidate,

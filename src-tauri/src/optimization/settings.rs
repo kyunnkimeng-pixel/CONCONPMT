@@ -26,6 +26,7 @@ pub struct GifCandidateSettings {
     pub encoder_speed: i32,
     pub color_limit: Option<i64>,
     pub fps_limit: Option<i64>,
+    pub playback_fps: Option<i64>,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -47,6 +48,7 @@ pub fn gif_settings_for_preset(
             encoder_speed: 10,
             color_limit: Some(256),
             fps_limit: None,
+            playback_fps: None,
         },
         OptimizationPreset::Balanced => GifCandidateSettings {
             preset: preset.as_str().to_string(),
@@ -54,6 +56,7 @@ pub fn gif_settings_for_preset(
             encoder_speed: 20,
             color_limit: Some(128),
             fps_limit: Some(15),
+            playback_fps: None,
         },
         OptimizationPreset::Smallest => GifCandidateSettings {
             preset: preset.as_str().to_string(),
@@ -67,6 +70,7 @@ pub fn gif_settings_for_preset(
             encoder_speed: 30,
             color_limit: Some(64),
             fps_limit: Some(10),
+            playback_fps: None,
         },
     }
 }

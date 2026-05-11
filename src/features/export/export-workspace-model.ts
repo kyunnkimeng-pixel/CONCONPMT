@@ -9,6 +9,8 @@ export type ExportWorkspaceFilter =
   | "all"
   | "included"
   | "excluded"
+  | "completed"
+  | "pending"
   | "warnings"
   | "not_upload_ready"
   | "failed"
@@ -31,6 +33,8 @@ export const EXPORT_WORKSPACE_FILTER_LABELS: Record<ExportWorkspaceFilter, strin
   all: "전체",
   included: "포함",
   excluded: "제외",
+  completed: "완료",
+  pending: "대기중",
   warnings: "경고",
   not_upload_ready: "업로드 불가",
   failed: "내보내기 실패",
@@ -121,6 +125,10 @@ export function filterExportItems(
         return item.included;
       case "excluded":
         return !item.included;
+      case "completed":
+        return isWrittenStatus(item.status);
+      case "pending":
+        return item.included && isPendingStatus(item.status);
       case "warnings":
         return isWarningStatus(item.status) || warningPieceIds.has(item.pieceId);
       case "not_upload_ready":
@@ -219,6 +227,17 @@ function isWrittenStatus(status: ExportItemStatus) {
   );
 }
 
+function isPendingStatus(status: ExportItemStatus) {
+  return (
+    status === "pending" ||
+    status === "preflight_ok" ||
+    status === "preflight_warning" ||
+    status === "preflight_not_upload_ready" ||
+    status === "rendering" ||
+    status === "optimized"
+  );
+}
+
 function isUploadReadyStatus(status: ExportItemStatus) {
   return status === "preflight_ok" || status === "written_ok";
 }
@@ -244,4 +263,58 @@ function pieceIdSet(issues: ExportValidationIssue[]) {
 
 export function issueSummary(issues: ExportValidationIssue[]) {
   return issues.map((issue) => issue.message).join(" / ");
+}
+
+export interface MergeExportSessionOptions {
+  dirtyIconIds?: Set<string>;
+  dirtyPieceIds?: Set<string>;
+  preserveNonDirtyExcluded?: boolean;
+}
+
+export function mergeExportSessionValidation(
+  next: ExportValidationResult,
+  previous: ExportValidationResult | null,
+  options: MergeExportSessionOptions = {},
+): ExportValidationResult {
+  if (!previous) {
+    return next;
+  }
+
+  const dirtyIconIds = options.dirtyIconIds ?? new Set<string>();
+  const dirtyPieceIds = options.dirtyPieceIds ?? new Set<string>();
+  const previousByPieceId = new Map(
+    previous.items.map((item) => [item.pieceId, item] as const),
+  );
+
+  return {
+    ...next,
+    items: next.items.map((item) => {
+      const previousItem = previousByPieceId.get(item.pieceId);
+      if (
+        !previousItem ||
+        dirtyIconIds.has(item.iconId) ||
+        dirtyPieceIds.has(item.pieceId)
+      ) {
+        return item;
+      }
+
+      if (!previousItem.included && !options.preserveNonDirtyExcluded) {
+        return item;
+      }
+
+      if (isWrittenStatus(previousItem.status) || previousItem.status === "excluded") {
+        return {
+          ...item,
+          byteSize: previousItem.byteSize,
+          exportIndex: previousItem.exportIndex,
+          exportPath: previousItem.exportPath,
+          fileName: previousItem.fileName,
+          included: previousItem.included,
+          status: previousItem.status,
+        };
+      }
+
+      return item;
+    }),
+  };
 }

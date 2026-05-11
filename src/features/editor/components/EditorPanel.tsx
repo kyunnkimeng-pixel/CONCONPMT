@@ -50,6 +50,7 @@ import type {
   IconEditorState,
   IconShape,
   PresetPosition,
+  TextOverlaySettings,
 } from "@/features/editor/types";
 import { filePathToAssetUrl } from "@/lib/asset-url";
 import { getCommandErrorMessage } from "@/lib/tauri";
@@ -502,12 +503,13 @@ export function EditorPanel({
                   <h3 className="text-sm font-semibold tracking-normal">원본 이미지</h3>
                   <button
                     aria-label="고급 편집 열기"
-                    className="inline-flex size-8 items-center justify-center rounded-md border border-border bg-white hover:bg-menu-hover focus-visible:outline focus-visible:outline-2 focus-visible:outline-focus"
+                    className="inline-flex h-8 items-center gap-1 rounded-md border border-border bg-white px-2 text-xs font-medium hover:bg-menu-hover focus-visible:outline focus-visible:outline-2 focus-visible:outline-focus"
                     title="고급 편집"
                     type="button"
                     onClick={() => setIsAdvancedOpen(true)}
                   >
                     <Pencil aria-hidden="true" className="size-4" />
+                    고급
                   </button>
                 </div>
                 <p className="mt-1 truncate text-xs text-muted">
@@ -524,6 +526,7 @@ export function EditorPanel({
                 sourceHeight={editorState.source.height}
                 sourceUrl={editorState.source.originalImageUrl}
                 sourceWidth={editorState.source.width}
+                textOverlay={editorState.textOverlay}
                 onCropChange={handleCropChange}
               />
             </section>
@@ -684,6 +687,7 @@ export function EditorPanel({
                   sourceHeight={editorState.source.height}
                   sourceUrl={editorState.source.originalImageUrl}
                   sourceWidth={editorState.source.width}
+                  textOverlay={editorState.textOverlay}
                 />
               </div>
             </section>
@@ -772,6 +776,8 @@ function AdvancedEditPanel({
   const [profileId, setProfileId] = useState("");
   const [pieceId, setPieceId] = useState(editorState.icon.pieces[0]?.id ?? "");
   const [fpsLimit, setFpsLimit] = useState(15);
+  const [playbackFps, setPlaybackFps] = useState<number | null>(null);
+  const [colorLimit, setColorLimit] = useState<number | null>(128);
   const [jpegQuality, setJpegQuality] = useState(82);
   const [textEnabled, setTextEnabled] = useState(editorState.textOverlay.enabled);
   const [textValue, setTextValue] = useState(editorState.textOverlay.text);
@@ -824,6 +830,8 @@ function AdvancedEditPanel({
 
   const selectedProfile = profiles.find((profile) => profile.id === profileId) ?? null;
   const selectedPiece = editorState.icon.pieces.find((piece) => piece.id === pieceId);
+  const usesJpegQuality =
+    !editorState.source.isAnimated && selectedProfile?.targetFormat === "jpg";
 
   const handleGenerate = async () => {
     if (!selectedProfile || !selectedPiece) {
@@ -837,13 +845,63 @@ function AdvancedEditPanel({
     try {
       const nextResult = editorState.source.isAnimated
         ? await generateGifOptimizationCandidates(editorState.icon.id, profileId, pieceId, {
+            colorLimit,
             fpsLimit,
+            playbackFps: null,
           })
         : await generateStaticOptimizationCandidates(editorState.icon.id, profileId, pieceId, {
-            jpegQuality,
+            jpegQuality: usesJpegQuality ? jpegQuality : null,
           });
       setResult(nextResult);
       onStatus(nextResult.message);
+    } catch (error) {
+      setErrorMessage(getCommandErrorMessage(error));
+    } finally {
+      setIsBusy(false);
+    }
+  };
+
+  const handleApplyPlaybackFps = async () => {
+    if (!selectedProfile || !selectedPiece || !editorState.source.isAnimated || playbackFps === null) {
+      return;
+    }
+
+    setIsBusy(true);
+    setErrorMessage(null);
+    setResult(null);
+
+    try {
+      const nextResult = await generateGifOptimizationCandidates(
+        editorState.icon.id,
+        profileId,
+        pieceId,
+        {
+          colorLimit: null,
+          fpsLimit: null,
+          frameStep: null,
+          playbackFps,
+        },
+      );
+      const candidate =
+        nextResult.candidates.find((next) => next.preset === "quality") ??
+        nextResult.candidates[0] ??
+        null;
+
+      if (!candidate) {
+        setResult(nextResult);
+        setErrorMessage("GIF 재생 FPS 후보를 만들 수 없습니다.");
+        return;
+      }
+
+      const applied = await applyOptimizationCandidate(candidate.id);
+      setResult({
+        ...nextResult,
+        candidates: nextResult.candidates.map((next) => ({
+          ...next,
+          isActiveForExport: next.id === candidate.id,
+        })),
+      });
+      onStatus(`${applied.message} GIF 재생 FPS ${playbackFps}를 적용했습니다.`);
     } catch (error) {
       setErrorMessage(getCommandErrorMessage(error));
     } finally {
@@ -939,7 +997,7 @@ function AdvancedEditPanel({
 
   return (
     <div className="absolute inset-0 z-20 flex items-center justify-center bg-black/30 p-4">
-      <section className="flex max-h-full w-full max-w-3xl flex-col rounded-md border border-border bg-surface shadow-xl">
+      <section className="relative flex max-h-full w-full max-w-3xl flex-col rounded-md border border-border bg-surface shadow-xl">
         <header className="flex items-center justify-between gap-3 border-b border-border px-4 py-3">
           <div className="min-w-0">
             <h3 className="truncate text-base font-semibold tracking-normal">고급 편집</h3>
@@ -957,6 +1015,22 @@ function AdvancedEditPanel({
             <X aria-hidden="true" className="size-4" />
           </button>
         </header>
+
+        {isBusy ? (
+          <div className="absolute inset-x-0 top-[57px] z-10 border-b border-border bg-surface/95 px-4 py-2">
+            <div className="flex items-center justify-between text-xs text-muted">
+              <span>고급 편집 작업을 처리하는 중입니다.</span>
+              <span>실제 파일 생성 및 용량 측정</span>
+            </div>
+            <div
+              aria-label="고급 편집 처리 중"
+              className="mt-2 h-2 overflow-hidden rounded-full bg-preview"
+              role="progressbar"
+            >
+              <div className="h-full w-1/2 animate-pulse rounded-full bg-accent" />
+            </div>
+          </div>
+        ) : null}
 
         <div className="grid min-h-0 gap-4 overflow-auto p-4 md:grid-cols-[260px_minmax(0,1fr)]">
           <aside className="flex flex-col gap-3">
@@ -993,36 +1067,115 @@ function AdvancedEditPanel({
             </label>
 
             {editorState.source.isAnimated ? (
-              <label className="flex flex-col gap-1 text-xs font-medium text-muted">
-                GIF FPS 제한
-                <select
-                  className="rounded-md border border-border bg-white px-3 py-2 text-sm text-foreground focus-visible:outline focus-visible:outline-2 focus-visible:outline-focus"
-                  disabled={isBusy}
-                  value={fpsLimit}
-                  onChange={(event) => setFpsLimit(Number(event.currentTarget.value))}
-                >
-                  {[24, 20, 15, 12, 10, 8].map((value) => (
-                    <option key={value} value={value}>
-                      {value} fps
-                    </option>
-                  ))}
-                </select>
-              </label>
-            ) : (
+              <>
+                <div className="flex flex-col gap-2 rounded-md border border-border bg-white p-3">
+                  <div className="flex items-center justify-between gap-2 text-xs font-medium text-muted">
+                    <span>GIF 프레임 줄이기 FPS 상한</span>
+                    <ClearableNumberInput
+                      disabled={isBusy}
+                      max={60}
+                      min={1}
+                      value={fpsLimit}
+                      onCommit={setFpsLimit}
+                    />
+                  </div>
+                  <input
+                    disabled={isBusy}
+                    max={60}
+                    min={1}
+                    type="range"
+                    value={fpsLimit}
+                    onChange={(event) => setFpsLimit(Number(event.currentTarget.value))}
+                  />
+                  <p className="text-[11px] text-muted">
+                    높은 FPS 제한은 프레임 손실을 줄이지만 용량이 거의 줄지 않을 수 있습니다.
+                  </p>
+                </div>
+                <div className="flex flex-col gap-2 rounded-md border border-border bg-white p-3">
+                  <div className="flex items-center justify-between gap-2 text-xs font-medium text-muted">
+                    <span>GIF 재생 FPS</span>
+                    <div className="flex items-center gap-2">
+                      <ClearableNumberInput
+                        disabled={isBusy}
+                        max={60}
+                        min={1}
+                        value={playbackFps ?? 24}
+                        onCommit={(value) => setPlaybackFps(Math.round(value))}
+                      />
+                      <button
+                        className="rounded border border-border px-2 py-1 text-[11px] font-medium hover:bg-menu-hover disabled:cursor-not-allowed disabled:text-muted"
+                        disabled={isBusy || playbackFps === null}
+                        type="button"
+                        onClick={() => setPlaybackFps(null)}
+                      >
+                        원본 FPS
+                      </button>
+                    </div>
+                  </div>
+                  <input
+                    disabled={isBusy}
+                    max={60}
+                    min={1}
+                    type="range"
+                    value={playbackFps ?? 24}
+                    onChange={(event) =>
+                      setPlaybackFps(Number(event.currentTarget.value))
+                    }
+                  />
+                  <p className="text-[11px] text-muted">
+                    원본 FPS는 GIF의 기존 프레임 지연 시간을 그대로 씁니다. 값을 지정하면
+                    후보 GIF의 재생 속도가 해당 FPS 기준으로 다시 인코딩됩니다.
+                  </p>
+                  <button
+                    className="rounded-md border border-accent bg-white px-3 py-2 text-xs font-semibold text-accent hover:bg-menu-hover focus-visible:outline focus-visible:outline-2 focus-visible:outline-focus disabled:cursor-not-allowed disabled:opacity-60"
+                    disabled={isBusy || !selectedProfile || !selectedPiece || playbackFps === null}
+                    type="button"
+                    onClick={() => {
+                      void handleApplyPlaybackFps();
+                    }}
+                  >
+                    GIF 재생 FPS 적용
+                  </button>
+                </div>
+                <label className="flex flex-col gap-1 text-xs font-medium text-muted">
+                  최대 색상 수
+                  <select
+                    className="rounded-md border border-border bg-white px-3 py-2 text-sm text-foreground focus-visible:outline focus-visible:outline-2 focus-visible:outline-focus"
+                    disabled={isBusy}
+                    value={colorLimit ?? "auto"}
+                    onChange={(event) =>
+                      setColorLimit(
+                        event.currentTarget.value === "auto"
+                          ? null
+                          : Number(event.currentTarget.value),
+                      )
+                    }
+                  >
+                    <option value="auto">자동</option>
+                    {[256, 224, 192, 160, 128, 96, 64, 48, 32].map((value) => (
+                      <option key={value} value={value}>
+                        {value}색
+                      </option>
+                    ))}
+                  </select>
+                </label>
+              </>
+            ) : usesJpegQuality ? (
               <label className="flex flex-col gap-1 text-xs font-medium text-muted">
                 JPG 품질
-                <input
-                  className="rounded-md border border-border bg-white px-3 py-2 text-sm text-foreground focus-visible:outline focus-visible:outline-2 focus-visible:outline-focus"
+                <ClearableNumberInput
                   disabled={isBusy}
                   max={100}
                   min={1}
-                  type="number"
                   value={jpegQuality}
-                  onChange={(event) =>
-                    setJpegQuality(Math.max(1, Math.min(100, event.currentTarget.valueAsNumber || 82)))
-                  }
+                  onCommit={setJpegQuality}
                 />
               </label>
+            ) : (
+              <div className="rounded-md border border-border bg-white p-3 text-xs text-muted">
+                PNG/원본 형식은 JPG 품질 값을 사용하지 않습니다. 현재 후보는 목표 크기로
+                리사이즈하고 투명도를 보존한 실제 파일 크기를 측정합니다.
+              </div>
             )}
 
             <button
@@ -1071,32 +1224,20 @@ function AdvancedEditPanel({
               <div className="mt-2 grid grid-cols-2 gap-2">
                 <label className="flex flex-col gap-1 text-xs font-medium text-muted">
                   크기
-                  <input
-                    className="rounded-md border border-border bg-white px-2 py-1.5 text-sm text-foreground"
+                  <ClearableNumberInput
                     disabled={isBusy}
                     min={1}
-                    type="number"
                     value={textFontSize}
-                    onChange={(event) =>
-                      setTextFontSize(
-                        Math.max(1, event.currentTarget.valueAsNumber || 28),
-                      )
-                    }
+                    onCommit={setTextFontSize}
                   />
                 </label>
                 <label className="flex flex-col gap-1 text-xs font-medium text-muted">
                   외곽선
-                  <input
-                    className="rounded-md border border-border bg-white px-2 py-1.5 text-sm text-foreground"
+                  <ClearableNumberInput
                     disabled={isBusy}
                     min={0}
-                    type="number"
                     value={textStrokeWidth}
-                    onChange={(event) =>
-                      setTextStrokeWidth(
-                        Math.max(0, event.currentTarget.valueAsNumber || 0),
-                      )
-                    }
+                    onCommit={setTextStrokeWidth}
                   />
                 </label>
                 <label className="flex flex-col gap-1 text-xs font-medium text-muted">
@@ -1179,6 +1320,25 @@ function AdvancedEditPanel({
           </aside>
 
           <div className="flex min-h-0 flex-col gap-3">
+            <AdvancedLivePreview
+              color={textColor}
+              disabled={isBusy}
+              enabled={textEnabled}
+              fontSize={textFontSize}
+              sourceHeight={editorState.source.height}
+              sourceUrl={editorState.source.originalImageUrl}
+              sourceWidth={editorState.source.width}
+              strokeColor={textStrokeColor}
+              strokeWidth={textStrokeWidth}
+              text={textValue}
+              x={textX}
+              y={textY}
+              onMove={(nextX, nextY) => {
+                setTextX(nextX);
+                setTextY(nextY);
+              }}
+              onResize={setTextFontSize}
+            />
             {selectedProfile ? (
               <div className="rounded-md border border-border bg-canvas px-3 py-2 text-xs text-muted">
                 제한: {formatBytes(selectedProfile.maxBytes)} · 출력 크기{" "}
@@ -1219,6 +1379,228 @@ function AdvancedEditPanel({
       </section>
     </div>
   );
+}
+
+function AdvancedLivePreview({
+  color,
+  disabled,
+  enabled,
+  fontSize,
+  sourceHeight,
+  sourceUrl,
+  sourceWidth,
+  strokeColor,
+  strokeWidth,
+  text,
+  x,
+  y,
+  onMove,
+  onResize,
+}: {
+  color: string;
+  disabled: boolean;
+  enabled: boolean;
+  fontSize: number;
+  sourceHeight: number;
+  sourceUrl: string | null;
+  sourceWidth: number;
+  strokeColor: string;
+  strokeWidth: number;
+  text: string;
+  x: number;
+  y: number;
+  onMove: (x: number, y: number) => void;
+  onResize: (fontSize: number) => void;
+}) {
+  const previewRef = useRef<HTMLDivElement | null>(null);
+  const dragRef = useRef<{
+    kind: "move" | "resize";
+    startClientX: number;
+    startClientY: number;
+    startFontSize: number;
+  } | null>(null);
+  const [previewWidth, setPreviewWidth] = useState(0);
+  const assetUrl = filePathToAssetUrl(sourceUrl);
+  const displayScale =
+    previewWidth > 0 ? previewWidth / Math.max(1, sourceWidth) : 1;
+
+  useEffect(() => {
+    const element = previewRef.current;
+    if (!element) {
+      return;
+    }
+    const update = () => setPreviewWidth(element.getBoundingClientRect().width);
+    update();
+    const observer = new ResizeObserver(update);
+    observer.observe(element);
+    return () => observer.disconnect();
+  }, []);
+
+  const startDrag = (event: PointerEvent<HTMLElement>, kind: "move" | "resize") => {
+    if (disabled || !enabled) {
+      return;
+    }
+    event.preventDefault();
+    event.stopPropagation();
+    event.currentTarget.setPointerCapture(event.pointerId);
+    dragRef.current = {
+      kind,
+      startClientX: event.clientX,
+      startClientY: event.clientY,
+      startFontSize: fontSize,
+    };
+  };
+
+  const updateDrag = (event: PointerEvent<HTMLElement>) => {
+    const dragState = dragRef.current;
+    if (!dragState) {
+      return;
+    }
+    event.preventDefault();
+
+    if (dragState.kind === "resize") {
+      const delta = Math.max(
+        event.clientX - dragState.startClientX,
+        event.clientY - dragState.startClientY,
+      );
+      onResize(
+        Math.max(
+          1,
+          Math.round(dragState.startFontSize + delta / Math.max(0.01, displayScale) / 2),
+        ),
+      );
+      return;
+    }
+
+    const rect = previewRef.current?.getBoundingClientRect();
+    if (!rect || rect.width <= 0 || rect.height <= 0) {
+      return;
+    }
+    onMove(
+      clampPercent(((event.clientX - rect.left) / rect.width) * 100),
+      clampPercent(((event.clientY - rect.top) / rect.height) * 100),
+    );
+  };
+
+  const endDrag = (event: PointerEvent<HTMLElement>) => {
+    dragRef.current = null;
+    if (event.currentTarget.hasPointerCapture(event.pointerId)) {
+      event.currentTarget.releasePointerCapture(event.pointerId);
+    }
+  };
+
+  return (
+    <section className="rounded-md border border-border bg-white p-3">
+      <div className="mb-2 flex items-center justify-between gap-2">
+        <h4 className="text-xs font-semibold tracking-normal">실시간 편집 미리보기</h4>
+        <span className="text-[11px] text-muted">{fontSize}px</span>
+      </div>
+      <div
+        className="relative w-full overflow-hidden rounded-md border border-border bg-preview"
+        ref={previewRef}
+        style={{
+          aspectRatio: `${Math.max(1, sourceWidth)} / ${Math.max(1, sourceHeight)}`,
+        }}
+      >
+        {assetUrl ? (
+          <img
+            alt=""
+            className="size-full object-fill"
+            draggable={false}
+            src={assetUrl}
+            onDragStart={(event) => event.preventDefault()}
+          />
+        ) : (
+          <div className="flex size-full items-center justify-center text-xs text-muted">
+            미리보기 없음
+          </div>
+        )}
+        {enabled ? (
+          <div
+            className={cn(
+              "absolute min-h-8 min-w-12 cursor-move select-none rounded border border-focus/60 bg-white/10 px-2 py-1 text-center font-semibold leading-tight",
+              disabled && "cursor-not-allowed opacity-70",
+            )}
+            style={{
+              color,
+              fontSize: Math.max(1, fontSize * displayScale),
+              left: `${x}%`,
+              textShadow: textStrokeShadow(strokeColor, strokeWidth * displayScale),
+              top: `${y}%`,
+              transform: "translate(-50%, -50%)",
+            }}
+            onPointerCancel={endDrag}
+            onPointerDown={(event) => startDrag(event, "move")}
+            onPointerMove={updateDrag}
+            onPointerUp={endDrag}
+          >
+            {text.trim() || "텍스트"}
+            <span
+              aria-hidden="true"
+              className="absolute -bottom-1.5 -right-1.5 size-3 cursor-nwse-resize rounded-sm border border-focus bg-white"
+              onPointerCancel={endDrag}
+              onPointerDown={(event) => startDrag(event, "resize")}
+              onPointerMove={updateDrag}
+              onPointerUp={endDrag}
+            />
+          </div>
+        ) : null}
+      </div>
+    </section>
+  );
+}
+
+function ClearableNumberInput({
+  disabled,
+  max,
+  min,
+  value,
+  onCommit,
+}: {
+  disabled?: boolean;
+  max?: number;
+  min: number;
+  value: number;
+  onCommit: (value: number) => void;
+}) {
+  const [draft, setDraft] = useState(String(value));
+
+  useEffect(() => {
+    setDraft(String(value));
+  }, [value]);
+
+  return (
+    <input
+      className="rounded-md border border-border bg-white px-2 py-1.5 text-sm text-foreground focus-visible:outline focus-visible:outline-2 focus-visible:outline-focus disabled:cursor-not-allowed disabled:text-muted"
+      disabled={disabled}
+      max={max}
+      min={min}
+      type="number"
+      value={draft}
+      onBlur={() => {
+        if (draft.trim() === "") {
+          setDraft(String(value));
+        }
+      }}
+      onChange={(event) => {
+        const nextDraft = event.currentTarget.value;
+        setDraft(nextDraft);
+        if (nextDraft.trim() === "") {
+          return;
+        }
+        const parsed = Number(nextDraft);
+        if (!Number.isFinite(parsed)) {
+          return;
+        }
+        const clamped = Math.max(min, max === undefined ? parsed : Math.min(max, parsed));
+        onCommit(clamped);
+      }}
+    />
+  );
+}
+
+function clampPercent(value: number) {
+  return Math.min(100, Math.max(0, Math.round(value)));
 }
 
 function AdvancedCandidateCard({
@@ -1364,6 +1746,7 @@ function LiveCropPreview({
   shape,
   previewWidth,
   previewHeight,
+  textOverlay,
 }: {
   sourceUrl: string;
   sourceWidth: number;
@@ -1374,6 +1757,7 @@ function LiveCropPreview({
   cellHeight: number;
   previewWidth: number;
   previewHeight: number;
+  textOverlay?: TextOverlaySettings | null;
 }) {
   const viewport = previewViewportSize(previewWidth, previewHeight, shape);
   const scale = viewport.width / Math.max(1, crop.width);
@@ -1401,6 +1785,25 @@ function LiveCropPreview({
         }}
         onDragStart={(event) => event.preventDefault()}
       />
+      {textOverlay?.enabled && textOverlay.text.trim() ? (
+        <div
+          className="pointer-events-none absolute select-none whitespace-pre-line text-center font-semibold leading-[1.2]"
+          data-testid="editor-live-preview-text-overlay"
+          style={{
+            color: textOverlay.color,
+            fontSize: Math.max(1, textOverlay.fontSize * scale),
+            left: (sourceWidth * textOverlay.x - crop.x) * scale,
+            textShadow: textStrokeShadow(
+              textOverlay.strokeColor,
+              textOverlay.strokeWidth * scale,
+            ),
+            top: (sourceHeight * textOverlay.y - crop.y) * scale,
+            transform: "translate(-50%, -50%)",
+          }}
+        >
+          {textOverlay.text}
+        </div>
+      ) : null}
       {shape === "horizontal_double" ? (
         <span className="absolute bottom-0 left-1/2 top-0 border-l border-dashed border-focus" />
       ) : null}
@@ -1428,6 +1831,26 @@ function formatBytes(bytes: number) {
   }
 
   return `${(bytes / (1024 * 1024)).toFixed(1)} MB`;
+}
+
+function textStrokeShadow(color: string, width: number) {
+  if (!Number.isFinite(width) || width <= 0) {
+    return undefined;
+  }
+
+  const radius = Math.min(12, Math.max(1, Math.round(width)));
+  const shadows: string[] = [];
+  for (let y = -radius; y <= radius; y += 1) {
+    for (let x = -radius; x <= radius; x += 1) {
+      if (x === 0 && y === 0) {
+        continue;
+      }
+      if (x * x + y * y <= radius * radius) {
+        shadows.push(`${x}px ${y}px 0 ${color}`);
+      }
+    }
+  }
+  return shadows.join(", ");
 }
 
 function candidatePresetLabel(preset: string) {

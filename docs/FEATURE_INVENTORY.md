@@ -98,3 +98,11 @@
 | F092 | Export Workspace range/multi selection controls | done | `ExportDialog.tsx` supports Shift range selection, Ctrl toggle selection, selected-count toolbar, visible-row select, clear selection, include/exclude selected, and include/exclude all | `npm.cmd run lint` / `npm.cmd run test` |
 | F093 | Collection icon sorting | done | `collection-route.tsx` adds `정렬하기` panel for name/alt sorting with ascending/descending order and persists via `reorder_icons` | `npm.cmd run lint` |
 | F094 | Batch alt numeric suffix duplicate prevention | done | `batch-alt.ts` generates unique numeric suffixes for multi-target alt edits and leaves single-target edits unchanged | `npm.cmd run test` |
+| F095 | Batch alt comma-separated assignment dialog | done | `IconGrid.tsx` replaces browser prompt with movable batch alt dialog and applies comma-separated values in selection order | `npm.cmd run test` |
+| F096 | Export resize filter selection | done | `ExportDialog.tsx`, `export/mod.rs`, and `export_render.rs` support Nearest/Bilinear/Bicubic/Gaussian/Lanczos resize filters | `npm.cmd run lint` / `cargo test` |
+| F097 | MB-based max byte inputs | done | `byte-size.ts`, collection settings, and export workspace convert editable MB values to byte limits | `npm.cmd run test` |
+| F098 | Selected-item re-export into an existing export folder | done | `export_selected_collection_items` and `ExportDialog.tsx` replace only selected output files while preserving non-dirty session rows | `cargo test` / `npm.cmd run test` |
+| F099 | Batch size optimization from Export Workspace selection | done | `ExportDialog.tsx` generates and applies optimization candidates for selected oversized items | `npm.cmd run lint` |
+| F100 | Advanced optimization controls for GIF/JPG output | done | `EditorPanel.tsx` exposes GIF FPS limit, playback FPS, color limit, and JPG quality candidate controls | `cargo test` / `npm.cmd run lint` |
+| F101 | Text overlay preview/export alignment | done | `CropCanvas.tsx`, `preview.rs`, and `export_render.rs` render the same text overlay in editor preview, generated preview, and final export | `cargo test` |
+| F102 | Export workspace completed/pending filters and session merge | done | `export-workspace-model.ts` adds completed/pending filters and preserves written rows after targeted revalidation | `npm.cmd run test` |

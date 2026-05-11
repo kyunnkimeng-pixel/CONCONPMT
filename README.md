@@ -2,23 +2,25 @@
 
 PMTCONCON Studio는 DCInside 스타일 디시콘과 커스텀 이모티콘 모음을 제작하기 위한 Windows 데스크톱 앱입니다. 이미지와 GIF를 가져오고, 모음 단위로 정리하고, 아이콘을 편집한 뒤, 업로드 가능한 파일과 `alts.txt`를 내보내는 작업 흐름을 제공합니다.
 
+최신 Windows 설치파일은 [GitHub Releases](https://github.com/kyunnkimeng-pixel/CONCONPMT/releases)에서 받을 수 있습니다.
+
 ## 화면
 
 ### 모음 탐색
 
-아이콘을 카드형 탐색 화면에서 확인하고, alt 값 오류나 중복 상태를 바로 볼 수 있습니다. 파일/폴더 추가, 정렬, 대표 이미지 설정, 빈 디시콘 생성, 내보내기 작업으로 이어지는 도구 모음을 제공합니다.
+아이콘을 카드형 탐색 화면에서 확인하고, alt 값 오류나 중복 상태를 바로 볼 수 있습니다. 여러 아이콘을 선택한 뒤 쉼표로 구분한 alt 값을 순서대로 일괄 적용할 수 있고, 파일/폴더 추가, 정렬, 대표 이미지 설정, 빈 디시콘 생성, 내보내기 작업으로 이어지는 도구 모음을 제공합니다.
 
 ![PMTCONCON Studio main collection view](docs/screenshots/pmtconcon-main-disicon-3.png)
 
 ### 아이콘 편집
 
-원본 이미지를 보존한 상태로 crop, 출력 모양, 셀 크기, GIF 반복, 텍스트 오버레이 등을 조정합니다. 변경 내용은 오른쪽 편집 패널에서 적용하고, 필요한 경우 원본 기준으로 되돌릴 수 있습니다.
+원본 이미지를 보존한 상태로 crop, 출력 모양, 셀 크기, GIF 반복, 텍스트 오버레이 등을 조정합니다. 고급 편집에서는 실제 export 후보를 생성해 용량을 측정하고, GIF 재생 FPS, 프레임 줄이기, 색상 수, JPG 품질 같은 압축 옵션을 적용할 수 있습니다.
 
 ![PMTCONCON Studio editor view](docs/screenshots/pmtconcon-editor-disicon-3.png)
 
 ### 내보내기 작업공간
 
-내보낼 원본과 생성 결과를 나란히 보며, 파일명, 형식, 크기 제한, `alts.txt` 생성 여부를 확인합니다. 항목별 업로드 가능 여부, 경고, 용량 초과, 수정 진입점을 분리해서 표시합니다.
+내보낼 원본과 생성 결과를 나란히 보며, 파일명, 형식, 리사이즈 필터, MB 단위 용량 제한, `alts.txt` 생성 여부를 확인합니다. 항목별 업로드 가능 여부, 경고, 용량 초과, 수정 진입점을 분리해서 표시하고, 선택한 항목만 다시 내보내거나 용량 압축 후보를 일괄 적용할 수 있습니다.
 
 ![PMTCONCON Studio export workspace](docs/screenshots/pmtconcon-export-disicon-3.png)
 
@@ -30,8 +32,12 @@ PMTCONCON Studio는 DCInside 스타일 디시콘과 커스텀 이모티콘 모�
 - 단일 아이콘, 가로 2칸 아이콘, 세로 2칸 아이콘 편집
 - GIF 미리보기, 프레임 기반 crop/export, 반복 설정 지원
 - 아이콘 이름과 조각별 alt 값 인라인 편집
+- 선택 아이콘 alt 값 일괄 변경과 쉼표 기반 순차 입력
 - Ctrl/Shift 다중 선택과 드래그 앤 드롭 순서 변경
+- 텍스트 오버레이, GIF FPS/색상 수 조정, JPG 품질 후보 생성
 - DCInside 규칙과 커스텀 프로필 기반 내보내기 검증
+- Nearest, Bilinear, Bicubic, Gaussian, Lanczos 리사이즈 필터 선택
+- 선택 항목만 다시 내보내기와 선택 항목 용량 압축
 - 순서 기반 파일명 또는 alt 기반 파일명 내보내기
 - 선택 가능한 `alts.txt` 생성
 

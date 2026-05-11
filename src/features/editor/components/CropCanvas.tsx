@@ -14,6 +14,7 @@ import type {
   Dimensions,
 } from "@/features/editor/crop-math";
 import type { CropMode, CropRect, IconShape } from "@/features/editor/types";
+import type { TextOverlaySettings } from "@/features/editor/types";
 
 interface CropCanvasProps {
   sourceUrl: string;
@@ -24,6 +25,7 @@ interface CropCanvasProps {
   shape: IconShape;
   cellWidth: number;
   cellHeight: number;
+  textOverlay?: TextOverlaySettings | null;
   onCropChange: (crop: CropRect) => void;
 }
 
@@ -44,6 +46,7 @@ export function CropCanvas({
   shape,
   cellWidth,
   cellHeight,
+  textOverlay,
   onCropChange,
 }: CropCanvasProps) {
   const source = useMemo(
@@ -112,6 +115,11 @@ export function CropCanvas({
             width: sourceStage.width,
           }}
           onDragStart={(event) => event.preventDefault()}
+        />
+        <SourceTextOverlay
+          scale={scale}
+          sourceStage={sourceStage}
+          textOverlay={textOverlay}
         />
         <Stage className="absolute left-0 top-0" height={canvas.height} width={canvas.width}>
           <Layer>
@@ -184,6 +192,39 @@ export function CropCanvas({
           </Layer>
         </Stage>
       </div>
+    </div>
+  );
+}
+
+function SourceTextOverlay({
+  scale,
+  sourceStage,
+  textOverlay,
+}: {
+  scale: number;
+  sourceStage: ReturnType<typeof sourceRectToStageRect>;
+  textOverlay?: TextOverlaySettings | null;
+}) {
+  if (!textOverlay?.enabled || !textOverlay.text.trim()) {
+    return null;
+  }
+
+  return (
+    <div
+      className="pointer-events-none absolute z-10 select-none whitespace-pre-line text-center font-semibold leading-[1.2]"
+      data-testid="crop-source-text-overlay"
+      style={{
+        color: textOverlay.color,
+        fontSize: Math.max(1, textOverlay.fontSize * scale),
+        left: sourceStage.x + sourceStage.width * textOverlay.x,
+        textShadow: textOverlay.strokeWidth
+          ? `${textOverlay.strokeColor} 0 0 ${Math.max(1, textOverlay.strokeWidth * scale)}px`
+          : undefined,
+        top: sourceStage.y + sourceStage.height * textOverlay.y,
+        transform: "translate(-50%, -50%)",
+      }}
+    >
+      {textOverlay.text}
     </div>
   );
 }

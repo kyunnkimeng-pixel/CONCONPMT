@@ -35,6 +35,7 @@ pub struct ExportRenderRequest<'a> {
     pub cell_width: i64,
     pub cell_height: i64,
     pub output_format: &'a str,
+    pub resize_filter: &'a str,
     pub gif_loop_mode: &'a str,
     pub gif_loop_count: Option<i64>,
     pub source_gif_loop_mode: &'a str,
@@ -56,11 +57,16 @@ pub fn render_icon_export(request: ExportRenderRequest<'_>) -> AppResult<Vec<Pat
 
 fn render_static_export(request: ExportRenderRequest<'_>) -> AppResult<Vec<PathBuf>> {
     let image = image::open(request.source_path)?;
+    let image = image_with_text_overlay(image, request.text_overlay.as_ref())?;
     let (viewport_width, viewport_height) =
         viewport_size(request.shape, request.cell_width, request.cell_height)?;
-    let viewport = crop_and_resize(&image, request.crop, viewport_width, viewport_height)?;
-    let mut viewport = viewport;
-    apply_text_overlay(&mut viewport, request.text_overlay.as_ref())?;
+    let viewport = crop_and_resize(
+        &image,
+        request.crop,
+        viewport_width,
+        viewport_height,
+        request.resize_filter,
+    )?;
     let pieces = split_viewport(
         &viewport,
         request.shape,
@@ -111,10 +117,14 @@ fn render_gif_export(request: ExportRenderRequest<'_>) -> AppResult<Vec<PathBuf>
     for frame in frames {
         let delay = frame.delay();
         let source_frame = DynamicImage::ImageRgba8(frame.into_buffer());
-        let viewport =
-            crop_and_resize(&source_frame, request.crop, viewport_width, viewport_height)?;
-        let mut viewport = viewport;
-        apply_text_overlay(&mut viewport, request.text_overlay.as_ref())?;
+        let source_frame = image_with_text_overlay(source_frame, request.text_overlay.as_ref())?;
+        let viewport = crop_and_resize(
+            &source_frame,
+            request.crop,
+            viewport_width,
+            viewport_height,
+            request.resize_filter,
+        )?;
         let split_pieces = split_viewport(
             &viewport,
             request.shape,
@@ -145,6 +155,19 @@ fn render_gif_export(request: ExportRenderRequest<'_>) -> AppResult<Vec<PathBuf>
     }
 
     Ok(paths)
+}
+
+fn image_with_text_overlay(
+    image: DynamicImage,
+    text_overlay: Option<&TextOverlayRenderSpec>,
+) -> AppResult<DynamicImage> {
+    if text_overlay.is_none() {
+        return Ok(image);
+    }
+
+    let mut source = image.to_rgba8();
+    apply_text_overlay(&mut source, text_overlay)?;
+    Ok(DynamicImage::ImageRgba8(source))
 }
 
 fn can_copy_original_gif_without_reencode(request: &ExportRenderRequest<'_>) -> AppResult<bool> {
@@ -178,6 +201,7 @@ fn crop_and_resize(
     crop: ExportCropRect,
     viewport_width: i64,
     viewport_height: i64,
+    resize_filter: &str,
 ) -> AppResult<RgbaImage> {
     if crop.width <= 0.0 || crop.height <= 0.0 {
         return Err(AppError::new(
@@ -194,8 +218,19 @@ fn crop_and_resize(
         &cropped,
         width,
         height,
-        FilterType::Lanczos3,
+        resize_filter_type(resize_filter),
     ))
+}
+
+fn resize_filter_type(value: &str) -> FilterType {
+    match value.trim().to_ascii_lowercase().as_str() {
+        "nearest" => FilterType::Nearest,
+        "triangle" | "bilinear" => FilterType::Triangle,
+        "catmull_rom" | "bicubic" => FilterType::CatmullRom,
+        "gaussian" => FilterType::Gaussian,
+        "lanczos" | "lanczos3" => FilterType::Lanczos3,
+        _ => FilterType::Lanczos3,
+    }
 }
 
 fn crop_with_padding(image: &DynamicImage, crop: ExportCropRect) -> RgbaImage {
@@ -339,6 +374,7 @@ mod tests {
             },
             40,
             40,
+            "lanczos3",
         )
         .unwrap();
 
