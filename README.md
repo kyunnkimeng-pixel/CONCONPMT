@@ -6,17 +6,31 @@ PMTCONCON Studio는 DCInside 스타일 디시콘과 커스텀 이모티콘 모�
 
 ## 화면
 
-### 모음 탐색
+### 모음 탐색과 alt 일괄 변경
 
 아이콘을 카드형 탐색 화면에서 확인하고, alt 값 오류나 중복 상태를 바로 볼 수 있습니다. 여러 아이콘을 선택한 뒤 쉼표로 구분한 alt 값을 순서대로 일괄 적용할 수 있고, 파일/폴더 추가, 정렬, 대표 이미지 설정, 빈 디시콘 생성, 내보내기 작업으로 이어지는 도구 모음을 제공합니다.
 
 ![PMTCONCON Studio main collection view](docs/screenshots/pmtconcon-main-disicon-3.png)
 
-### 아이콘 편집
+### 200x200 crop 박스 편집
 
-원본 이미지를 보존한 상태로 crop, 출력 모양, 셀 크기, GIF 반복, 텍스트 오버레이 등을 조정합니다. 고급 편집에서는 실제 export 후보를 생성해 용량을 측정하고, GIF 재생 FPS, 프레임 줄이기, 색상 수, JPG 품질 같은 압축 옵션을 적용할 수 있습니다.
+원본 이미지는 그대로 보존하고, 출력용 crop 박스만 별도로 저장합니다. 기본 DCInside 셀 크기는 200x200이며, crop 박스는 이미지 위에서 원하는 위치로 옮기거나 크기를 조정한 뒤 적용할 수 있습니다.
 
-![PMTCONCON Studio editor view](docs/screenshots/pmtconcon-editor-disicon-3.png)
+![PMTCONCON Studio 200x200 crop editor](docs/screenshots/pmtconcon-editor-crop-disicon-3.png)
+
+### 가로 2칸 자르기
+
+한 아이콘을 2개의 200x200 조각으로 내보내야 하는 경우, 가로 2칸 모양을 선택해 400x200 crop 영역을 잡을 수 있습니다. 편집 화면은 분할선을 표시하고, 내보내기 단계에서는 왼쪽과 오른쪽 조각을 export 순서에 맞춰 생성합니다.
+
+![PMTCONCON Studio horizontal double crop editor](docs/screenshots/pmtconcon-editor-horizontal-disicon-3.png)
+
+### 텍스트 추가와 고급 편집
+
+텍스트 오버레이를 켜고 문구, 크기, 위치, 글자색, 외곽선, 폰트를 조정할 수 있습니다. 같은 고급 편집 화면에서 실제 export 후보를 생성해 용량을 측정하고, GIF 재생 FPS, 색상 수, JPG 품질 같은 압축 옵션도 적용할 수 있습니다.
+
+![PMTCONCON Studio text overlay editor](docs/screenshots/pmtconcon-editor-text-disicon-3.png)
+
+![PMTCONCON Studio editor flow](docs/screenshots/pmtconcon-editor-flow-disicon-3.gif)
 
 ### 내보내기 작업공간
 
@@ -29,12 +43,14 @@ PMTCONCON Studio는 DCInside 스타일 디시콘과 커스텀 이모티콘 모�
 - Windows 파일 탐색기와 비슷한 모음/아이콘 관리 화면
 - JPG, PNG, 애니메이션 GIF 파일 및 폴더 가져오기
 - 원본 파일 보존과 crop, 크기, 순서, 내보내기 설정의 별도 저장
-- 단일 아이콘, 가로 2칸 아이콘, 세로 2칸 아이콘 편집
+- 200x200 기준 crop 박스 이동, 크기 조정, 자유/고정 모드 편집
+- 단일 아이콘, 가로 2칸 아이콘, 세로 2칸 아이콘 편집과 조각별 내보내기
 - GIF 미리보기, 프레임 기반 crop/export, 반복 설정 지원
 - 아이콘 이름과 조각별 alt 값 인라인 편집
 - 선택 아이콘 alt 값 일괄 변경과 쉼표 기반 순차 입력
 - Ctrl/Shift 다중 선택과 드래그 앤 드롭 순서 변경
-- 텍스트 오버레이, GIF FPS/색상 수 조정, JPG 품질 후보 생성
+- 텍스트 오버레이 추가, 위치/크기/색상/외곽선/폰트 조정
+- GIF FPS/색상 수 조정, JPG 품질 후보 생성
 - DCInside 규칙과 커스텀 프로필 기반 내보내기 검증
 - Nearest, Bilinear, Bicubic, Gaussian, Lanczos 리사이즈 필터 선택
 - 선택 항목만 다시 내보내기와 선택 항목 용량 압축
