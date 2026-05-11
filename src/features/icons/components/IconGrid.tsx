@@ -33,6 +33,7 @@ import {
 interface IconGridProps {
   collection: CollectionSummary;
   icons: IconSummary[];
+  thumbnailOnly: boolean;
   duplicatePieceIds: Set<string>;
   editRequest: { pieceId: string; requestKey: number } | null;
   validateAltDraft: (pieceId: string, value: string) => string | null;
@@ -46,13 +47,19 @@ interface IconGridProps {
   onReorderIcons: (orderedIconIds: string[]) => Promise<void>;
   onRevealExportResult: (iconId: string) => Promise<void>;
   onRevealOriginal: (iconId: string) => Promise<void>;
+  onReplaceImage: (iconId: string) => void;
   onSetCover: (iconId: string) => Promise<void>;
+  onSetReadiness: (
+    iconIds: string[],
+    readiness: IconSummary["readiness"],
+  ) => Promise<void>;
   onSetThumbnailOverride: (iconId: string) => void;
 }
 
 export function IconGrid({
   collection,
   icons,
+  thumbnailOnly,
   duplicatePieceIds,
   editRequest,
   validateAltDraft,
@@ -66,7 +73,9 @@ export function IconGrid({
   onReorderIcons,
   onRevealExportResult,
   onRevealOriginal,
+  onReplaceImage,
   onSetCover,
+  onSetReadiness,
   onSetThumbnailOverride,
 }: IconGridProps) {
   const gridRef = useRef<HTMLDivElement>(null);
@@ -92,10 +101,14 @@ export function IconGrid({
       coordinateGetter: sortableKeyboardCoordinates,
     }),
   );
+  const previewScale = thumbnailOnly ? 1.42 : 1;
+  const effectivePreviewWidth = Math.round(collection.previewWidth * previewScale);
+  const effectivePreviewHeight = Math.round(collection.previewHeight * previewScale);
   const hasHorizontalDouble = icons.some((icon) => icon.shape === "horizontal_double");
   const minTileWidth = Math.max(
-    148,
-    (hasHorizontalDouble ? collection.previewWidth * 2 : collection.previewWidth) + 48,
+    thumbnailOnly ? 180 : 148,
+    (hasHorizontalDouble ? effectivePreviewWidth * 2 : effectivePreviewWidth) +
+      (thumbnailOnly ? 28 : 48),
   );
 
   useEffect(() => {
@@ -155,7 +168,7 @@ export function IconGrid({
     }
 
     const nextAlt = window.prompt(
-      `${iconIds.length}개 아이콘의 모든 alt 값을 변경합니다. 빈칸도 저장됩니다.`,
+      `${iconIds.length}개 아이콘의 모든 alt 값을 변경합니다. 여러 alt가 바뀌는 경우 입력값 뒤에 1, 2...를 붙여 중복을 피합니다.`,
       "",
     );
     if (nextAlt === null) {
@@ -228,8 +241,9 @@ export function IconGrid({
                 isCover={collection.coverIconId === icon.id}
                 isSelected={selectedIdSet.has(icon.id)}
                 key={icon.id}
-                previewHeight={collection.previewHeight}
-                previewWidth={collection.previewWidth}
+                previewHeight={effectivePreviewHeight}
+                previewWidth={effectivePreviewWidth}
+                showDetails={!thumbnailOnly}
                 validateAltDraft={validateAltDraft}
                 validateCurrentAlt={validateCurrentAlt}
                 onAltCommit={onAltCommit}
@@ -267,6 +281,7 @@ export function IconGrid({
           onRevealOriginal={() => {
             void onRevealOriginal(targetIcon.id);
           }}
+          onReplaceImage={() => onReplaceImage(targetIcon.id)}
           onRename={() => {
             const nextName = window.prompt("아이콘 이름", targetIcon.displayName);
             if (nextName !== null) {
@@ -275,6 +290,9 @@ export function IconGrid({
           }}
           onSetCover={() => {
             void onSetCover(targetIcon.id);
+          }}
+          onSetReadiness={(readiness) => {
+            void onSetReadiness(contextSelectionIds, readiness);
           }}
           onSetThumbnailOverride={() => onSetThumbnailOverride(targetIcon.id)}
         />

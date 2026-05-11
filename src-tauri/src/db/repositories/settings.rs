@@ -120,7 +120,10 @@ mod tests {
 
         assert_eq!(saved.last_open_collection_id, Some(collection.id));
         assert_eq!(saved.last_view_mode, "usagePreview");
-        assert_eq!(get_app_settings(&connection).unwrap().last_view_mode, "usagePreview");
+        assert_eq!(
+            get_app_settings(&connection).unwrap().last_view_mode,
+            "usagePreview"
+        );
     }
 
     #[test]

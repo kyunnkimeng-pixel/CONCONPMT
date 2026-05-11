@@ -38,7 +38,11 @@ export function ValidationResultList({ result }: ValidationResultListProps) {
       {hasIssues ? (
         <div className="flex flex-col gap-2">
           {result.errors.map((issue) => (
-            <IssueRow issueMessage={issue.message} key={`${issue.code}-${issue.pieceId}`} />
+            <IssueRow
+              issueMessage={issue.message}
+              key={`${issue.code}-${issue.pieceId}`}
+              suffix={issue.blocking ? "차단" : "내보냄"}
+            />
           ))}
           {result.warnings.map((issue) => (
             <IssueRow
@@ -91,9 +95,11 @@ export function ValidationResultList({ result }: ValidationResultListProps) {
 function IssueRow({
   issueMessage,
   isWarning = false,
+  suffix,
 }: {
   issueMessage: string;
   isWarning?: boolean;
+  suffix?: string;
 }) {
   return (
     <p
@@ -107,7 +113,8 @@ function IssueRow({
       ) : (
         <AlertTriangle aria-hidden="true" className="mt-0.5 size-4 shrink-0" />
       )}
-      <span>{issueMessage}</span>
+      <span className="min-w-0 flex-1">{issueMessage}</span>
+      {suffix ? <span className="shrink-0 text-xs font-semibold">{suffix}</span> : null}
     </p>
   );
 }

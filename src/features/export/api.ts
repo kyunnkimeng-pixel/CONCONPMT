@@ -1,9 +1,13 @@
 import { invokeCommand } from "@/lib/tauri";
 import type {
   ExportCollectionResult,
+  ApplyOptimizationResult,
+  ClearOptimizationResult,
   ExportProfile,
   ExportRequestPayload,
   ExportValidationResult,
+  OptimizationAdvancedSettings,
+  OptimizationResult,
 } from "@/features/export/types";
 
 export function listExportProfiles(collectionId: string) {
@@ -44,5 +48,53 @@ export function openExportPath(path: string) {
 export function pickExportDirectory(initialDirectory: string | null) {
   return invokeCommand<string | null>("pick_export_directory", {
     initialDirectory,
+  });
+}
+
+export function generateGifOptimizationCandidates(
+  iconId: string,
+  profileId: string,
+  pieceId: string,
+  advancedSettings: OptimizationAdvancedSettings | null = null,
+) {
+  return invokeCommand<OptimizationResult>("generate_gif_optimization_candidates", {
+    iconId,
+    profileId,
+    pieceId,
+    mode: advancedSettings ? "custom" : "auto",
+    advancedSettings,
+  });
+}
+
+export function generateStaticOptimizationCandidates(
+  iconId: string,
+  profileId: string,
+  pieceId: string,
+  advancedSettings: OptimizationAdvancedSettings | null = null,
+) {
+  return invokeCommand<OptimizationResult>("generate_static_optimization_candidates", {
+    iconId,
+    profileId,
+    pieceId,
+    mode: advancedSettings ? "custom" : "auto",
+    advancedSettings,
+  });
+}
+
+export function applyOptimizationCandidate(candidateId: string) {
+  return invokeCommand<ApplyOptimizationResult>("apply_optimization_candidate", {
+    candidateId,
+  });
+}
+
+export function clearOptimizationCandidate(
+  iconId: string,
+  profileId: string,
+  pieceId: string,
+) {
+  return invokeCommand<ClearOptimizationResult>("clear_optimization_candidate", {
+    iconId,
+    profileId,
+    pieceId,
   });
 }

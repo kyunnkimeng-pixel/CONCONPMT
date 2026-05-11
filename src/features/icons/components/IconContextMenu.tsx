@@ -1,6 +1,18 @@
-import { useEffect, useRef } from "react";
+import { useEffect, useLayoutEffect, useRef, useState } from "react";
 import type { KeyboardEvent as ReactKeyboardEvent, ReactNode } from "react";
-import { Copy, FileImage, FolderOpen, ImagePlus, Pencil, Star, Trash2 } from "lucide-react";
+import {
+  CheckCircle2,
+  Copy,
+  FileImage,
+  FolderOpen,
+  ImagePlus,
+  Pencil,
+  Star,
+  Tags,
+  Trash2,
+} from "lucide-react";
+
+import type { IconSummary } from "@/features/collections/types";
 
 import { cn } from "@/lib/utils";
 
@@ -17,8 +29,10 @@ interface IconContextMenuProps {
   onEdit: () => void;
   onRevealExportResult: () => void;
   onRevealOriginal: () => void;
+  onReplaceImage: () => void;
   onRename: () => void;
   onSetCover: () => void;
+  onSetReadiness: (readiness: IconSummary["readiness"]) => void;
   onSetThumbnailOverride: () => void;
 }
 
@@ -35,11 +49,18 @@ export function IconContextMenu({
   onEdit,
   onRevealExportResult,
   onRevealOriginal,
+  onReplaceImage,
   onRename,
   onSetCover,
+  onSetReadiness,
   onSetThumbnailOverride,
 }: IconContextMenuProps) {
   const menuRef = useRef<HTMLDivElement>(null);
+  const [position, setPosition] = useState({
+    isMeasured: false,
+    left: x,
+    top: y,
+  });
 
   useEffect(() => {
     const handlePointerDown = (event: PointerEvent) => {
@@ -64,9 +85,41 @@ export function IconContextMenu({
     };
   }, [onClose]);
 
+  useLayoutEffect(() => {
+    const menu = menuRef.current;
+    if (!menu) {
+      return;
+    }
+
+    const margin = 8;
+    const rect = menu.getBoundingClientRect();
+    const maxLeft = Math.max(margin, window.innerWidth - rect.width - margin);
+    const maxTop = Math.max(margin, window.innerHeight - rect.height - margin);
+    const left = Math.min(Math.max(x, margin), maxLeft);
+    let top = y;
+
+    if (rect.height + margin * 2 >= window.innerHeight) {
+      top = margin;
+    } else if (y > maxTop) {
+      top = y - rect.height;
+    }
+
+    setPosition({
+      isMeasured: true,
+      left: Math.round(left),
+      top: Math.round(Math.min(Math.max(top, margin), maxTop)),
+    });
+  }, [x, y]);
+
   useEffect(() => {
-    menuRef.current?.querySelector<HTMLButtonElement>("button:not(:disabled)")?.focus();
-  }, []);
+    if (!position.isMeasured) {
+      return;
+    }
+
+    menuRef.current
+      ?.querySelector<HTMLButtonElement>("button:not(:disabled)")
+      ?.focus({ preventScroll: true });
+  }, [position.isMeasured]);
 
   const focusMenuItem = (direction: "first" | "last" | "next" | "previous") => {
     const menuItems = Array.from(
@@ -87,7 +140,7 @@ export function IconContextMenu({
             ? (Math.max(currentIndex, 0) + 1) % menuItems.length
             : (currentIndex <= 0 ? menuItems.length : currentIndex) - 1;
 
-    menuItems[nextIndex]?.focus();
+    menuItems[nextIndex]?.focus({ preventScroll: true });
   };
 
   const handleMenuKeyDown = (event: ReactKeyboardEvent<HTMLDivElement>) => {
@@ -124,10 +177,14 @@ export function IconContextMenu({
     <div
       ref={menuRef}
       aria-label="아이콘 작업 메뉴"
-      className="fixed min-w-48 rounded-md border border-border bg-white p-1 shadow-lg"
+      className="fixed z-50 max-h-[calc(100vh-16px)] min-w-48 overflow-y-auto rounded-md border border-border bg-white p-1 shadow-lg"
       data-testid="icon-context-menu"
       role="menu"
-      style={{ left: x, top: y }}
+      style={{
+        left: position.left,
+        top: position.top,
+        visibility: position.isMeasured ? "visible" : "hidden",
+      }}
       onKeyDown={handleMenuKeyDown}
     >
       <MenuButton testId="icon-context-edit" onClick={() => runAction(onEdit)}>
@@ -145,6 +202,24 @@ export function IconContextMenu({
       <MenuButton testId="icon-context-thumbnail" onClick={() => runAction(onSetThumbnailOverride)}>
         <ImagePlus aria-hidden="true" />
         썸네일 바꾸기
+      </MenuButton>
+      <MenuButton testId="icon-context-replace-image" onClick={() => runAction(onReplaceImage)}>
+        <FileImage aria-hidden="true" />
+        이미지 대체하기
+      </MenuButton>
+      <MenuButton
+        testId="icon-context-mark-working"
+        onClick={() => runAction(() => onSetReadiness("working"))}
+      >
+        <Tags aria-hidden="true" />
+        {selectionCount > 1 ? `선택 ${selectionCount}개 작업중` : "작업중으로 표시"}
+      </MenuButton>
+      <MenuButton
+        testId="icon-context-mark-complete"
+        onClick={() => runAction(() => onSetReadiness("complete"))}
+      >
+        <CheckCircle2 aria-hidden="true" />
+        {selectionCount > 1 ? `선택 ${selectionCount}개 완성` : "완성으로 표시"}
       </MenuButton>
       <MenuButton testId="icon-context-duplicate" onClick={() => runAction(onDuplicate)}>
         <Copy aria-hidden="true" />

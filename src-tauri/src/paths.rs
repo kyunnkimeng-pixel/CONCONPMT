@@ -9,6 +9,7 @@ pub struct AppPaths {
     pub database_path: PathBuf,
     pub originals_dir: PathBuf,
     pub generated_crops_dir: PathBuf,
+    pub processed_variants_dir: PathBuf,
     pub exports_dir: PathBuf,
     pub thumbnails_dir: PathBuf,
     pub source_file_thumbnails_dir: PathBuf,
@@ -24,6 +25,7 @@ impl AppPaths {
             database_path: root.join("library.sqlite"),
             originals_dir: root.join("originals"),
             generated_crops_dir: root.join("generated").join("crops"),
+            processed_variants_dir: root.join("generated").join("variants"),
             exports_dir: root.join("exports"),
             thumbnails_dir: root.join("thumbnails"),
             source_file_thumbnails_dir: root.join("thumbnails").join("source-files"),
@@ -47,11 +49,12 @@ impl AppPaths {
         Ok(())
     }
 
-    fn required_directories(&self) -> [&Path; 10] {
+    fn required_directories(&self) -> [&Path; 11] {
         [
             &self.root,
             &self.originals_dir,
             &self.generated_crops_dir,
+            &self.processed_variants_dir,
             &self.exports_dir,
             &self.thumbnails_dir,
             &self.source_file_thumbnails_dir,
@@ -82,6 +85,7 @@ mod tests {
         assert!(paths.root.is_dir());
         assert!(paths.originals_dir.is_dir());
         assert!(paths.generated_crops_dir.is_dir());
+        assert!(paths.processed_variants_dir.is_dir());
         assert!(paths.exports_dir.is_dir());
         assert!(paths.source_file_thumbnails_dir.is_dir());
         assert!(paths.collection_previews_dir.is_dir());

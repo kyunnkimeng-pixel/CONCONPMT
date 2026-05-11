@@ -13,8 +13,27 @@ export function listIcons(collectionId: string) {
   );
 }
 
-export async function importImagesIntoCollection(collectionId: string, files: File[]) {
-  const payload = await Promise.all(files.map(fileToImportPayload));
+export interface ImportProgressEvent {
+  current: number;
+  total: number;
+  fileName: string;
+}
+
+export async function importImagesIntoCollection(
+  collectionId: string,
+  files: File[],
+  onProgress?: (event: ImportProgressEvent) => void,
+) {
+  const payload: Awaited<ReturnType<typeof fileToImportPayload>>[] = [];
+  for (const [index, file] of files.entries()) {
+    onProgress?.({ current: index + 1, total: files.length, fileName: file.name });
+    payload.push(await fileToImportPayload(file));
+  }
+  onProgress?.({
+    current: files.length + 1,
+    total: files.length + 1,
+    fileName: "앱 라이브러리 등록",
+  });
 
   return invokeCommand<ImportImagesResult>("import_image_files", {
     collectionId,
@@ -36,6 +55,37 @@ export function updateIconPieceAlt(
     pieceId,
     altText,
   }).then(normalizeIconSummary);
+}
+
+export function createPlaceholderIcon(collectionId: string, label: string) {
+  return invokeCommand<IconSummary>("create_placeholder_icon", {
+    collectionId,
+    payload: { label },
+  }).then(normalizeIconSummary);
+}
+
+export async function replaceIconSource(
+  collectionId: string,
+  iconId: string,
+  file: File,
+) {
+  return invokeCommand<IconSummary>("replace_icon_source", {
+    collectionId,
+    iconId,
+    file: await fileToImportPayload(file),
+  }).then(normalizeIconSummary);
+}
+
+export function setIconsReadiness(
+  collectionId: string,
+  iconIds: string[],
+  readiness: IconSummary["readiness"],
+) {
+  return invokeCommand<IconSummary[]>("set_icons_readiness", {
+    collectionId,
+    iconIds,
+    readiness,
+  }).then((icons) => icons.map(normalizeIconSummary));
 }
 
 export function renameIcon(

@@ -8,7 +8,10 @@ use image::{AnimationDecoder, DynamicImage, Frame, ImageFormat, Rgba, RgbaImage}
 
 use crate::error::{AppError, AppResult};
 use crate::imaging::geometry::{piece_roles, viewport_size};
-use crate::imaging::gif_pipeline::{output_repeat_for_settings, GifOutputRepeat};
+use crate::imaging::gif_pipeline::{
+    is_pingpong_loop_mode, output_repeat_for_settings, pingpong_sequence, GifOutputRepeat,
+};
+use crate::imaging::text_overlay::{apply_text_overlay, TextOverlayRenderSpec};
 use crate::paths::AppPaths;
 
 #[derive(Debug, Clone, Copy)]
@@ -33,6 +36,7 @@ pub struct GeneratePreviewRequest<'a> {
     pub gif_loop_count: Option<i64>,
     pub source_gif_loop_mode: Option<&'a str>,
     pub source_gif_loop_count: Option<i64>,
+    pub text_overlay: Option<TextOverlayRenderSpec>,
 }
 
 #[derive(Debug)]
@@ -81,6 +85,8 @@ fn generate_static_preview(
 ) -> AppResult<GeneratedPreview> {
     let image = image::open(request.source_path)?;
     let viewport = crop_and_resize(&image, request.crop, viewport_width, viewport_height)?;
+    let mut viewport = viewport;
+    apply_text_overlay(&mut viewport, request.text_overlay.as_ref())?;
     let current_preview_path = preview_dir.join("preview.png");
     viewport.save_with_format(&current_preview_path, ImageFormat::Png)?;
 
@@ -129,6 +135,8 @@ fn generate_gif_preview(
         let source_frame = DynamicImage::ImageRgba8(frame.into_buffer());
         let viewport =
             crop_and_resize(&source_frame, request.crop, viewport_width, viewport_height)?;
+        let mut viewport = viewport;
+        apply_text_overlay(&mut viewport, request.text_overlay.as_ref())?;
         viewport_frames.push(Frame::from_parts(viewport.clone(), 0, 0, delay));
 
         for (piece_index, piece) in split_viewport(
@@ -142,6 +150,13 @@ fn generate_gif_preview(
         .enumerate()
         {
             piece_frames[piece_index].push(Frame::from_parts(piece, 0, 0, delay));
+        }
+    }
+
+    if is_pingpong_loop_mode(request.gif_loop_mode) {
+        pingpong_sequence(&mut viewport_frames);
+        for frames in &mut piece_frames {
+            pingpong_sequence(frames);
         }
     }
 

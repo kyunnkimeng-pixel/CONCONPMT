@@ -13,7 +13,7 @@ export type PresetPosition =
   | "bottom"
   | "bottom_right"
   | "custom";
-export type GifLoopMode = "preserve" | "infinite" | "once" | "count";
+export type GifLoopMode = "preserve" | "infinite" | "once" | "count" | "pingpong";
 
 export interface SourceFileSummary {
   id: string;
@@ -47,6 +47,19 @@ export interface IconEditorState {
   icon: IconSummary;
   source: SourceFileSummary;
   crop: CropSettings;
+  textOverlay: TextOverlaySettings;
+}
+
+export interface TextOverlaySettings {
+  enabled: boolean;
+  text: string;
+  fontPath: string | null;
+  fontSize: number;
+  x: number;
+  y: number;
+  color: string;
+  strokeColor: string;
+  strokeWidth: number;
 }
 
 export interface CropRect {
@@ -69,4 +82,8 @@ export interface ApplyIconCropInput {
   cellHeight: number;
   gifLoopMode: GifLoopMode;
   gifLoopCount: number | null;
+}
+
+export interface UpdateIconTextOverlayInput extends TextOverlaySettings {
+  iconId: string;
 }

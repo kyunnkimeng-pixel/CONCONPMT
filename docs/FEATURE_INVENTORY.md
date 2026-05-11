@@ -1,6 +1,6 @@
 # FEATURE_INVENTORY.md - PMTCONCON Studio 구현 누락 방지 체크리스트
 
-Codex는 파일을 구현하는 동안 이 표를 계속 갱신해야 한다. `Status`는 `todo | doing | done | blocked | future` 중 하나를 사용한다.
+이 표는 PMTCONCON Studio의 구현 상태를 추적하기 위한 기능 인벤토리다. `Status`는 `todo | doing | done | blocked | future` 중 하나를 사용한다.
 
 | ID | Feature | Status | Component / Rust module | Test |
 |---|---|---:|---|---|
@@ -55,7 +55,7 @@ Codex는 파일을 구현하는 동안 이 표를 계속 갱신해야 한다. `S
 | F049 | import original copied into app library | done | `db/repositories/imports.rs` | `cargo test` |
 | F050 | SQLite migrations | done | `src-tauri/migrations/001_app_data.sql` + `db/migrations.rs` | Rust test |
 | F051 | no generated UI-only dead menus | done | implemented import, folder import, cleanup, duplicate, reveal, cover, and settings actions; no `준비 중` app menu remains | review + source search |
-| F052 | UI image generation reference workflow | done | local-only UI prompt + `docs/UI_TRACE.md` + `docs/ui-references/` | manual |
+| F052 | UI image generation reference workflow | done | local-only UI reference brief + `docs/UI_TRACE.md` + `docs/ui-references/` | manual |
 | F053 | 상단 `+` 메뉴: 폴더 가져오기 | done | home/collection folder inputs and dropped folder traversal import sorted jpg/jpeg/png/gif files and skip unsupported files with status | `npm.cmd run test` / `npm.cmd run lint` |
 | F054 | 현재 선택한 모음에 파일 추가 | done | main selected collection import + collection route import | `npm.cmd run lint` |
 | F055 | 가져오기 SHA-256 중복 판정 | done | `db/repositories/imports.rs` reuses `source_files` by hash | `cargo test` |
@@ -70,9 +70,31 @@ Codex는 파일을 구현하는 동안 이 표를 계속 갱신해야 한다. `S
 | F064 | DCInside export dimension validation: 기본 200x200 | done | Rust export validator checks DCInside profile and per-piece effective size | `cargo test` |
 | F065 | Custom profile별 크기/포맷/용량 validation 설정 | done | Custom export profile supports format, size reference, filename mode, max bytes, strict warnings | `npm.cmd run lint` / `cargo test` |
 | F066 | 다중콘 조각별 별도 alt 값 편집 | done | `IconTile.tsx` renders all `icon_pieces` with `AltInlineEditor` | `npm.cmd run test` / `cargo test` |
-| F067 | Editor panel live draft preview and resizable width | done | `EditorPanel.tsx` adds source-driven live preview, persisted resize handle, and fixed-height route layout | `qa-artifacts/tauri-user-feedback-regression.mjs` / `npm.cmd run lint` |
-| F068 | Explorer grid accidental text selection and drag responsiveness stabilization | done | `IconGrid.tsx` / `IconTile.tsx` suppress native selection and remove active drag transform transition | `qa-artifacts/tauri-user-feedback-regression.mjs` |
+| F067 | Editor panel live draft preview and resizable width | done | `EditorPanel.tsx` adds source-driven live preview, persisted resize handle, and fixed-height route layout | native regression / `npm.cmd run lint` |
+| F068 | Explorer grid accidental text selection and drag responsiveness stabilization | done | `IconGrid.tsx` / `IconTile.tsx` suppress native selection and remove active drag transform transition | native regression |
 | F069 | Sidebar collection list navigation | done | `AppShell.tsx` lists collections and highlights the active route | native smoke / `npm.cmd run lint` |
 | F070 | Export output folder picker | done | `ExportDialog.tsx` + `pick_export_directory` Tauri command via `rfd::FileDialog` | `npm.cmd run tauri -- build` / `cargo test` |
 | F071 | DCInside count/alt warnings do not block sequence export per latest user direction | done | `export/mod.rs` classifies count/alt issues as warnings while keeping hard blockers for invalid export mechanics | `cargo test` |
 | F072 | Multi-piece icons render as connected grouped cells in grid | done | `IconTile.tsx` renders horizontal/vertical double icons as linked two-cell previews with shared tile selection/drag | native smoke / `npm.cmd run lint` |
+| F073 | Import/export visible progress states | done | `collection-route.tsx` import progress overlay; `ExportDialog.tsx` export progress overlay | `npm.cmd run lint` / `npm.cmd run test` |
+| F074 | Export-only grid with per-piece include/exclude and status | done | `ExportDialog.tsx` export grid; `ExportRequestPayload.excludedPieceIds`; `export/mod.rs` filtered plan | `cargo test` / `npm.cmd run lint` |
+| F075 | Post-render export issues do not discard generated output | done | `export/mod.rs` non-blocking post-render max-byte issue classification, manifest issues, per-piece status update | `cargo test` |
+| F076 | Blank placeholder DCInside icons | done | `create_placeholder_icon` command/repository, placeholder UI tile rendering, migration `003_icon_readiness_placeholders.sql` | `cargo test` / `npm.cmd run lint` |
+| F077 | Icon readiness tags: complete/working | done | `icons.readiness`, context-menu actions, working tile styling, export skips non-complete icons | `cargo test` / `npm.cmd run lint` |
+| F078 | Replace icon image from context menu | done | `replace_icon_source` command/repository and collection route file picker | `cargo test` / `npm.cmd run lint` |
+| F079 | GIF file-size optimization design | doing | `docs/FILE_SIZE_OPTIMIZATION_DESIGN.md` documents design-first approach; implementation deferred until algorithm/UI decisions are locked | design doc |
+| F080 | Duplicate icon inserts beside source icon | done | `duplicate_icon` shifts later `order_index` values and inserts the copy immediately after the source icon | `cargo test` / native duplicate adjacency regression |
+| F081 | MIT license/dependency guardrails | done | `docs/LICENSE_POLICY.md`, `deny.toml`, `scripts/check-forbidden-dependencies.ps1`, package/Cargo MIT metadata | `npm.cmd run license:forbidden` / `npm.cmd run license:check` |
+| F082 | Third-party license notices | doing | `THIRD_PARTY_LICENSES.md` and `docs/THIRD_PARTY_LICENSES_GUIDE.md`; generated locally with optional tooling skips documented | `npm.cmd run license:generate` |
+| F083 | Processed asset variants for optimized exports | done | `processed_asset_variants` migration + `db/repositories/optimization.rs` | `cargo test` |
+| F084 | GIF file-size optimization MVP | done | `src-tauri/src/optimization/gif_optimizer.rs` creates measured GIF candidates without external optimizer binaries | `optimization::tests::gif_candidates_are_actual_measured_files_and_original_is_preserved` |
+| F085 | Static PNG/JPG resize/size optimization MVP | done | `src-tauri/src/optimization/static_optimizer.rs` re-encodes measured PNG/JPG candidates using existing permissive pipeline | `optimization::tests::static_jpg_candidate_can_be_applied_and_used_by_export` |
+| F086 | Active optimized variant used by export | done | `export/mod.rs` resolves non-stale active variants by source/crop/profile hash and copies them into final export output | `cargo test` |
+| F087 | Optimization UI candidate comparison | done | `ExportDialog.tsx` oversized item action and `OptimizationPanel` candidate cards with apply/clear flow | `npm.cmd run lint` / `npm.cmd run test` |
+| F088 | Editor advanced optimization entry and GIF pingpong loop | done | `EditorPanel.tsx` pencil action opens advanced optimization panel; `gif_pingpong` migration/repositories/export/preview preserve pingpong behavior | `npm.cmd run lint` / `cargo test` |
+| F089 | Export Workspace edit continuity and rerun actions | done | `ExportDialog.tsx` opens `EditorPanel` inside the export workspace and exposes file/rerun actions without leaving the export flow | `npm.cmd run lint` / `npm.cmd run test` |
+| F090 | Same-size unchanged GIF export passthrough | done | `export_render.rs` copies unchanged single GIF exports directly when crop/size/loop are unchanged, avoiding re-encode size drift | `unchanged_single_gif_export_copies_original_without_reencoding` |
+| F091 | Text overlay editor with user/OFL default fonts | done | `EditorPanel.tsx` text controls plus `update_icon_text_overlay`; `imaging/text_overlay.rs` renders real text into PNG/GIF preview/export using `fontdue`; defaults search installed OFL-friendly Korean fonts and otherwise require user-selected ttf/otf | `npm.cmd run lint` / `cargo test` |
+| F092 | Export Workspace range/multi selection controls | done | `ExportDialog.tsx` supports Shift range selection, Ctrl toggle selection, selected-count toolbar, visible-row select, clear selection, include/exclude selected, and include/exclude all | `npm.cmd run lint` / `npm.cmd run test` |
+| F093 | Collection icon sorting | done | `collection-route.tsx` adds `정렬하기` panel for name/alt sorting with ascending/descending order and persists via `reorder_icons` | `npm.cmd run lint` |
+| F094 | Batch alt numeric suffix duplicate prevention | done | `batch-alt.ts` generates unique numeric suffixes for multi-target alt edits and leaves single-target edits unchanged | `npm.cmd run test` |

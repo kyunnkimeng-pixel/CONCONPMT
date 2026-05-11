@@ -3,6 +3,7 @@
   "private": true,
   "version": "0.1.0",
   "description": "PMTCONCON Studio desktop app scaffold",
+  "license": "MIT",
   "type": "module",
   "packageManager": "npm@11.12.1",
   "scripts": {
@@ -12,6 +13,9 @@
     "web:build": "tsc && vite build",
     "lint": "tsc --noEmit",
     "test": "vitest run --passWithNoTests",
+    "license:forbidden": "powershell -NoProfile -ExecutionPolicy Bypass -File scripts/check-forbidden-dependencies.ps1",
+    "license:check": "powershell -NoProfile -ExecutionPolicy Bypass -File scripts/check-licenses.ps1",
+    "license:generate": "powershell -NoProfile -ExecutionPolicy Bypass -File scripts/generate-third-party-licenses.ps1",
     "preview": "vite preview",
     "tauri": "tauri",
     "tauri:dev": "tauri dev",

@@ -5,6 +5,7 @@ import { cn } from "@/lib/utils";
 interface AltInlineEditorProps {
   value: string;
   ariaLabel: string;
+  compact?: boolean;
   editRequestKey?: number;
   validationMessage: string | null;
   validateDraft: (value: string) => string | null;
@@ -14,6 +15,7 @@ interface AltInlineEditorProps {
 export function AltInlineEditor({
   value,
   ariaLabel,
+  compact = false,
   editRequestKey,
   validationMessage,
   validateDraft,
@@ -73,14 +75,20 @@ export function AltInlineEditor({
   const errorMessage = isEditing ? draftError : validationMessage;
 
   return (
-    <div className="flex min-h-[48px] w-full flex-col items-center gap-1">
+    <div
+      className={cn(
+        "flex w-full min-w-0 flex-col items-center gap-1",
+        compact ? "min-h-[30px]" : "min-h-[48px]",
+      )}
+    >
       {isEditing ? (
         <input
           ref={inputRef}
           aria-invalid={errorMessage ? true : undefined}
           aria-label={ariaLabel}
           className={cn(
-            "w-full select-text rounded-md border bg-white px-2 py-1 text-center text-xs font-medium text-foreground outline-none",
+            "w-full min-w-0 select-text rounded-md border bg-white px-2 text-center text-xs font-medium text-foreground outline-none",
+            compact ? "py-1" : "py-1",
             errorMessage ? "border-danger" : "border-focus",
           )}
           data-testid="icon-alt-input"
@@ -117,7 +125,7 @@ export function AltInlineEditor({
         <button
           aria-label={ariaLabel}
           className={cn(
-            "w-full truncate rounded-md px-2 py-1 text-center text-xs font-medium text-foreground hover:bg-white/80 focus-visible:outline focus-visible:outline-2 focus-visible:outline-focus",
+            "w-full min-w-0 truncate rounded-md px-2 py-1 text-center text-xs font-medium text-foreground hover:bg-white/80 focus-visible:outline focus-visible:outline-2 focus-visible:outline-focus",
             errorMessage && "text-danger",
             !value && "text-muted",
           )}

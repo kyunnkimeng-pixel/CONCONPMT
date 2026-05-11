@@ -55,6 +55,7 @@ pub fn output_repeat_for_settings(
 ) -> AppResult<GifOutputRepeat> {
     match loop_mode {
         "infinite" => Ok(GifOutputRepeat::Infinite),
+        "pingpong" => Ok(GifOutputRepeat::Infinite),
         "once" => Ok(GifOutputRepeat::Once),
         "count" => Ok(GifOutputRepeat::Finite(normalized_loop_count(loop_count)?)),
         "preserve" => source_output_repeat(source_loop_mode, source_loop_count),
@@ -63,6 +64,23 @@ pub fn output_repeat_for_settings(
             "지원하지 않는 GIF 반복 설정입니다.",
         )),
     }
+}
+
+pub fn is_pingpong_loop_mode(loop_mode: &str) -> bool {
+    loop_mode == "pingpong"
+}
+
+pub fn pingpong_sequence<T: Clone>(frames: &mut Vec<T>) {
+    if frames.len() <= 2 {
+        return;
+    }
+
+    let reflected = frames[1..frames.len() - 1]
+        .iter()
+        .rev()
+        .cloned()
+        .collect::<Vec<_>>();
+    frames.extend(reflected);
 }
 
 fn source_loop_metadata(repeat: gif::Repeat, has_loop_extension: bool) -> (String, Option<i64>) {
@@ -118,7 +136,9 @@ fn has_netscape_loop_extension(bytes: &[u8]) -> bool {
 
 #[cfg(test)]
 mod tests {
-    use super::{inspect_gif_bytes, output_repeat_for_settings, GifOutputRepeat};
+    use super::{
+        inspect_gif_bytes, output_repeat_for_settings, pingpong_sequence, GifOutputRepeat,
+    };
 
     #[test]
     fn output_repeat_uses_saved_source_loop_for_preserve() {
@@ -147,5 +167,20 @@ mod tests {
     #[test]
     fn inspect_rejects_invalid_gif_bytes() {
         assert!(inspect_gif_bytes(b"not a gif").is_err());
+    }
+
+    #[test]
+    fn pingpong_sequence_reflects_middle_frames() {
+        let mut frames = vec![0, 1, 2, 3];
+        pingpong_sequence(&mut frames);
+        assert_eq!(frames, vec![0, 1, 2, 3, 2, 1]);
+    }
+
+    #[test]
+    fn pingpong_loop_outputs_infinite_repeat() {
+        assert_eq!(
+            output_repeat_for_settings("pingpong", None, "once", None).unwrap(),
+            GifOutputRepeat::Infinite,
+        );
     }
 }

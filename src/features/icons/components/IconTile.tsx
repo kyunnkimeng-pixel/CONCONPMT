@@ -14,6 +14,7 @@ interface IconTileProps {
   isCover: boolean;
   previewWidth: number;
   previewHeight: number;
+  showDetails: boolean;
   duplicatePieceIds: Set<string>;
   editRequest: { pieceId: string; requestKey: number } | null;
   validateAltDraft: (pieceId: string, value: string) => string | null;
@@ -36,6 +37,7 @@ export function IconTile({
   isCover,
   previewWidth,
   previewHeight,
+  showDetails,
   duplicatePieceIds,
   editRequest,
   validateAltDraft,
@@ -70,7 +72,10 @@ export function IconTile({
       aria-label={`${icon.displayName} 아이콘`}
       aria-selected={isSelected}
       className={cn(
-        "group flex min-h-[220px] cursor-default select-none flex-col items-center rounded-lg border border-border bg-card p-3 shadow-sm transition hover:border-border-strong hover:shadow-md focus-visible:outline focus-visible:outline-2 focus-visible:outline-focus aria-selected:border-focus aria-selected:bg-selected",
+        "group flex cursor-default select-none flex-col items-center rounded-lg border border-border bg-card shadow-sm transition hover:border-border-strong hover:shadow-md focus-visible:outline focus-visible:outline-2 focus-visible:outline-focus aria-selected:border-focus aria-selected:bg-selected",
+        showDetails ? "min-h-[188px] p-3" : "min-h-0 p-2",
+        icon.readiness === "working" && "bg-slate-100 opacity-90",
+        icon.iconKind === "placeholder" && "border-dashed",
         isDragging && "opacity-70 shadow-lg",
       )}
       data-testid="icon-tile"
@@ -108,16 +113,15 @@ export function IconTile({
             대표
           </span>
         ) : null}
+        {icon.readiness === "working" ? (
+          <span className="absolute left-1 top-1 rounded bg-slate-700 px-1.5 py-0.5 text-[11px] font-medium text-white">
+            작업중
+          </span>
+        ) : null}
       </div>
 
-      <figcaption className="mt-2 flex w-full flex-col items-center gap-2">
-        <div className="w-full">
-          <span
-            className="mb-1 block text-[11px] font-medium text-muted"
-            data-testid="icon-file-name-label"
-          >
-            파일명
-          </span>
+      {showDetails ? (
+        <figcaption className="mt-1.5 flex w-full flex-col items-center gap-1">
           <InlineNameEditor
             ariaLabel={`${icon.displayName} 아이콘명 변경`}
             value={icon.displayName}
@@ -125,39 +129,44 @@ export function IconTile({
               void onRename(icon.id, value);
             }}
           />
-        </div>
-        <div
-          className={cn(
-            "w-full gap-1",
-            icon.shape === "horizontal_double" ? "grid grid-cols-2" : "flex flex-col",
-          )}
-        >
-          {icon.pieces.map((piece) => (
-            <div className="min-w-0" data-testid="icon-alt-field" key={piece.id}>
-              <span
-                className="mb-1 block text-[11px] font-medium text-muted"
-                data-testid="icon-alt-label"
-              >
-                {pieceAltLabel(piece)}
-              </span>
-              <AltInlineEditor
-                ariaLabel={`${icon.displayName} ${pieceLabel(piece)} alt 수정`}
-                editRequestKey={
-                  editRequest?.pieceId === piece.id ? editRequest.requestKey : undefined
-                }
-                validationMessage={
-                  duplicatePieceIds.has(piece.id)
-                    ? "중복된 alt 값입니다."
-                    : validateCurrentAlt(piece)
-                }
-                validateDraft={(value) => validateAltDraft(piece.id, value)}
-                value={piece.altText}
-                onCommit={(value) => onAltCommit(piece.id, value)}
-              />
-            </div>
-          ))}
-        </div>
-      </figcaption>
+          <div
+            className={cn(
+              "w-full gap-1",
+              icon.shape === "single" ? "flex flex-col" : "grid grid-cols-2",
+            )}
+          >
+            {icon.pieces.map((piece) => (
+              <div className="min-w-0" data-testid="icon-alt-field" key={piece.id}>
+                <div className="flex min-w-0 items-start gap-1">
+                  <span
+                    className="mt-1.5 w-8 shrink-0 text-right text-[11px] font-medium text-muted"
+                    data-testid="icon-alt-label"
+                  >
+                    {pieceAltLabel(piece)}
+                  </span>
+                  <AltInlineEditor
+                    ariaLabel={`${icon.displayName} ${pieceLabel(piece)} alt 수정`}
+                    compact
+                    editRequestKey={
+                      editRequest?.pieceId === piece.id
+                        ? editRequest.requestKey
+                        : undefined
+                    }
+                    validationMessage={
+                      duplicatePieceIds.has(piece.id)
+                        ? "중복된 alt 값입니다."
+                        : validateCurrentAlt(piece)
+                    }
+                    validateDraft={(value) => validateAltDraft(piece.id, value)}
+                    value={piece.altText}
+                    onCommit={(value) => onAltCommit(piece.id, value)}
+                  />
+                </div>
+              </div>
+            ))}
+          </div>
+        </figcaption>
+      ) : null}
     </figure>
   );
 }
@@ -173,6 +182,14 @@ function PiecePreviewGrid({
   previewWidth: number;
   previewHeight: number;
 }) {
+  if (icon.iconKind === "placeholder") {
+    return (
+      <div className="flex size-full items-center justify-center bg-slate-100 px-3 text-center text-sm font-semibold text-muted">
+        {icon.placeholderText || icon.displayName}
+      </div>
+    );
+  }
+
   if (icon.shape === "single") {
     return <PreviewImage src={fallbackUrl} />;
   }
@@ -246,5 +263,16 @@ function pieceLabel(piece: IconPieceSummary) {
 }
 
 function pieceAltLabel(piece: IconPieceSummary) {
-  return piece.pieceRole === "single" ? "alt 값" : `${pieceLabel(piece)} alt`;
+  switch (piece.pieceRole) {
+    case "left":
+      return "왼";
+    case "right":
+      return "오";
+    case "top":
+      return "위";
+    case "bottom":
+      return "아래";
+    case "single":
+      return "alt";
+  }
 }

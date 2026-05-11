@@ -453,10 +453,7 @@ fn insert_default_crop_settings(
     Ok(())
 }
 
-fn insert_single_icon_piece(
-    transaction: &Transaction<'_>,
-    icon_id: &str,
-) -> AppResult<()> {
+fn insert_single_icon_piece(transaction: &Transaction<'_>, icon_id: &str) -> AppResult<()> {
     transaction.execute(
         "INSERT INTO icon_pieces (
            id,

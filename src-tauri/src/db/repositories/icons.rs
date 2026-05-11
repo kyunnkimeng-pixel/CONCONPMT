@@ -1,5 +1,7 @@
 use std::collections::HashSet;
+use std::io::Cursor;
 
+use image::{DynamicImage, ImageBuffer, ImageFormat, Rgba};
 use rusqlite::{params, Connection, OptionalExtension, Row, Transaction};
 
 use crate::db::repositories::source_files::{
@@ -7,7 +9,7 @@ use crate::db::repositories::source_files::{
 };
 use crate::error::{AppError, AppResult};
 use crate::ids::create_id;
-use crate::models::{IconDto, IconPieceDto, ImportImageFilePayload};
+use crate::models::{CreatePlaceholderIconPayload, IconDto, IconPieceDto, ImportImageFilePayload};
 use crate::paths::AppPaths;
 
 pub fn list_icons(connection: &Connection, collection_id: &str) -> AppResult<Vec<IconDto>> {
@@ -35,6 +37,9 @@ pub fn list_icons(connection: &Connection, collection_id: &str) -> AppResult<Vec
            collection_id,
            source_file_id,
            display_name,
+           icon_kind,
+           readiness,
+           placeholder_text,
            shape,
            order_index,
            cell_width_override,
@@ -42,7 +47,7 @@ pub fn list_icons(connection: &Connection, collection_id: &str) -> AppResult<Vec
            thumbnail_path,
            thumbnail_override_path,
            current_preview_path,
-           gif_loop_mode,
+           CASE WHEN gif_pingpong = 1 THEN 'pingpong' ELSE gif_loop_mode END AS gif_loop_mode,
            gif_loop_count,
            created_at,
            updated_at
@@ -112,7 +117,9 @@ pub fn rename_icon(
     )?;
 
     if changed == 0 {
-        return Err(AppError::not_found("이름을 변경할 아이콘을 찾을 수 없습니다."));
+        return Err(AppError::not_found(
+            "이름을 변경할 아이콘을 찾을 수 없습니다.",
+        ));
     }
 
     get_icon(connection, collection_id, icon_id)
@@ -158,6 +165,201 @@ pub fn set_icon_thumbnail_override(
     get_icon(connection, collection_id, icon_id)
 }
 
+pub fn create_placeholder_icon(
+    connection: &mut Connection,
+    paths: &AppPaths,
+    collection_id: &str,
+    payload: CreatePlaceholderIconPayload,
+) -> AppResult<IconDto> {
+    let label = normalized_placeholder_label(payload.label);
+    let placeholder_bytes = transparent_png_bytes(200, 200)?;
+    let transaction = connection.transaction()?;
+    let collection = collection_sizing(&transaction, collection_id)?;
+    let source_file = import_source_file_from_bytes(
+        &transaction,
+        paths,
+        &ImportImageFilePayload {
+            original_filename: "blank-dccon.png".to_string(),
+            bytes: placeholder_bytes,
+        },
+        SourceFileImportOptions {
+            allow_gif: false,
+            exact_dimensions: None,
+        },
+    )?;
+    let icon_id = create_id("icon");
+    let order_index = next_icon_order_index(&transaction, collection_id)?;
+    let crop = centered_crop_rect(
+        source_file.width,
+        source_file.height,
+        collection.default_cell_width,
+        collection.default_cell_height,
+    );
+
+    transaction.execute(
+        "INSERT INTO icons (
+           id,
+           collection_id,
+           source_file_id,
+           display_name,
+           icon_kind,
+           readiness,
+           placeholder_text,
+           shape,
+           order_index,
+           thumbnail_path,
+           current_preview_path,
+           created_at,
+           updated_at
+         )
+         VALUES (
+           ?1,
+           ?2,
+           ?3,
+           ?4,
+           'placeholder',
+           'working',
+           ?5,
+           'single',
+           ?6,
+           ?7,
+           ?8,
+           strftime('%Y-%m-%dT%H:%M:%fZ', 'now'),
+           strftime('%Y-%m-%dT%H:%M:%fZ', 'now')
+         )",
+        params![
+            icon_id,
+            collection_id,
+            source_file.id,
+            label,
+            label,
+            order_index,
+            source_file.thumbnail_path,
+            source_file.thumbnail_path,
+        ],
+    )?;
+    insert_crop_settings(
+        &transaction,
+        &icon_id,
+        crop,
+        source_file.width,
+        source_file.height,
+        collection.default_cell_width,
+        collection.default_cell_height,
+    )?;
+    insert_piece(&transaction, &icon_id, 0, "single", "")?;
+    transaction.commit()?;
+
+    get_icon(connection, collection_id, &icon_id)
+}
+
+pub fn replace_icon_source(
+    connection: &mut Connection,
+    paths: &AppPaths,
+    collection_id: &str,
+    icon_id: &str,
+    file: ImportImageFilePayload,
+) -> AppResult<IconDto> {
+    let transaction = connection.transaction()?;
+    ensure_collection_exists(&transaction, collection_id)?;
+    let icon = icon_record_for_replace(&transaction, collection_id, icon_id)?;
+    let source_file = import_source_file_from_bytes(
+        &transaction,
+        paths,
+        &file,
+        SourceFileImportOptions {
+            allow_gif: true,
+            exact_dimensions: None,
+        },
+    )?;
+    let current_preview_path = if source_file.original_extension == "gif" {
+        source_file.original_path_in_library.clone()
+    } else {
+        source_file.thumbnail_path.clone()
+    };
+    let display_name = if icon.icon_kind == "placeholder" {
+        display_name_from_filename(&file.original_filename)
+    } else {
+        icon.display_name
+    };
+    let crop = centered_crop_rect(
+        source_file.width,
+        source_file.height,
+        icon.cell_width,
+        icon.cell_height,
+    );
+
+    transaction.execute(
+        "UPDATE icons
+         SET source_file_id = ?1,
+             display_name = ?2,
+             icon_kind = 'image',
+             placeholder_text = NULL,
+             thumbnail_path = ?3,
+             thumbnail_override_source_file_id = NULL,
+             thumbnail_override_path = NULL,
+             current_preview_path = ?4,
+             updated_at = strftime('%Y-%m-%dT%H:%M:%fZ', 'now')
+         WHERE id = ?5
+           AND collection_id = ?6
+           AND deleted_at IS NULL",
+        params![
+            source_file.id,
+            display_name,
+            source_file.thumbnail_path,
+            current_preview_path,
+            icon_id,
+            collection_id,
+        ],
+    )?;
+    replace_crop_settings(
+        &transaction,
+        icon_id,
+        crop,
+        source_file.width,
+        source_file.height,
+        icon.cell_width,
+        icon.cell_height,
+    )?;
+    transaction.commit()?;
+
+    get_icon(connection, collection_id, icon_id)
+}
+
+pub fn set_icons_readiness(
+    connection: &Connection,
+    collection_id: &str,
+    icon_ids: Vec<String>,
+    readiness: String,
+) -> AppResult<Vec<IconDto>> {
+    ensure_collection_exists(connection, collection_id)?;
+    let readiness = normalized_readiness(readiness)?;
+    if icon_ids.is_empty() {
+        return list_icons(connection, collection_id);
+    }
+
+    let mut changed = 0;
+    for icon_id in icon_ids {
+        changed += connection.execute(
+            "UPDATE icons
+             SET readiness = ?1,
+                 updated_at = strftime('%Y-%m-%dT%H:%M:%fZ', 'now')
+             WHERE id = ?2
+               AND collection_id = ?3
+               AND deleted_at IS NULL",
+            params![readiness, icon_id, collection_id],
+        )?;
+    }
+
+    if changed == 0 {
+        return Err(AppError::not_found(
+            "상태를 변경할 아이콘을 찾을 수 없습니다.",
+        ));
+    }
+
+    list_icons(connection, collection_id)
+}
+
 pub fn duplicate_icon(
     connection: &mut Connection,
     collection_id: &str,
@@ -167,7 +369,15 @@ pub fn duplicate_icon(
     ensure_collection_exists(&transaction, collection_id)?;
     let icon = icon_record_for_duplicate(&transaction, collection_id, icon_id)?;
     let duplicate_icon_id = create_id("icon");
-    let order_index = next_icon_order_index(&transaction, collection_id)?;
+    let order_index = icon.order_index + 1;
+    transaction.execute(
+        "UPDATE icons
+         SET order_index = order_index + 1
+         WHERE collection_id = ?1
+           AND deleted_at IS NULL
+           AND order_index >= ?2",
+        params![collection_id, order_index],
+    )?;
     let duplicate_name = format!("{} 복사본", icon.display_name);
 
     transaction.execute(
@@ -176,6 +386,9 @@ pub fn duplicate_icon(
            collection_id,
            source_file_id,
            display_name,
+           icon_kind,
+           readiness,
+           placeholder_text,
            shape,
            order_index,
            cell_width_override,
@@ -186,6 +399,7 @@ pub fn duplicate_icon(
            current_preview_path,
            gif_loop_mode,
            gif_loop_count,
+           gif_pingpong,
            created_at,
            updated_at
          )
@@ -204,6 +418,10 @@ pub fn duplicate_icon(
            ?12,
            ?13,
            ?14,
+           ?15,
+           ?16,
+           ?17,
+           ?18,
            strftime('%Y-%m-%dT%H:%M:%fZ', 'now'),
            strftime('%Y-%m-%dT%H:%M:%fZ', 'now')
          )",
@@ -212,6 +430,9 @@ pub fn duplicate_icon(
             collection_id,
             icon.source_file_id,
             duplicate_name,
+            icon.icon_kind,
+            icon.readiness,
+            icon.placeholder_text,
             icon.shape,
             order_index,
             icon.cell_width_override,
@@ -222,6 +443,7 @@ pub fn duplicate_icon(
             icon.current_preview_path,
             icon.gif_loop_mode,
             icon.gif_loop_count,
+            icon.gif_pingpong,
         ],
     )?;
 
@@ -362,6 +584,9 @@ fn icon_from_row(connection: &Connection, row: &Row<'_>) -> rusqlite::Result<Ico
         collection_id: row.get("collection_id")?,
         source_file_id: row.get("source_file_id")?,
         display_name: row.get("display_name")?,
+        icon_kind: row.get("icon_kind")?,
+        readiness: row.get("readiness")?,
+        placeholder_text: row.get("placeholder_text")?,
         shape: row.get("shape")?,
         order_index: row.get("order_index")?,
         cell_width_override: row.get("cell_width_override")?,
@@ -426,6 +651,10 @@ pub(crate) fn get_icon(
                collection_id,
                source_file_id,
                display_name,
+               order_index,
+               icon_kind,
+               readiness,
+               placeholder_text,
                shape,
                order_index,
                cell_width_override,
@@ -433,7 +662,7 @@ pub(crate) fn get_icon(
                thumbnail_path,
                thumbnail_override_path,
                current_preview_path,
-               gif_loop_mode,
+               CASE WHEN gif_pingpong = 1 THEN 'pingpong' ELSE gif_loop_mode END AS gif_loop_mode,
                gif_loop_count,
                created_at,
                updated_at
@@ -519,6 +748,10 @@ fn icon_id_for_piece(
 struct IconDuplicateRecord {
     source_file_id: String,
     display_name: String,
+    order_index: i64,
+    icon_kind: String,
+    readiness: String,
+    placeholder_text: Option<String>,
     shape: String,
     cell_width_override: Option<i64>,
     cell_height_override: Option<i64>,
@@ -528,6 +761,21 @@ struct IconDuplicateRecord {
     current_preview_path: Option<String>,
     gif_loop_mode: String,
     gif_loop_count: Option<i64>,
+    gif_pingpong: i64,
+}
+
+#[derive(Debug)]
+struct CollectionSizingRecord {
+    default_cell_width: i64,
+    default_cell_height: i64,
+}
+
+#[derive(Debug)]
+struct IconReplaceRecord {
+    display_name: String,
+    icon_kind: String,
+    cell_width: i64,
+    cell_height: i64,
 }
 
 #[derive(Debug)]
@@ -564,6 +812,10 @@ fn icon_record_for_duplicate(
             "SELECT
                source_file_id,
                display_name,
+               order_index,
+               icon_kind,
+               readiness,
+               placeholder_text,
                shape,
                cell_width_override,
                cell_height_override,
@@ -572,7 +824,8 @@ fn icon_record_for_duplicate(
                thumbnail_override_path,
                current_preview_path,
                gif_loop_mode,
-               gif_loop_count
+               gif_loop_count,
+               gif_pingpong
              FROM icons
              WHERE id = ?1
                AND collection_id = ?2
@@ -582,6 +835,10 @@ fn icon_record_for_duplicate(
                 Ok(IconDuplicateRecord {
                     source_file_id: row.get("source_file_id")?,
                     display_name: row.get("display_name")?,
+                    order_index: row.get("order_index")?,
+                    icon_kind: row.get("icon_kind")?,
+                    readiness: row.get("readiness")?,
+                    placeholder_text: row.get("placeholder_text")?,
                     shape: row.get("shape")?,
                     cell_width_override: row.get("cell_width_override")?,
                     cell_height_override: row.get("cell_height_override")?,
@@ -592,11 +849,66 @@ fn icon_record_for_duplicate(
                     current_preview_path: row.get("current_preview_path")?,
                     gif_loop_mode: row.get("gif_loop_mode")?,
                     gif_loop_count: row.get("gif_loop_count")?,
+                    gif_pingpong: row.get("gif_pingpong")?,
                 })
             },
         )
         .optional()?
         .ok_or_else(|| AppError::not_found("복제할 아이콘을 찾을 수 없습니다."))
+}
+
+fn collection_sizing(
+    connection: &Connection,
+    collection_id: &str,
+) -> AppResult<CollectionSizingRecord> {
+    connection
+        .query_row(
+            "SELECT default_cell_width, default_cell_height
+             FROM collections
+             WHERE id = ?1
+               AND deleted_at IS NULL",
+            params![collection_id],
+            |row| {
+                Ok(CollectionSizingRecord {
+                    default_cell_width: row.get("default_cell_width")?,
+                    default_cell_height: row.get("default_cell_height")?,
+                })
+            },
+        )
+        .optional()?
+        .ok_or_else(|| AppError::not_found("아이콘을 추가할 모음을 찾을 수 없습니다."))
+}
+
+fn icon_record_for_replace(
+    connection: &Connection,
+    collection_id: &str,
+    icon_id: &str,
+) -> AppResult<IconReplaceRecord> {
+    connection
+        .query_row(
+            "SELECT
+               i.display_name,
+               i.icon_kind,
+               COALESCE(i.cell_width_override, c.default_cell_width) AS cell_width,
+               COALESCE(i.cell_height_override, c.default_cell_height) AS cell_height
+             FROM icons i
+             JOIN collections c ON c.id = i.collection_id
+             WHERE i.id = ?1
+               AND i.collection_id = ?2
+               AND i.deleted_at IS NULL
+               AND c.deleted_at IS NULL",
+            params![icon_id, collection_id],
+            |row| {
+                Ok(IconReplaceRecord {
+                    display_name: row.get("display_name")?,
+                    icon_kind: row.get("icon_kind")?,
+                    cell_width: row.get("cell_width")?,
+                    cell_height: row.get("cell_height")?,
+                })
+            },
+        )
+        .optional()?
+        .ok_or_else(|| AppError::not_found("이미지를 대체할 아이콘을 찾을 수 없습니다."))
 }
 
 fn duplicate_icon_pieces(
@@ -864,6 +1176,194 @@ fn next_icon_order_index(connection: &Connection, collection_id: &str) -> AppRes
     )?)
 }
 
+#[derive(Debug, Clone, Copy)]
+struct CropRect {
+    x: f64,
+    y: f64,
+    width: f64,
+    height: f64,
+}
+
+fn insert_crop_settings(
+    transaction: &Transaction<'_>,
+    icon_id: &str,
+    crop: CropRect,
+    source_width: i64,
+    source_height: i64,
+    viewport_width: i64,
+    viewport_height: i64,
+) -> AppResult<()> {
+    transaction.execute(
+        "INSERT INTO crop_settings (
+           id,
+           icon_id,
+           crop_mode,
+           crop_x,
+           crop_y,
+           crop_w,
+           crop_h,
+           preset_position,
+           source_width_at_apply,
+           source_height_at_apply,
+           viewport_width_at_apply,
+           viewport_height_at_apply,
+           updated_at
+         )
+         VALUES (
+           ?1,
+           ?2,
+           'free',
+           ?3,
+           ?4,
+           ?5,
+           ?6,
+           'center',
+           ?7,
+           ?8,
+           ?9,
+           ?10,
+           strftime('%Y-%m-%dT%H:%M:%fZ', 'now')
+         )",
+        params![
+            create_id("crop"),
+            icon_id,
+            crop.x,
+            crop.y,
+            crop.width,
+            crop.height,
+            source_width,
+            source_height,
+            viewport_width,
+            viewport_height,
+        ],
+    )?;
+
+    Ok(())
+}
+
+fn replace_crop_settings(
+    transaction: &Transaction<'_>,
+    icon_id: &str,
+    crop: CropRect,
+    source_width: i64,
+    source_height: i64,
+    viewport_width: i64,
+    viewport_height: i64,
+) -> AppResult<()> {
+    let changed = transaction.execute(
+        "UPDATE crop_settings
+         SET crop_mode = 'free',
+             crop_x = ?1,
+             crop_y = ?2,
+             crop_w = ?3,
+             crop_h = ?4,
+             preset_position = 'center',
+             source_width_at_apply = ?5,
+             source_height_at_apply = ?6,
+             viewport_width_at_apply = ?7,
+             viewport_height_at_apply = ?8,
+             updated_at = strftime('%Y-%m-%dT%H:%M:%fZ', 'now')
+         WHERE icon_id = ?9",
+        params![
+            crop.x,
+            crop.y,
+            crop.width,
+            crop.height,
+            source_width,
+            source_height,
+            viewport_width,
+            viewport_height,
+            icon_id,
+        ],
+    )?;
+
+    if changed == 0 {
+        insert_crop_settings(
+            transaction,
+            icon_id,
+            crop,
+            source_width,
+            source_height,
+            viewport_width,
+            viewport_height,
+        )?;
+    }
+
+    Ok(())
+}
+
+fn insert_piece(
+    transaction: &Transaction<'_>,
+    icon_id: &str,
+    piece_index: i64,
+    piece_role: &str,
+    alt_text: &str,
+) -> AppResult<()> {
+    transaction.execute(
+        "INSERT INTO icon_pieces (
+           id,
+           icon_id,
+           piece_index,
+           piece_role,
+           alt_text,
+           created_at,
+           updated_at
+         )
+         VALUES (
+           ?1,
+           ?2,
+           ?3,
+           ?4,
+           ?5,
+           strftime('%Y-%m-%dT%H:%M:%fZ', 'now'),
+           strftime('%Y-%m-%dT%H:%M:%fZ', 'now')
+         )",
+        params![
+            create_id("piece"),
+            icon_id,
+            piece_index,
+            piece_role,
+            alt_text
+        ],
+    )?;
+
+    Ok(())
+}
+
+fn centered_crop_rect(
+    source_width: i64,
+    source_height: i64,
+    cell_width: i64,
+    cell_height: i64,
+) -> CropRect {
+    let source_width = source_width.max(1) as f64;
+    let source_height = source_height.max(1) as f64;
+    let target_aspect = cell_width.max(1) as f64 / cell_height.max(1) as f64;
+    let source_aspect = source_width / source_height;
+
+    let (crop_width, crop_height) = if source_aspect > target_aspect {
+        (source_height * target_aspect, source_height)
+    } else {
+        (source_width, source_width / target_aspect)
+    };
+
+    CropRect {
+        x: ((source_width - crop_width) / 2.0).max(0.0),
+        y: ((source_height - crop_height) / 2.0).max(0.0),
+        width: crop_width.min(source_width),
+        height: crop_height.min(source_height),
+    }
+}
+
+fn transparent_png_bytes(width: u32, height: u32) -> AppResult<Vec<u8>> {
+    let image = ImageBuffer::from_pixel(width.max(1), height.max(1), Rgba([0, 0, 0, 0]));
+    let mut cursor = Cursor::new(Vec::new());
+    DynamicImage::ImageRgba8(image)
+        .write_to(&mut cursor, ImageFormat::Png)
+        .map_err(AppError::from)?;
+    Ok(cursor.into_inner())
+}
+
 fn normalized_alt_text(alt_text: String) -> String {
     alt_text.trim().to_string()
 }
@@ -877,6 +1377,35 @@ fn normalized_display_name(display_name: String) -> String {
     }
 }
 
+fn normalized_placeholder_label(label: String) -> String {
+    let trimmed = label.trim();
+    if trimmed.is_empty() {
+        "빈 디시콘".to_string()
+    } else {
+        trimmed.chars().take(40).collect()
+    }
+}
+
+fn normalized_readiness(readiness: String) -> AppResult<String> {
+    match readiness.as_str() {
+        "complete" | "working" => Ok(readiness),
+        _ => Err(AppError::new(
+            "validation",
+            "지원하지 않는 아이콘 상태입니다.",
+        )),
+    }
+}
+
+fn display_name_from_filename(filename: &str) -> String {
+    std::path::Path::new(filename)
+        .file_stem()
+        .and_then(|stem| stem.to_str())
+        .map(str::trim)
+        .filter(|stem| !stem.is_empty())
+        .unwrap_or("새 아이콘")
+        .to_string()
+}
+
 #[cfg(test)]
 mod tests {
     use std::io::Cursor;
@@ -888,12 +1417,13 @@ mod tests {
     use crate::db::migrations;
     use crate::db::repositories::collections::create_collection;
     use crate::ids::create_id;
-    use crate::models::ImportImageFilePayload;
+    use crate::models::{CreatePlaceholderIconPayload, ImportImageFilePayload};
     use crate::paths::AppPaths;
 
     use super::{
-        delete_icons, duplicate_icon, list_icons, rename_icon, reorder_icons,
-        set_icon_thumbnail_override, update_icon_piece_alt,
+        create_placeholder_icon, delete_icons, duplicate_icon, list_icons, rename_icon,
+        reorder_icons, replace_icon_source, set_icon_thumbnail_override, set_icons_readiness,
+        update_icon_piece_alt,
     };
 
     fn connection() -> Connection {
@@ -971,6 +1501,9 @@ mod tests {
                    collection_id,
                    source_file_id,
                    display_name,
+                   icon_kind,
+                   readiness,
+                   placeholder_text,
                    shape,
                    order_index,
                    created_at,
@@ -981,6 +1514,9 @@ mod tests {
                    ?2,
                    ?3,
                    ?4,
+                   'image',
+                   'complete',
+                   NULL,
                    'single',
                    ?5,
                    strftime('%Y-%m-%dT%H:%M:%fZ', 'now'),
@@ -1057,8 +1593,13 @@ mod tests {
             create_collection(&mut connection, Some("아이콘명 테스트".to_string())).unwrap();
         let (icon_id, _) = seed_icon(&connection, &collection.id, 0, "가");
 
-        let updated =
-            rename_icon(&connection, &collection.id, &icon_id, "새 아이콘".to_string()).unwrap();
+        let updated = rename_icon(
+            &connection,
+            &collection.id,
+            &icon_id,
+            "새 아이콘".to_string(),
+        )
+        .unwrap();
 
         assert_eq!(updated.display_name, "새 아이콘");
         assert_eq!(updated.pieces[0].alt_text, "가");
@@ -1106,6 +1647,56 @@ mod tests {
     }
 
     #[test]
+    fn placeholder_icons_are_working_until_replaced_and_marked_complete() {
+        let mut connection = connection();
+        let paths = temp_paths();
+        let collection =
+            create_collection(&mut connection, Some("빈 디시콘 테스트".to_string())).unwrap();
+
+        let placeholder = create_placeholder_icon(
+            &mut connection,
+            &paths,
+            &collection.id,
+            CreatePlaceholderIconPayload {
+                label: "울음".to_string(),
+            },
+        )
+        .unwrap();
+
+        assert_eq!(placeholder.icon_kind, "placeholder");
+        assert_eq!(placeholder.readiness, "working");
+        assert_eq!(placeholder.placeholder_text.as_deref(), Some("울음"));
+
+        let replaced = replace_icon_source(
+            &mut connection,
+            &paths,
+            &collection.id,
+            &placeholder.id,
+            ImportImageFilePayload {
+                original_filename: "cry.png".to_string(),
+                bytes: png_bytes(),
+            },
+        )
+        .unwrap();
+
+        assert_eq!(replaced.icon_kind, "image");
+        assert_eq!(replaced.readiness, "working");
+        assert_eq!(replaced.placeholder_text, None);
+        assert_eq!(replaced.display_name, "cry");
+
+        let icons = set_icons_readiness(
+            &connection,
+            &collection.id,
+            vec![replaced.id],
+            "complete".to_string(),
+        )
+        .unwrap();
+        assert_eq!(icons[0].readiness, "complete");
+
+        std::fs::remove_dir_all(paths.root).unwrap();
+    }
+
+    #[test]
     fn reorder_icons_persists_order_indexes() {
         let mut connection = connection();
         let collection =
@@ -1145,6 +1736,30 @@ mod tests {
         assert_eq!(duplicated.order_index, 1);
         assert_eq!(duplicated.pieces[0].alt_text, "가");
         assert_eq!(list_icons(&connection, &collection.id).unwrap().len(), 2);
+    }
+
+    #[test]
+    fn duplicate_icon_is_inserted_next_to_source_icon() {
+        let mut connection = connection();
+        let collection =
+            create_collection(&mut connection, Some("duplicate order test".to_string())).unwrap();
+        let (first_icon_id, _) = seed_icon(&connection, &collection.id, 0, "ga");
+        let (second_icon_id, _) = seed_icon(&connection, &collection.id, 1, "na");
+        let (third_icon_id, _) = seed_icon(&connection, &collection.id, 2, "da");
+
+        let duplicated = duplicate_icon(&mut connection, &collection.id, &second_icon_id).unwrap();
+        let icons = list_icons(&connection, &collection.id).unwrap();
+        let ordered_ids = icons.iter().map(|icon| icon.id.clone()).collect::<Vec<_>>();
+        let ordered_indexes = icons
+            .iter()
+            .map(|icon| icon.order_index)
+            .collect::<Vec<_>>();
+
+        assert_eq!(
+            ordered_ids,
+            vec![first_icon_id, second_icon_id, duplicated.id, third_icon_id]
+        );
+        assert_eq!(ordered_indexes, vec![0, 1, 2, 3]);
     }
 
     #[test]

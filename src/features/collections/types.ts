@@ -33,6 +33,9 @@ export interface IconSummary {
   collectionId: string;
   sourceFileId: string;
   displayName: string;
+  iconKind: "image" | "placeholder";
+  readiness: "complete" | "working";
+  placeholderText: string | null;
   shape: "single" | "horizontal_double" | "vertical_double";
   orderIndex: number;
   cellWidthOverride: number | null;
@@ -40,7 +43,7 @@ export interface IconSummary {
   thumbnailUrl: string | null;
   thumbnailOverrideUrl: string | null;
   currentPreviewUrl: string | null;
-  gifLoopMode: "preserve" | "infinite" | "once" | "count";
+  gifLoopMode: "preserve" | "infinite" | "once" | "count" | "pingpong";
   gifLoopCount: number | null;
   createdAt: string;
   updatedAt: string;

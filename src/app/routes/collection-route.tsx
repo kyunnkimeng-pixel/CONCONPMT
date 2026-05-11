@@ -2,6 +2,7 @@ import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import type { InputHTMLAttributes } from "react";
 import { Link, useParams } from "@tanstack/react-router";
 import {
+  ArrowUpDown,
   ChevronLeft,
   Download,
   FileImage,
@@ -31,18 +32,22 @@ import type {
 import { EditorPanel } from "@/features/editor/components/EditorPanel";
 import { ExportDialog } from "@/features/export/components/ExportDialog";
 import {
+  createPlaceholderIcon,
   deleteIcons,
   duplicateIcon,
   importImagesIntoCollection,
   listIcons,
   renameIcon,
+  replaceIconSource,
   reorderIcons,
   revealIconExportResult,
   revealIconOriginal,
   setIconThumbnailOverride,
+  setIconsReadiness,
   updateIconPieceAlt,
 } from "@/features/icons/api";
 import { IconGrid } from "@/features/icons/components/IconGrid";
+import { createUniqueBatchAltUpdates } from "@/features/icons/batch-alt";
 import { DcinsidePreview } from "@/features/preview/components/DcinsidePreview";
 import {
   IMPORTABLE_IMAGE_ACCEPT,
@@ -68,12 +73,23 @@ const folderInputProps = {
   directory: string;
 };
 
+interface OperationProgress {
+  title: string;
+  detail: string;
+  current: number;
+  total: number;
+}
+
+type IconSortKey = "name" | "alt";
+type SortDirection = "asc" | "desc";
+
 export function CollectionRoute() {
   const { collectionId } = useParams({ from: "/collections/$collectionId" });
   const fileInputRef = useRef<HTMLInputElement>(null);
   const folderInputRef = useRef<HTMLInputElement>(null);
   const coverInputRef = useRef<HTMLInputElement>(null);
   const thumbnailInputRef = useRef<HTMLInputElement>(null);
+  const replaceImageInputRef = useRef<HTMLInputElement>(null);
   const hasLoadedRouteSettingsRef = useRef(false);
   const [collection, setCollection] = useState<CollectionSummary | null>(null);
   const [icons, setIcons] = useState<IconSummary[]>([]);
@@ -84,10 +100,16 @@ export function CollectionRoute() {
   const [isExportDialogOpen, setIsExportDialogOpen] = useState(false);
   const [isSettingsOpen, setIsSettingsOpen] = useState(false);
   const [viewMode, setViewMode] = useState<"explorer" | "usagePreview">("explorer");
+  const [isThumbnailOnly, setIsThumbnailOnly] = useState(false);
+  const [isSortPanelOpen, setIsSortPanelOpen] = useState(false);
+  const [sortKey, setSortKey] = useState<IconSortKey>("name");
+  const [sortDirection, setSortDirection] = useState<SortDirection>("asc");
   const [importStatus, setImportStatus] = useState<string | null>(null);
   const [errorMessage, setErrorMessage] = useState<string | null>(null);
   const [thumbnailOverrideIconId, setThumbnailOverrideIconId] = useState<string | null>(null);
-const duplicatePieceIds = useMemo(() => findDuplicateAltPieceIds(icons), [icons]);
+  const [replaceImageIconId, setReplaceImageIconId] = useState<string | null>(null);
+  const [operationProgress, setOperationProgress] = useState<OperationProgress | null>(null);
+  const duplicatePieceIds = useMemo(() => findDuplicateAltPieceIds(icons), [icons]);
 
   const refreshCollectionAndIcons = useCallback(async () => {
     const [collections, nextIcons] = await Promise.all([
@@ -154,9 +176,28 @@ const duplicatePieceIds = useMemo(() => findDuplicateAltPieceIds(icons), [icons]
       }
 
       setIsImporting(true);
+      setOperationProgress({
+        title: "이미지 불러오기",
+        detail: `${accepted.length}개 파일을 읽는 중입니다.`,
+        current: 0,
+        total: accepted.length + 1,
+      });
 
       try {
-        const result = await importImagesIntoCollection(collectionId, accepted);
+        const result = await importImagesIntoCollection(collectionId, accepted, (progress) => {
+          setOperationProgress({
+            title: "이미지 불러오기",
+            detail: `${progress.fileName} 읽는 중`,
+            current: progress.current,
+            total: accepted.length + 1,
+          });
+        });
+        setOperationProgress({
+          title: "이미지 불러오기",
+          detail: "앱 라이브러리에 등록하는 중입니다.",
+          current: accepted.length,
+          total: accepted.length + 1,
+        });
         const skippedCount = rejected.length + result.rejectedFiles.length;
         setCollection(result.collection);
         setIcons(await listIcons(collectionId));
@@ -165,6 +206,7 @@ const duplicatePieceIds = useMemo(() => findDuplicateAltPieceIds(icons), [icons]
         setErrorMessage(getCommandErrorMessage(error));
       } finally {
         setIsImporting(false);
+        setOperationProgress(null);
       }
     },
     [collectionId],
@@ -219,6 +261,9 @@ const duplicatePieceIds = useMemo(() => findDuplicateAltPieceIds(icons), [icons]
       const targetPieceIds = icons
         .filter((icon) => iconIds.includes(icon.id))
         .flatMap((icon) => icon.pieces.map((piece) => piece.id));
+      const allPieces = icons.flatMap((icon) =>
+        icon.pieces.map((piece) => ({ id: piece.id, altText: piece.altText })),
+      );
 
       if (targetPieceIds.length === 0) {
         return false;
@@ -227,14 +272,15 @@ const duplicatePieceIds = useMemo(() => findDuplicateAltPieceIds(icons), [icons]
       setErrorMessage(null);
 
       try {
+        const updates = createUniqueBatchAltUpdates(allPieces, targetPieceIds, value);
         await Promise.all(
-          targetPieceIds.map((pieceId) =>
-            updateIconPieceAlt(collectionId, pieceId, normalizeAltText(value)),
+          updates.map((update) =>
+            updateIconPieceAlt(collectionId, update.pieceId, update.altText),
           ),
         );
         setIcons(await listIcons(collectionId));
         setImportStatus(
-          `${targetPieceIds.length}개의 alt 값을 일괄 변경했습니다.`,
+          `${targetPieceIds.length}개의 alt 값을 숫자 suffix로 중복 없이 일괄 변경했습니다.`,
         );
         return true;
       } catch (error) {
@@ -377,6 +423,23 @@ const duplicatePieceIds = useMemo(() => findDuplicateAltPieceIds(icons), [icons]
     thumbnailInputRef.current?.click();
   };
 
+  const handleCreatePlaceholder = async () => {
+    const label = window.prompt("빈 디시콘 이름", "");
+    if (label === null) {
+      return;
+    }
+
+    setErrorMessage(null);
+    setImportStatus(null);
+    try {
+      const icon = await createPlaceholderIcon(collectionId, label);
+      setIcons(await listIcons(collectionId));
+      setImportStatus(`"${icon.displayName}" 빈 디시콘을 추가했습니다.`);
+    } catch (error) {
+      setErrorMessage(getCommandErrorMessage(error));
+    }
+  };
+
   const handleThumbnailOverrideFile = async (files: File[]) => {
     const file = files[0];
     const iconId = thumbnailOverrideIconId;
@@ -398,6 +461,85 @@ const duplicatePieceIds = useMemo(() => findDuplicateAltPieceIds(icons), [icons]
       setErrorMessage(getCommandErrorMessage(error));
     }
   };
+
+  const handleReplaceImage = (iconId: string) => {
+    setReplaceImageIconId(iconId);
+    replaceImageInputRef.current?.click();
+  };
+
+  const handleReplaceImageFile = async (files: File[]) => {
+    const file = files[0];
+    const iconId = replaceImageIconId;
+    setReplaceImageIconId(null);
+    setErrorMessage(null);
+    setImportStatus(null);
+
+    if (!file || !iconId) {
+      return;
+    }
+
+    try {
+      const updatedIcon = await replaceIconSource(collectionId, iconId, file);
+      setIcons((currentIcons) =>
+        currentIcons.map((icon) => (icon.id === updatedIcon.id ? updatedIcon : icon)),
+      );
+      setImportStatus("아이콘 이미지를 대체했습니다.");
+    } catch (error) {
+      setErrorMessage(getCommandErrorMessage(error));
+    }
+  };
+
+  const handleSetReadiness = useCallback(
+    async (iconIds: string[], readiness: IconSummary["readiness"]) => {
+      setErrorMessage(null);
+      setImportStatus(null);
+
+      try {
+        setIcons(await setIconsReadiness(collectionId, iconIds, readiness));
+        setImportStatus(
+          readiness === "working"
+            ? `${iconIds.length}개 아이콘을 작업중으로 표시했습니다.`
+            : `${iconIds.length}개 아이콘을 완성으로 표시했습니다.`,
+        );
+      } catch (error) {
+        setErrorMessage(getCommandErrorMessage(error));
+      }
+    },
+    [collectionId],
+  );
+
+  const handleSortIcons = useCallback(async () => {
+    const previousIcons = icons;
+    const sortedIcons = [...icons].sort((a, b) => {
+      const firstValue = sortKey === "name" ? a.displayName : sortAltValue(a);
+      const secondValue = sortKey === "name" ? b.displayName : sortAltValue(b);
+      const compared = firstValue.localeCompare(secondValue, "ko-KR", {
+        numeric: true,
+        sensitivity: "base",
+      });
+      if (compared !== 0) {
+        return sortDirection === "asc" ? compared : -compared;
+      }
+      return a.orderIndex - b.orderIndex;
+    });
+
+    const orderedIconIds = sortedIcons.map((icon) => icon.id);
+    setIcons(sortedIcons);
+    setErrorMessage(null);
+    setImportStatus(null);
+
+    try {
+      setIcons(await reorderIcons(collectionId, orderedIconIds));
+      setImportStatus(
+        `${sortKey === "name" ? "이름" : "alt 값"} ${
+          sortDirection === "asc" ? "오름차순" : "내림차순"
+        }으로 정렬했습니다.`,
+      );
+    } catch (error) {
+      setIcons(previousIcons);
+      setErrorMessage(getCommandErrorMessage(error));
+    }
+  }, [collectionId, icons, sortDirection, sortKey]);
 
   const handleRevealOriginal = useCallback(
     async (iconId: string) => {
@@ -444,6 +586,7 @@ const duplicatePieceIds = useMemo(() => findDuplicateAltPieceIds(icons), [icons]
     setViewMode(nextMode);
     if (nextMode === "usagePreview") {
       setEditingIconId(null);
+      setIsThumbnailOnly(false);
     }
   };
 
@@ -508,6 +651,18 @@ const duplicatePieceIds = useMemo(() => findDuplicateAltPieceIds(icons), [icons]
                 탐색
               </button>
               <button
+                className={viewModeButtonClass(viewMode === "explorer" && isThumbnailOnly)}
+                data-testid="thumbnail-only-toggle"
+                type="button"
+                onClick={() => {
+                  setViewMode("explorer");
+                  setIsThumbnailOnly((current) => !current);
+                }}
+              >
+                <Images aria-hidden="true" />
+                썸네일만
+              </button>
+              <button
                 className={viewModeButtonClass(viewMode === "usagePreview")}
                 type="button"
                 onClick={() => changeViewMode("usagePreview")}
@@ -527,12 +682,32 @@ const duplicatePieceIds = useMemo(() => findDuplicateAltPieceIds(icons), [icons]
               내보내기
             </button>
             <button
+              className={viewModeButtonClass(isSortPanelOpen)}
+              disabled={icons.length < 2}
+              title={icons.length < 2 ? "정렬할 항목이 부족합니다." : undefined}
+              type="button"
+              onClick={() => setIsSortPanelOpen((isOpen) => !isOpen)}
+            >
+              <ArrowUpDown aria-hidden="true" />
+              정렬하기
+            </button>
+            <button
               className={viewModeButtonClass(isSettingsOpen)}
               type="button"
               onClick={() => setIsSettingsOpen((isOpen) => !isOpen)}
             >
               <Settings aria-hidden="true" />
               설정
+            </button>
+            <button
+              className="inline-flex items-center gap-2 rounded-md border border-border bg-white px-3 py-2 text-sm font-medium hover:bg-menu-hover focus-visible:outline focus-visible:outline-2 focus-visible:outline-focus"
+              type="button"
+              onClick={() => {
+                void handleCreatePlaceholder();
+              }}
+            >
+              <Images aria-hidden="true" />
+              빈 디시콘
             </button>
             <button
               className="inline-flex items-center gap-2 rounded-md border border-border bg-white px-3 py-2 text-sm font-medium hover:bg-menu-hover focus-visible:outline focus-visible:outline-2 focus-visible:outline-focus"
@@ -571,6 +746,17 @@ const duplicatePieceIds = useMemo(() => findDuplicateAltPieceIds(icons), [icons]
               setCollection(updatedCollection);
               setImportStatus("모음 기준 크기 설정을 저장했습니다.");
             }}
+          />
+        ) : null}
+        {isSortPanelOpen ? (
+          <IconSortPanel
+            direction={sortDirection}
+            sortKey={sortKey}
+            onApply={() => {
+              void handleSortIcons();
+            }}
+            onDirectionChange={setSortDirection}
+            onSortKeyChange={setSortKey}
           />
         ) : null}
       </header>
@@ -622,6 +808,17 @@ const duplicatePieceIds = useMemo(() => findDuplicateAltPieceIds(icons), [icons]
           void handleThumbnailOverrideFile(files);
         }}
       />
+      <input
+        ref={replaceImageInputRef}
+        accept={IMPORTABLE_IMAGE_ACCEPT}
+        className="hidden"
+        type="file"
+        onChange={(event) => {
+          const files = Array.from(event.currentTarget.files ?? []);
+          event.currentTarget.value = "";
+          void handleReplaceImageFile(files);
+        }}
+      />
 
       <section className="flex min-h-0 flex-1 overflow-hidden">
         <div className="min-w-0 flex-1 overflow-auto px-8 py-6">
@@ -642,6 +839,7 @@ const duplicatePieceIds = useMemo(() => findDuplicateAltPieceIds(icons), [icons]
                   duplicatePieceIds={duplicatePieceIds}
                   editRequest={null}
                   icons={icons}
+                  thumbnailOnly={isThumbnailOnly}
                   validateAltDraft={validateAltDraft}
                   validateCurrentAlt={validateCurrentAlt}
                   onAltCommit={handleAltCommit}
@@ -653,7 +851,9 @@ const duplicatePieceIds = useMemo(() => findDuplicateAltPieceIds(icons), [icons]
                   onReorderIcons={handleReorderIcons}
                   onRevealExportResult={handleRevealExportResult}
                   onRevealOriginal={handleRevealOriginal}
+                  onReplaceImage={handleReplaceImage}
                   onSetCover={handleSetCover}
+                  onSetReadiness={handleSetReadiness}
                   onSetThumbnailOverride={handleSetThumbnailOverride}
                 />
               ) : (
@@ -703,8 +903,10 @@ const duplicatePieceIds = useMemo(() => findDuplicateAltPieceIds(icons), [icons]
           collection={collection}
           onClose={() => setIsExportDialogOpen(false)}
           onExported={handleExported}
+          onIconUpdated={handleIconUpdated}
         />
       ) : null}
+      {operationProgress ? <OperationProgressOverlay progress={operationProgress} /> : null}
     </div>
   );
 }
@@ -824,6 +1026,64 @@ function CollectionSettingsPanel({
   );
 }
 
+function IconSortPanel({
+  direction,
+  sortKey,
+  onApply,
+  onDirectionChange,
+  onSortKeyChange,
+}: {
+  direction: SortDirection;
+  sortKey: IconSortKey;
+  onApply: () => void;
+  onDirectionChange: (direction: SortDirection) => void;
+  onSortKeyChange: (sortKey: IconSortKey) => void;
+}) {
+  return (
+    <section className="mt-4 flex flex-wrap items-end gap-3 rounded-md border border-border bg-white p-3">
+      <label className="flex flex-col gap-1 text-xs font-medium text-muted">
+        기준
+        <select
+          className="h-9 rounded-md border border-border bg-white px-2 text-sm text-foreground focus-visible:outline focus-visible:outline-2 focus-visible:outline-focus"
+          value={sortKey}
+          onChange={(event) => onSortKeyChange(event.currentTarget.value as IconSortKey)}
+        >
+          <option value="name">이름순</option>
+          <option value="alt">alt 값순</option>
+        </select>
+      </label>
+      <label className="flex flex-col gap-1 text-xs font-medium text-muted">
+        방향
+        <select
+          className="h-9 rounded-md border border-border bg-white px-2 text-sm text-foreground focus-visible:outline focus-visible:outline-2 focus-visible:outline-focus"
+          value={direction}
+          onChange={(event) =>
+            onDirectionChange(event.currentTarget.value as SortDirection)
+          }
+        >
+          <option value="asc">오름차순</option>
+          <option value="desc">내림차순</option>
+        </select>
+      </label>
+      <button
+        className="inline-flex h-9 items-center gap-2 rounded-md bg-accent px-3 text-sm font-semibold text-accent-foreground hover:bg-accent-strong focus-visible:outline focus-visible:outline-2 focus-visible:outline-focus"
+        type="button"
+        onClick={onApply}
+      >
+        <ArrowUpDown aria-hidden="true" className="size-4" />
+        정렬 적용
+      </button>
+    </section>
+  );
+}
+
+function sortAltValue(icon: IconSummary) {
+  return icon.pieces
+    .map((piece) => piece.altText.trim())
+    .filter(Boolean)
+    .join(" ");
+}
+
 function SettingsNumberField({
   label,
   value,
@@ -866,6 +1126,38 @@ function SettingsNumberField({
         }}
       />
     </label>
+  );
+}
+
+function OperationProgressOverlay({ progress }: { progress: OperationProgress }) {
+  const percentage =
+    progress.total > 0
+      ? Math.min(100, Math.round((progress.current / progress.total) * 100))
+      : 0;
+
+  return (
+    <div
+      aria-live="polite"
+      className="fixed inset-0 z-50 flex items-center justify-center bg-slate-900/30 px-4"
+      role="status"
+    >
+      <div className="w-full max-w-md rounded-lg border border-border bg-surface p-5 shadow-xl">
+        <div className="flex items-center justify-between gap-3">
+          <h2 className="text-base font-semibold tracking-normal">{progress.title}</h2>
+          <span className="text-sm tabular-nums text-muted">{percentage}%</span>
+        </div>
+        <p className="mt-2 truncate text-sm text-muted">{progress.detail}</p>
+        <div className="mt-4 h-2 overflow-hidden rounded-full bg-preview">
+          <div
+            className="h-full rounded-full bg-accent transition-[width]"
+            style={{ width: `${percentage}%` }}
+          />
+        </div>
+        <p className="mt-2 text-xs text-muted">
+          {progress.current}/{progress.total}
+        </p>
+      </div>
+    </div>
   );
 }
 

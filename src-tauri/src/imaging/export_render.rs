@@ -7,7 +7,10 @@ use image::imageops::{self, FilterType};
 use image::{AnimationDecoder, DynamicImage, Frame, ImageFormat, Rgba, RgbaImage};
 
 use crate::error::{AppError, AppResult};
-use crate::imaging::gif_pipeline::{output_repeat_for_settings, GifOutputRepeat};
+use crate::imaging::gif_pipeline::{
+    is_pingpong_loop_mode, output_repeat_for_settings, pingpong_sequence, GifOutputRepeat,
+};
+use crate::imaging::text_overlay::{apply_text_overlay, TextOverlayRenderSpec};
 
 #[derive(Debug, Clone, Copy)]
 pub struct ExportCropRect {
@@ -36,6 +39,7 @@ pub struct ExportRenderRequest<'a> {
     pub gif_loop_count: Option<i64>,
     pub source_gif_loop_mode: &'a str,
     pub source_gif_loop_count: Option<i64>,
+    pub text_overlay: Option<TextOverlayRenderSpec>,
     pub output_dir: &'a Path,
     pub pieces: &'a [ExportRenderPiece],
 }
@@ -55,6 +59,8 @@ fn render_static_export(request: ExportRenderRequest<'_>) -> AppResult<Vec<PathB
     let (viewport_width, viewport_height) =
         viewport_size(request.shape, request.cell_width, request.cell_height)?;
     let viewport = crop_and_resize(&image, request.crop, viewport_width, viewport_height)?;
+    let mut viewport = viewport;
+    apply_text_overlay(&mut viewport, request.text_overlay.as_ref())?;
     let pieces = split_viewport(
         &viewport,
         request.shape,
@@ -71,6 +77,16 @@ fn render_static_export(request: ExportRenderRequest<'_>) -> AppResult<Vec<PathB
 }
 
 fn render_gif_export(request: ExportRenderRequest<'_>) -> AppResult<Vec<PathBuf>> {
+    if can_copy_original_gif_without_reencode(&request)? {
+        let mut paths = Vec::with_capacity(request.pieces.len());
+        for render_piece in request.pieces {
+            let output_path = request.output_dir.join(&render_piece.file_name);
+            fs::copy(request.source_path, &output_path)?;
+            paths.push(output_path);
+        }
+        return Ok(paths);
+    }
+
     let file = File::open(request.source_path)?;
     let decoder = GifDecoder::new(BufReader::new(file))?;
     let frames = decoder.into_frames().collect_frames()?;
@@ -97,6 +113,8 @@ fn render_gif_export(request: ExportRenderRequest<'_>) -> AppResult<Vec<PathBuf>
         let source_frame = DynamicImage::ImageRgba8(frame.into_buffer());
         let viewport =
             crop_and_resize(&source_frame, request.crop, viewport_width, viewport_height)?;
+        let mut viewport = viewport;
+        apply_text_overlay(&mut viewport, request.text_overlay.as_ref())?;
         let split_pieces = split_viewport(
             &viewport,
             request.shape,
@@ -115,6 +133,9 @@ fn render_gif_export(request: ExportRenderRequest<'_>) -> AppResult<Vec<PathBuf>
     let mut paths = Vec::with_capacity(request.pieces.len());
     for (target_index, render_piece) in request.pieces.iter().enumerate() {
         let output_path = request.output_dir.join(&render_piece.file_name);
+        if is_pingpong_loop_mode(request.gif_loop_mode) {
+            pingpong_sequence(&mut piece_frames[target_index]);
+        }
         write_gif(
             &output_path,
             std::mem::take(&mut piece_frames[target_index]),
@@ -124,6 +145,32 @@ fn render_gif_export(request: ExportRenderRequest<'_>) -> AppResult<Vec<PathBuf>
     }
 
     Ok(paths)
+}
+
+fn can_copy_original_gif_without_reencode(request: &ExportRenderRequest<'_>) -> AppResult<bool> {
+    if request.source_extension != "gif"
+        || request.output_format != "gif"
+        || request.shape != "single"
+        || request.gif_loop_mode != "preserve"
+        || request.text_overlay.is_some()
+        || request.pieces.len() != 1
+        || request.pieces[0].piece_index != 0
+    {
+        return Ok(false);
+    }
+
+    let (source_width, source_height) = image::image_dimensions(request.source_path)?;
+    let crop_x = request.crop.x.round() as i64;
+    let crop_y = request.crop.y.round() as i64;
+    let crop_width = request.crop.width.round() as i64;
+    let crop_height = request.crop.height.round() as i64;
+
+    Ok(crop_x == 0
+        && crop_y == 0
+        && crop_width == i64::from(source_width)
+        && crop_height == i64::from(source_height)
+        && request.cell_width == i64::from(source_width)
+        && request.cell_height == i64::from(source_height))
 }
 
 fn crop_and_resize(

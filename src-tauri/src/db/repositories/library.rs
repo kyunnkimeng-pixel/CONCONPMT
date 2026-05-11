@@ -128,7 +128,10 @@ fn is_managed_existing_file(paths: &AppPaths, path: &Path) -> bool {
 }
 
 fn ensure_within_root(paths: &AppPaths, path: &Path) -> AppResult<()> {
-    let root = paths.root.canonicalize().unwrap_or_else(|_| paths.root.clone());
+    let root = paths
+        .root
+        .canonicalize()
+        .unwrap_or_else(|_| paths.root.clone());
     let target = path.canonicalize().unwrap_or_else(|_| path.to_path_buf());
 
     if target.starts_with(&root) {
@@ -163,8 +166,7 @@ mod tests {
             .duration_since(UNIX_EPOCH)
             .unwrap()
             .as_nanos();
-        AppPaths::prepare(std::env::temp_dir().join(format!("pmtconcon-cleanup-{suffix}")))
-            .unwrap()
+        AppPaths::prepare(std::env::temp_dir().join(format!("pmtconcon-cleanup-{suffix}"))).unwrap()
     }
 
     #[test]

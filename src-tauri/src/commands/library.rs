@@ -6,9 +6,7 @@ use crate::error::AppResult;
 use crate::models::LibraryCleanupResultDto;
 
 #[tauri::command]
-pub fn preview_library_cleanup(
-    state: State<'_, AppState>,
-) -> AppResult<LibraryCleanupResultDto> {
+pub fn preview_library_cleanup(state: State<'_, AppState>) -> AppResult<LibraryCleanupResultDto> {
     let paths = state.paths().clone();
     let connection = state.connection()?;
     library_repository::cleanup_library(&connection, &paths, false)

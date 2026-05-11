@@ -26,6 +26,9 @@ pub struct IconDto {
     pub collection_id: String,
     pub source_file_id: String,
     pub display_name: String,
+    pub icon_kind: String,
+    pub readiness: String,
+    pub placeholder_text: Option<String>,
     pub shape: String,
     pub order_index: i64,
     pub cell_width_override: Option<i64>,
@@ -93,6 +96,21 @@ pub struct IconEditorStateDto {
     pub icon: IconDto,
     pub source: SourceFileDto,
     pub crop: CropSettingsDto,
+    pub text_overlay: TextOverlayDto,
+}
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct TextOverlayDto {
+    pub enabled: bool,
+    pub text: String,
+    pub font_path: Option<String>,
+    pub font_size: f64,
+    pub x: f64,
+    pub y: f64,
+    pub color: String,
+    pub stroke_color: String,
+    pub stroke_width: f64,
 }
 
 #[derive(Debug, Clone, Deserialize)]
@@ -114,9 +132,30 @@ pub struct ApplyIconCropPayload {
 
 #[derive(Debug, Clone, Deserialize)]
 #[serde(rename_all = "camelCase")]
+pub struct UpdateIconTextOverlayPayload {
+    pub icon_id: String,
+    pub enabled: bool,
+    pub text: String,
+    pub font_path: Option<String>,
+    pub font_size: f64,
+    pub x: f64,
+    pub y: f64,
+    pub color: String,
+    pub stroke_color: String,
+    pub stroke_width: f64,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+#[serde(rename_all = "camelCase")]
 pub struct ImportImageFilePayload {
     pub original_filename: String,
     pub bytes: Vec<u8>,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct CreatePlaceholderIconPayload {
+    pub label: String,
 }
 
 #[derive(Debug, Clone, Deserialize)]
@@ -203,12 +242,15 @@ pub struct ExportRequestPayload {
     pub output_directory: Option<String>,
     pub open_folder_after_export: bool,
     pub open_alt_txt_after_export: bool,
+    #[serde(default)]
+    pub excluded_piece_ids: Vec<String>,
 }
 
 #[derive(Debug, Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct ExportValidationIssueDto {
     pub severity: String,
+    pub blocking: bool,
     pub code: String,
     pub message: String,
     pub piece_id: Option<String>,
@@ -222,12 +264,19 @@ pub struct ExportPlanItemDto {
     pub file_name: String,
     pub icon_id: String,
     pub piece_id: String,
+    pub piece_role: String,
     pub display_name: String,
     pub alt_text: String,
     pub output_format: String,
     pub width: i64,
     pub height: i64,
     pub byte_size: Option<i64>,
+    pub limit_bytes: i64,
+    pub included: bool,
+    pub is_animated: bool,
+    pub source_preview_url: Option<String>,
+    pub export_path: Option<String>,
+    pub status: String,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -248,4 +297,105 @@ pub struct ExportCollectionResultDto {
     pub export_directory: Option<String>,
     pub alt_txt_path: Option<String>,
     pub manifest_path: Option<String>,
+    pub report_txt_path: Option<String>,
+    pub report_json_path: Option<String>,
+    pub issues_csv_path: Option<String>,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+#[serde(rename_all = "camelCase")]
+#[allow(dead_code)]
+pub struct OptimizationAdvancedSettingsPayload {
+    pub target_max_bytes: Option<i64>,
+    pub safety_margin_percent: Option<f64>,
+    pub fps_limit: Option<i64>,
+    pub frame_step: Option<i64>,
+    pub jpeg_quality: Option<i64>,
+}
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ExportAssetAnalysisDto {
+    pub icon_id: String,
+    pub profile_id: String,
+    pub piece_id: String,
+    pub baseline_variant_id: String,
+    pub baseline_bytes: i64,
+    pub target_max_bytes: i64,
+    pub over_by_bytes: i64,
+    pub over_ratio: f64,
+    pub format: String,
+    pub width: i64,
+    pub height: i64,
+    pub frame_count: Option<i64>,
+    pub duration_ms: Option<i64>,
+    pub average_fps: Option<f64>,
+    pub loop_mode: Option<String>,
+    pub has_transparency: Option<bool>,
+    pub status: String,
+    pub explanation_for_user: String,
+}
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct OptimizationCandidateDto {
+    pub id: String,
+    pub icon_id: String,
+    pub profile_id: String,
+    pub piece_id: String,
+    pub preset: String,
+    pub path: String,
+    pub preview_url: String,
+    pub format: String,
+    pub measured_byte_size: i64,
+    pub target_max_bytes: i64,
+    pub passes: bool,
+    pub width: i64,
+    pub height: i64,
+    pub frame_count: Option<i64>,
+    pub original_frame_count: Option<i64>,
+    pub duration_ms: Option<i64>,
+    pub original_duration_ms: Option<i64>,
+    pub loop_mode: Option<String>,
+    pub color_limit: Option<i64>,
+    pub fps_limit: Option<i64>,
+    pub quality: Option<i64>,
+    pub quality_impact: String,
+    pub settings_json: String,
+    pub summary: String,
+    pub is_active_for_export: bool,
+}
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct OptimizationResultDto {
+    pub analysis: ExportAssetAnalysisDto,
+    pub candidates: Vec<OptimizationCandidateDto>,
+    pub already_passes: bool,
+    pub fallback_suggestions: Vec<String>,
+    pub message: String,
+}
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ApplyOptimizationResultDto {
+    pub candidate: OptimizationCandidateDto,
+    pub message: String,
+}
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ClearOptimizationResultDto {
+    pub icon_id: String,
+    pub profile_id: String,
+    pub piece_id: Option<String>,
+    pub cleared_count: i64,
+    pub message: String,
+}
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ActiveVariantDto {
+    pub candidate: OptimizationCandidateDto,
+    pub stale: bool,
 }

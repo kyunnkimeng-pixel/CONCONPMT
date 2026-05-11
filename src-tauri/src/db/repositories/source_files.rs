@@ -22,6 +22,9 @@ pub struct SourceFileImportOptions {
 pub struct StoredSourceFile {
     pub id: String,
     pub original_path_in_library: String,
+    pub original_extension: String,
+    pub width: i64,
+    pub height: i64,
     pub thumbnail_path: String,
 }
 
@@ -65,8 +68,12 @@ fn inspect_file(
         return Err(AppError::new("validation", "빈 파일은 가져올 수 없습니다."));
     }
 
-    let extension = normalized_extension(&file.original_filename)
-        .ok_or_else(|| AppError::new("validation", "jpg, jpeg, png, gif 파일만 가져올 수 있습니다."))?;
+    let extension = normalized_extension(&file.original_filename).ok_or_else(|| {
+        AppError::new(
+            "validation",
+            "jpg, jpeg, png, gif 파일만 가져올 수 있습니다.",
+        )
+    })?;
     if extension == "gif" && !options.allow_gif {
         return Err(AppError::new(
             "validation",
@@ -99,9 +106,10 @@ fn inspect_file(
     }
 
     let gif_metadata = if extension == "gif" {
-        Some(inspect_gif_bytes(&file.bytes).map_err(|message| {
-            AppError::new("validation", message)
-        })?)
+        Some(
+            inspect_gif_bytes(&file.bytes)
+                .map_err(|message| AppError::new("validation", message))?,
+        )
     } else {
         None
     };
@@ -205,6 +213,9 @@ fn ensure_source_file(
     Ok(StoredSourceFile {
         id: source_file_id,
         original_path_in_library,
+        original_extension: metadata.extension.clone(),
+        width: metadata.width,
+        height: metadata.height,
         thumbnail_path: String::new(),
     })
 }
@@ -217,7 +228,10 @@ fn find_source_file(
         .query_row(
             "SELECT
                id,
-               original_path_in_library
+               original_path_in_library,
+               original_extension,
+               width,
+               height
              FROM source_files
              WHERE sha256 = ?1",
             params![sha256],
@@ -225,6 +239,9 @@ fn find_source_file(
                 Ok(StoredSourceFile {
                     id: row.get("id")?,
                     original_path_in_library: row.get("original_path_in_library")?,
+                    original_extension: row.get("original_extension")?,
+                    width: row.get("width")?,
+                    height: row.get("height")?,
                     thumbnail_path: String::new(),
                 })
             },

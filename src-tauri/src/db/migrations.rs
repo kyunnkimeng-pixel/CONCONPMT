@@ -11,6 +11,22 @@ const MIGRATIONS: &[(&str, &str)] = &[
         "002_consolidated_missing_features",
         include_str!("../../migrations/002_consolidated_missing_features.sql"),
     ),
+    (
+        "003_icon_readiness_placeholders",
+        include_str!("../../migrations/003_icon_readiness_placeholders.sql"),
+    ),
+    (
+        "004_processed_asset_variants",
+        include_str!("../../migrations/004_processed_asset_variants.sql"),
+    ),
+    (
+        "005_gif_pingpong",
+        include_str!("../../migrations/005_gif_pingpong.sql"),
+    ),
+    (
+        "006_icon_text_overlay",
+        include_str!("../../migrations/006_icon_text_overlay.sql"),
+    ),
 ];
 
 pub fn run(connection: &mut Connection) -> AppResult<()> {
@@ -67,6 +83,8 @@ mod tests {
             "crop_settings",
             "icon_pieces",
             "export_profiles",
+            "processed_asset_variants",
+            "optimization_jobs",
             "app_settings",
         ] {
             let exists: i64 = connection

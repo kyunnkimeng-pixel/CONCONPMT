@@ -334,7 +334,9 @@ pub fn update_collection_settings(
     )?;
 
     if changed == 0 {
-        return Err(AppError::not_found("설정을 저장할 모음을 찾을 수 없습니다."));
+        return Err(AppError::not_found(
+            "설정을 저장할 모음을 찾을 수 없습니다.",
+        ));
     }
 
     connection.execute(
@@ -662,6 +664,7 @@ struct IconRecord {
     current_preview_path: Option<String>,
     gif_loop_mode: String,
     gif_loop_count: Option<i64>,
+    gif_pingpong: i64,
 }
 
 #[derive(Debug)]
@@ -708,7 +711,8 @@ fn duplicate_icons(
                thumbnail_override_path,
                current_preview_path,
                gif_loop_mode,
-               gif_loop_count
+               gif_loop_count,
+               gif_pingpong
              FROM icons
              WHERE collection_id = ?1
                AND deleted_at IS NULL
@@ -732,6 +736,7 @@ fn duplicate_icons(
                     current_preview_path: row.get("current_preview_path")?,
                     gif_loop_mode: row.get("gif_loop_mode")?,
                     gif_loop_count: row.get("gif_loop_count")?,
+                    gif_pingpong: row.get("gif_pingpong")?,
                 })
             })?
             .collect::<Result<Vec<_>, _>>()?;
@@ -758,6 +763,7 @@ fn duplicate_icons(
                current_preview_path,
                gif_loop_mode,
                gif_loop_count,
+               gif_pingpong,
                created_at,
                updated_at
              )
@@ -776,6 +782,7 @@ fn duplicate_icons(
                ?12,
                ?13,
                ?14,
+               ?15,
                strftime('%Y-%m-%dT%H:%M:%fZ', 'now'),
                strftime('%Y-%m-%dT%H:%M:%fZ', 'now')
              )",
@@ -794,6 +801,7 @@ fn duplicate_icons(
                 icon.current_preview_path,
                 icon.gif_loop_mode,
                 icon.gif_loop_count,
+                icon.gif_pingpong,
             ],
         )?;
 
@@ -984,8 +992,8 @@ mod tests {
     use crate::paths::AppPaths;
 
     use super::{
-        create_collection, delete_collection, duplicate_collection, list_collections,
-        import_collection_cover_image, rename_collection, update_collection_settings,
+        create_collection, delete_collection, duplicate_collection, import_collection_cover_image,
+        list_collections, rename_collection, update_collection_settings,
     };
 
     fn connection() -> Connection {

@@ -4,7 +4,10 @@ use crate::app_state::AppState;
 use crate::db::repositories::export_profiles as export_profile_repository;
 use crate::error::AppResult;
 use crate::models::{
-    ExportCollectionResultDto, ExportProfileDto, ExportRequestPayload, ExportValidationResultDto,
+    ActiveVariantDto, ApplyOptimizationResultDto, ClearOptimizationResultDto,
+    ExportAssetAnalysisDto, ExportCollectionResultDto, ExportProfileDto, ExportRequestPayload,
+    ExportValidationResultDto, OptimizationAdvancedSettingsPayload, OptimizationCandidateDto,
+    OptimizationResultDto,
 };
 
 #[tauri::command]
@@ -65,4 +68,141 @@ pub fn pick_export_directory(initial_directory: Option<String>) -> AppResult<Opt
     Ok(dialog
         .pick_folder()
         .map(|path| path.to_string_lossy().to_string()))
+}
+
+#[tauri::command]
+pub fn analyze_export_asset_candidate(
+    state: State<'_, AppState>,
+    icon_id: String,
+    profile_id: String,
+    piece_id: Option<String>,
+) -> AppResult<ExportAssetAnalysisDto> {
+    let paths = state.paths().clone();
+    let connection = state.connection()?;
+    crate::optimization::analyze_export_asset_candidate(
+        &connection,
+        &paths,
+        &icon_id,
+        &profile_id,
+        piece_id.as_deref(),
+    )
+}
+
+#[tauri::command]
+pub fn generate_gif_optimization_candidates(
+    state: State<'_, AppState>,
+    icon_id: String,
+    profile_id: String,
+    piece_id: Option<String>,
+    mode: Option<String>,
+    advanced_settings: Option<OptimizationAdvancedSettingsPayload>,
+) -> AppResult<OptimizationResultDto> {
+    let paths = state.paths().clone();
+    let connection = state.connection()?;
+    crate::optimization::generate_gif_optimization_candidates(
+        &connection,
+        &paths,
+        &icon_id,
+        &profile_id,
+        piece_id.as_deref(),
+        mode,
+        advanced_settings,
+    )
+}
+
+#[tauri::command]
+pub fn generate_static_optimization_candidates(
+    state: State<'_, AppState>,
+    icon_id: String,
+    profile_id: String,
+    piece_id: Option<String>,
+    mode: Option<String>,
+    advanced_settings: Option<OptimizationAdvancedSettingsPayload>,
+) -> AppResult<OptimizationResultDto> {
+    let paths = state.paths().clone();
+    let connection = state.connection()?;
+    crate::optimization::generate_static_optimization_candidates(
+        &connection,
+        &paths,
+        &icon_id,
+        &profile_id,
+        piece_id.as_deref(),
+        mode,
+        advanced_settings,
+    )
+}
+
+#[tauri::command]
+pub fn list_optimization_candidates(
+    state: State<'_, AppState>,
+    icon_id: String,
+    profile_id: String,
+    piece_id: Option<String>,
+) -> AppResult<Vec<OptimizationCandidateDto>> {
+    let connection = state.connection()?;
+    crate::optimization::list_optimization_candidates(
+        &connection,
+        &icon_id,
+        &profile_id,
+        piece_id.as_deref(),
+    )
+}
+
+#[tauri::command]
+pub fn apply_optimization_candidate(
+    state: State<'_, AppState>,
+    candidate_id: String,
+) -> AppResult<ApplyOptimizationResultDto> {
+    let connection = state.connection()?;
+    crate::optimization::apply_optimization_candidate(&connection, &candidate_id)
+}
+
+#[tauri::command]
+pub fn clear_optimization_candidate(
+    state: State<'_, AppState>,
+    icon_id: String,
+    profile_id: String,
+    piece_id: Option<String>,
+) -> AppResult<ClearOptimizationResultDto> {
+    let connection = state.connection()?;
+    crate::optimization::clear_optimization_candidate(
+        &connection,
+        &icon_id,
+        &profile_id,
+        piece_id.as_deref(),
+    )
+}
+
+#[tauri::command]
+pub fn revalidate_export_item(
+    state: State<'_, AppState>,
+    icon_id: String,
+    profile_id: String,
+    piece_id: Option<String>,
+) -> AppResult<ExportAssetAnalysisDto> {
+    let paths = state.paths().clone();
+    let connection = state.connection()?;
+    crate::optimization::revalidate_export_item(
+        &connection,
+        &paths,
+        &icon_id,
+        &profile_id,
+        piece_id.as_deref(),
+    )
+}
+
+#[tauri::command]
+pub fn get_active_export_variant(
+    state: State<'_, AppState>,
+    icon_id: String,
+    profile_id: String,
+    piece_id: Option<String>,
+) -> AppResult<Option<ActiveVariantDto>> {
+    let connection = state.connection()?;
+    crate::optimization::get_active_export_variant(
+        &connection,
+        &icon_id,
+        &profile_id,
+        piece_id.as_deref(),
+    )
 }

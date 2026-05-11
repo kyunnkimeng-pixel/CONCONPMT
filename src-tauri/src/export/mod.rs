@@ -7,20 +7,23 @@ use rusqlite::{params, Connection, OptionalExtension};
 use serde::Serialize;
 
 use crate::db::repositories::export_profiles as export_profile_repository;
+use crate::db::repositories::optimization as optimization_repository;
 use crate::error::{AppError, AppResult};
 use crate::imaging::export_render::{
     render_icon_export, ExportCropRect, ExportRenderPiece, ExportRenderRequest,
 };
 use crate::imaging::geometry::piece_roles;
+use crate::imaging::text_overlay::{text_overlay_from_fields, TextOverlayRenderSpec};
 use crate::models::{
     ExportCollectionResultDto, ExportPlanItemDto, ExportProfileDto, ExportRequestPayload,
     ExportValidationIssueDto, ExportValidationResultDto,
 };
+use crate::optimization::cache::hash_text;
 use crate::paths::AppPaths;
 
 pub fn validate_export_collection(
     connection: &Connection,
-    paths: &AppPaths,
+    _paths: &AppPaths,
     collection_id: &str,
     payload: &ExportRequestPayload,
 ) -> AppResult<ExportValidationResultDto> {
@@ -29,27 +32,14 @@ pub fn validate_export_collection(
         collection_id,
         payload,
     )?;
-    let mut plan = load_export_plan(connection, collection_id, profile)?;
+    let plan = load_export_plan(
+        connection,
+        collection_id,
+        profile,
+        &payload.excluded_piece_ids,
+    )?;
     let mut issues = validate_plan_before_render(&plan);
-
-    if !hard_errors(&issues).is_empty() {
-        return Ok(validation_result(&plan, issues));
-    }
-
-    let temp_dir = unique_child_dir(&paths.temp_export_dir, "validation")?;
-    fs::create_dir_all(&temp_dir)?;
-    let render_result = render_plan(&plan, &temp_dir);
-
-    match render_result {
-        Ok(rendered_files) => {
-            apply_rendered_metadata(&mut plan, rendered_files)?;
-            issues.extend(validate_plan_after_render(&plan));
-        }
-        Err(error) => issues.push(error_issue("render_failed", error.message, None, None)),
-    }
-
-    let _ = fs::remove_dir_all(&temp_dir);
-
+    issues.extend(validate_active_variant_sizes(&plan));
     Ok(validation_result(&plan, issues))
 }
 
@@ -64,16 +54,24 @@ pub fn export_collection(
         collection_id,
         payload,
     )?;
-    let mut plan = load_export_plan(connection, collection_id, profile)?;
+    let mut plan = load_export_plan(
+        connection,
+        collection_id,
+        profile,
+        &payload.excluded_piece_ids,
+    )?;
     let mut issues = validate_plan_before_render(&plan);
 
-    if !hard_errors(&issues).is_empty() {
+    if plan.output_count() == 0 || !session_blocking_errors(&issues).is_empty() {
         let validation = validation_result(&plan, issues);
         return Ok(ExportCollectionResultDto {
             validation,
             export_directory: None,
             alt_txt_path: None,
             manifest_path: None,
+            report_txt_path: None,
+            report_json_path: None,
+            issues_csv_path: None,
         });
     }
 
@@ -81,46 +79,47 @@ pub fn export_collection(
     fs::create_dir_all(&output_root)?;
     let temp_dir = unique_child_dir(&output_root, ".pmtconcon-export-temp")?;
     fs::create_dir_all(&temp_dir)?;
+    let files_dir = temp_dir.join("files");
+    fs::create_dir_all(&files_dir)?;
 
-    let render_result = render_plan(&plan, &temp_dir);
-    match render_result {
-        Ok(rendered_files) => {
-            apply_rendered_metadata(&mut plan, rendered_files)?;
-            issues.extend(validate_plan_after_render(&plan));
-        }
-        Err(error) => issues.push(error_issue("render_failed", error.message, None, None)),
-    }
+    let render_result = render_plan(&plan, &files_dir);
+    apply_rendered_metadata(&mut plan, render_result.rendered_files);
+    issues.extend(render_result.issues);
+    issues.extend(validate_plan_after_render(&plan, &issues));
 
+    let final_dir = unique_export_dir(&output_root, &plan.collection_name)?;
+    apply_final_paths(&mut plan, &final_dir);
     let validation = validation_result(&plan, issues);
-    if !validation.can_export {
-        let _ = fs::remove_dir_all(&temp_dir);
-        return Ok(ExportCollectionResultDto {
-            validation,
-            export_directory: None,
-            alt_txt_path: None,
-            manifest_path: None,
-        });
-    }
 
     let alt_txt_path = if plan.profile.include_alt_txt {
         Some(write_alts_txt(&temp_dir, &plan)?)
     } else {
         None
     };
-    let manifest_path = write_manifest(&temp_dir, &plan)?;
-    let final_dir = unique_export_dir(&output_root, &plan.collection_name)?;
-    fs::rename(&temp_dir, &final_dir)?;
+    let report_paths = write_export_reports(&temp_dir, &plan, &validation)?;
+    finalize_export_directory(&temp_dir, &final_dir)?;
 
     let final_alt_txt_path = alt_txt_path
         .as_ref()
         .and_then(|path| path.file_name())
         .map(|file_name| final_dir.join(file_name));
-    let final_manifest_path = manifest_path
+    let final_report_txt_path = report_paths
+        .txt_path
+        .file_name()
+        .map(|file_name| final_dir.join(file_name))
+        .ok_or_else(|| AppError::new("export", "report path could not be created."))?;
+    let final_report_json_path = report_paths
+        .json_path
+        .file_name()
+        .map(|file_name| final_dir.join(file_name))
+        .ok_or_else(|| AppError::new("export", "report path could not be created."))?;
+    let final_issues_csv_path = report_paths
+        .issues_csv_path
         .file_name()
         .map(|file_name| final_dir.join(file_name))
         .ok_or_else(|| AppError::new("export", "manifest 경로를 만들 수 없습니다."))?;
 
-    update_export_status(connection, &plan, &final_dir)?;
+    update_export_status(connection, &plan, &final_dir, &validation)?;
 
     if payload.open_folder_after_export {
         open_path(&final_dir, OpenMode::Folder)?;
@@ -135,7 +134,10 @@ pub fn export_collection(
         validation,
         export_directory: Some(path_string(&final_dir)),
         alt_txt_path: final_alt_txt_path.map(|path| path_string(&path)),
-        manifest_path: Some(path_string(&final_manifest_path)),
+        manifest_path: Some(path_string(&final_report_json_path)),
+        report_txt_path: Some(path_string(&final_report_txt_path)),
+        report_json_path: Some(path_string(&final_report_json_path)),
+        issues_csv_path: Some(path_string(&final_issues_csv_path)),
     })
 }
 
@@ -175,6 +177,8 @@ struct PlannedIcon {
     shape: String,
     source_path: PathBuf,
     source_extension: String,
+    source_preview_url: Option<String>,
+    source_is_animated: bool,
     source_width: i64,
     source_height: i64,
     source_gif_loop_mode: String,
@@ -185,6 +189,7 @@ struct PlannedIcon {
     output_format: String,
     gif_loop_mode: String,
     gif_loop_count: Option<i64>,
+    text_overlay: Option<TextOverlayRenderSpec>,
     pieces: Vec<PlannedPiece>,
 }
 
@@ -194,10 +199,20 @@ struct PlannedPiece {
     piece_index: usize,
     piece_role: String,
     alt_text: String,
+    included: bool,
     export_index: i64,
     file_name: String,
     byte_size: Option<i64>,
     output_path: Option<PathBuf>,
+    active_variant: Option<ActiveExportVariant>,
+    used_optimized_variant: bool,
+}
+
+#[derive(Debug, Clone)]
+struct ActiveExportVariant {
+    id: String,
+    path: PathBuf,
+    byte_size: i64,
 }
 
 #[derive(Debug)]
@@ -219,14 +234,28 @@ struct IconExportRecord {
     gif_loop_count: Option<i64>,
     source_path: String,
     source_extension: String,
+    thumbnail_override_path: Option<String>,
+    thumbnail_path: Option<String>,
+    current_preview_path: Option<String>,
+    source_is_animated: bool,
     source_width: i64,
     source_height: i64,
     source_gif_loop_mode: String,
     source_gif_loop_count: Option<i64>,
+    source_hash: String,
     crop_x: f64,
     crop_y: f64,
     crop_w: f64,
     crop_h: f64,
+    text_overlay_enabled: bool,
+    text_overlay_text: String,
+    text_overlay_font_path: Option<String>,
+    text_overlay_font_size: f64,
+    text_overlay_x: f64,
+    text_overlay_y: f64,
+    text_overlay_color: String,
+    text_overlay_stroke_color: String,
+    text_overlay_stroke_width: f64,
 }
 
 #[derive(Debug)]
@@ -241,10 +270,12 @@ fn load_export_plan(
     connection: &Connection,
     collection_id: &str,
     profile: ExportProfileDto,
+    excluded_piece_ids: &[String],
 ) -> AppResult<ExportPlan> {
     let collection = load_collection(connection, collection_id)?;
     let icon_records = load_icons(connection, collection_id)?;
     let mut icons = Vec::with_capacity(icon_records.len());
+    let excluded_piece_ids: HashSet<&str> = excluded_piece_ids.iter().map(String::as_str).collect();
 
     for icon in icon_records {
         let pieces = load_pieces(connection, &icon.id)?;
@@ -257,6 +288,69 @@ fn load_export_plan(
             .unwrap_or(collection.default_cell_height)
             .max(1);
         let output_format = output_format_for_icon(&profile.target_format, &icon.source_extension);
+        let crop = ExportCropRect {
+            x: icon.crop_x,
+            y: icon.crop_y,
+            width: icon.crop_w,
+            height: icon.crop_h,
+        };
+        let text_overlay = text_overlay_from_fields(
+            icon.text_overlay_enabled,
+            Some(icon.text_overlay_text.clone()),
+            icon.text_overlay_font_path.clone(),
+            Some(icon.text_overlay_font_size),
+            Some(icon.text_overlay_x),
+            Some(icon.text_overlay_y),
+            Some(icon.text_overlay_color.clone()),
+            Some(icon.text_overlay_stroke_color.clone()),
+            Some(icon.text_overlay_stroke_width),
+        )?;
+        let profile_hash =
+            active_variant_profile_hash(&profile, &output_format, cell_width, cell_height);
+        let mut planned_pieces = Vec::with_capacity(pieces.len());
+
+        for piece in pieces {
+            let piece_index = usize::try_from(piece.piece_index.max(0)).unwrap_or(0);
+            let crop_hash = active_variant_crop_hash(
+                &icon.shape,
+                &crop,
+                cell_width,
+                cell_height,
+                piece_index,
+                &icon.gif_loop_mode,
+                icon.gif_loop_count,
+                text_overlay.as_ref(),
+            );
+            let active_variant = optimization_repository::find_active_variant(
+                connection,
+                &icon.id,
+                &profile.id,
+                &piece.id,
+                &icon.source_hash,
+                &crop_hash,
+                &profile_hash,
+                &output_format,
+            )?
+            .map(|variant| ActiveExportVariant {
+                id: variant.id,
+                path: PathBuf::from(variant.path),
+                byte_size: variant.byte_size,
+            });
+
+            planned_pieces.push(PlannedPiece {
+                included: !excluded_piece_ids.contains(piece.id.as_str()),
+                piece_id: piece.id,
+                piece_index,
+                piece_role: piece.piece_role,
+                alt_text: piece.alt_text.trim().to_string(),
+                export_index: 0,
+                file_name: String::new(),
+                byte_size: active_variant.as_ref().map(|variant| variant.byte_size),
+                output_path: active_variant.as_ref().map(|variant| variant.path.clone()),
+                active_variant,
+                used_optimized_variant: false,
+            });
+        }
 
         icons.push(PlannedIcon {
             icon_id: icon.id,
@@ -264,34 +358,23 @@ fn load_export_plan(
             shape: icon.shape,
             source_path: PathBuf::from(icon.source_path),
             source_extension: normalize_format(&icon.source_extension),
+            source_preview_url: icon
+                .thumbnail_override_path
+                .or(icon.current_preview_path)
+                .or(icon.thumbnail_path),
+            source_is_animated: icon.source_is_animated,
             source_width: icon.source_width,
             source_height: icon.source_height,
             source_gif_loop_mode: icon.source_gif_loop_mode,
             source_gif_loop_count: icon.source_gif_loop_count,
-            crop: ExportCropRect {
-                x: icon.crop_x,
-                y: icon.crop_y,
-                width: icon.crop_w,
-                height: icon.crop_h,
-            },
+            crop,
             cell_width,
             cell_height,
             output_format,
             gif_loop_mode: icon.gif_loop_mode,
             gif_loop_count: icon.gif_loop_count,
-            pieces: pieces
-                .into_iter()
-                .map(|piece| PlannedPiece {
-                    piece_id: piece.id,
-                    piece_index: usize::try_from(piece.piece_index.max(0)).unwrap_or(0),
-                    piece_role: piece.piece_role,
-                    alt_text: piece.alt_text.trim().to_string(),
-                    export_index: 0,
-                    file_name: String::new(),
-                    byte_size: None,
-                    output_path: None,
-                })
-                .collect(),
+            text_overlay,
+            pieces: planned_pieces,
         });
     }
 
@@ -342,23 +425,39 @@ fn load_icons(connection: &Connection, collection_id: &str) -> AppResult<Vec<Ico
            i.shape,
            i.cell_width_override,
            i.cell_height_override,
-           i.gif_loop_mode,
+           CASE WHEN i.gif_pingpong = 1 THEN 'pingpong' ELSE i.gif_loop_mode END AS gif_loop_mode,
            i.gif_loop_count,
+           i.thumbnail_override_path,
+           i.thumbnail_path,
+           i.current_preview_path,
            s.original_path_in_library,
            s.original_extension,
+           s.is_animated,
            s.width,
            s.height,
+           s.sha256,
            COALESCE(s.original_loop_mode, 'preserve') AS source_loop_mode,
            s.original_loop_count,
            cs.crop_x,
            cs.crop_y,
            cs.crop_w,
-           cs.crop_h
+           cs.crop_h,
+           i.text_overlay_enabled,
+           i.text_overlay_text,
+           i.text_overlay_font_path,
+           i.text_overlay_font_size,
+           i.text_overlay_x,
+           i.text_overlay_y,
+           i.text_overlay_color,
+           i.text_overlay_stroke_color,
+           i.text_overlay_stroke_width
          FROM icons i
          JOIN source_files s ON s.id = i.source_file_id
          JOIN crop_settings cs ON cs.icon_id = i.id
          WHERE i.collection_id = ?1
            AND i.deleted_at IS NULL
+           AND i.icon_kind = 'image'
+           AND i.readiness = 'complete'
          ORDER BY i.order_index ASC, i.created_at ASC",
     )?;
 
@@ -372,16 +471,30 @@ fn load_icons(connection: &Connection, collection_id: &str) -> AppResult<Vec<Ico
                 cell_height_override: row.get("cell_height_override")?,
                 gif_loop_mode: row.get("gif_loop_mode")?,
                 gif_loop_count: row.get("gif_loop_count")?,
+                thumbnail_override_path: row.get("thumbnail_override_path")?,
+                thumbnail_path: row.get("thumbnail_path")?,
+                current_preview_path: row.get("current_preview_path")?,
                 source_path: row.get("original_path_in_library")?,
                 source_extension: row.get("original_extension")?,
+                source_is_animated: row.get::<_, i64>("is_animated")? != 0,
                 source_width: row.get("width")?,
                 source_height: row.get("height")?,
+                source_hash: row.get("sha256")?,
                 source_gif_loop_mode: row.get("source_loop_mode")?,
                 source_gif_loop_count: row.get("original_loop_count")?,
                 crop_x: row.get("crop_x")?,
                 crop_y: row.get("crop_y")?,
                 crop_w: row.get("crop_w")?,
                 crop_h: row.get("crop_h")?,
+                text_overlay_enabled: row.get::<_, i64>("text_overlay_enabled")? != 0,
+                text_overlay_text: row.get("text_overlay_text")?,
+                text_overlay_font_path: row.get("text_overlay_font_path")?,
+                text_overlay_font_size: row.get("text_overlay_font_size")?,
+                text_overlay_x: row.get("text_overlay_x")?,
+                text_overlay_y: row.get("text_overlay_y")?,
+                text_overlay_color: row.get("text_overlay_color")?,
+                text_overlay_stroke_color: row.get("text_overlay_stroke_color")?,
+                text_overlay_stroke_width: row.get("text_overlay_stroke_width")?,
             })
         })?
         .collect::<Result<Vec<_>, _>>()?;
@@ -423,6 +536,12 @@ fn assign_filenames(plan: &mut ExportPlan) -> AppResult<()> {
 
     for icon in &mut plan.icons {
         for piece in &mut icon.pieces {
+            if !piece.included {
+                piece.export_index = 0;
+                piece.file_name.clear();
+                continue;
+            }
+
             piece.export_index = export_index;
             piece.file_name = match plan.profile.filename_mode.as_str() {
                 "alt" => {
@@ -476,9 +595,9 @@ fn validate_plan_before_render(plan: &ExportPlan) -> Vec<ExportValidationIssueDt
         }
 
         if plan.profile.target_cell_width != 200 || plan.profile.target_cell_height != 200 {
-            issues.push(error_issue(
+            issues.push(warning_issue(
                 "dcinside_profile_size",
-                "DCInside 프로필 기준 크기는 200×200이어야 합니다.",
+                "DCInside 프로필 기준 크기는 200×200 권장입니다. 현재 설정으로도 내보내기는 진행됩니다.",
                 None,
                 None,
             ));
@@ -490,6 +609,10 @@ fn validate_plan_before_render(plan: &ExportPlan) -> Vec<ExportValidationIssueDt
     let mut file_names = HashSet::new();
 
     for icon in &plan.icons {
+        if !icon.pieces.iter().any(|piece| piece.included) {
+            continue;
+        }
+
         let expected_roles = match piece_roles(&icon.shape) {
             Ok(roles) => roles,
             Err(error) => {
@@ -525,7 +648,7 @@ fn validate_plan_before_render(plan: &ExportPlan) -> Vec<ExportValidationIssueDt
         }
 
         if !allowed_formats.contains(&icon.output_format) {
-            issues.push(error_issue(
+            issues.push(non_blocking_error_issue(
                 "unsupported_format",
                 format!(
                     "{} 형식은 현재 프로필에서 허용되지 않습니다.",
@@ -539,10 +662,10 @@ fn validate_plan_before_render(plan: &ExportPlan) -> Vec<ExportValidationIssueDt
         if plan.profile.profile_type == "dcinside"
             && (icon.cell_width != 200 || icon.cell_height != 200)
         {
-            issues.push(error_issue(
+            issues.push(warning_issue(
                 "dcinside_output_size",
                 format!(
-                    "{} 출력 조각 크기가 {}×{}입니다. DCInside는 200×200이 필요합니다.",
+                    "{} 출력 조각 크기가 {}×{}입니다. DCInside는 200×200을 권장합니다.",
                     icon.display_name, icon.cell_width, icon.cell_height
                 ),
                 Some(icon.icon_id.clone()),
@@ -581,6 +704,10 @@ fn validate_plan_before_render(plan: &ExportPlan) -> Vec<ExportValidationIssueDt
         }
 
         for (piece_position, piece) in icon.pieces.iter().enumerate() {
+            if !piece.included {
+                continue;
+            }
+
             if let Some(expected_role) = expected_roles.get(piece_position) {
                 if piece.piece_role != *expected_role {
                     issues.push(error_issue(
@@ -637,7 +764,10 @@ fn validate_plan_before_render(plan: &ExportPlan) -> Vec<ExportValidationIssueDt
                 for piece_id in piece_ids {
                     issues.push(warning_issue(
                         "duplicate_alt",
-                        format!("alt 값 '{}'이 중복되었습니다. 내보내기는 계속할 수 있습니다.", alt_text),
+                        format!(
+                            "alt 값 '{}'이 중복되었습니다. 내보내기는 계속할 수 있습니다.",
+                            alt_text
+                        ),
                         None,
                         Some(piece_id),
                     ));
@@ -649,15 +779,27 @@ fn validate_plan_before_render(plan: &ExportPlan) -> Vec<ExportValidationIssueDt
     issues
 }
 
-fn validate_plan_after_render(plan: &ExportPlan) -> Vec<ExportValidationIssueDto> {
+fn validate_plan_after_render(
+    plan: &ExportPlan,
+    existing_issues: &[ExportValidationIssueDto],
+) -> Vec<ExportValidationIssueDto> {
     let mut issues = Vec::new();
     let max_bytes = plan.profile.max_bytes.max(1);
+    let failed_piece_ids: HashSet<&str> = existing_issues
+        .iter()
+        .filter(|issue| issue.severity == "error")
+        .filter_map(|issue| issue.piece_id.as_deref())
+        .collect();
 
     for icon in &plan.icons {
         for piece in &icon.pieces {
+            if !piece.included {
+                continue;
+            }
+
             if let Some(byte_size) = piece.byte_size {
                 if byte_size > max_bytes {
-                    issues.push(error_issue(
+                    issues.push(non_blocking_error_issue(
                         "max_bytes",
                         format!(
                             "{}이(가) {} 제한을 초과했습니다. 현재 크기: {}",
@@ -669,7 +811,7 @@ fn validate_plan_after_render(plan: &ExportPlan) -> Vec<ExportValidationIssueDto
                         Some(piece.piece_id.clone()),
                     ));
                 }
-            } else {
+            } else if !failed_piece_ids.contains(piece.piece_id.as_str()) {
                 issues.push(error_issue(
                     "missing_output",
                     format!("{} 출력 파일을 확인할 수 없습니다.", piece.file_name),
@@ -683,19 +825,92 @@ fn validate_plan_after_render(plan: &ExportPlan) -> Vec<ExportValidationIssueDto
     issues
 }
 
-fn render_plan(plan: &ExportPlan, output_dir: &Path) -> AppResult<Vec<(String, PathBuf, i64)>> {
-    let mut rendered_files = Vec::new();
+fn validate_active_variant_sizes(plan: &ExportPlan) -> Vec<ExportValidationIssueDto> {
+    let mut issues = Vec::new();
+    let max_bytes = plan.profile.max_bytes.max(1);
 
     for icon in &plan.icons {
+        for piece in &icon.pieces {
+            if !piece.included || piece.active_variant.is_none() {
+                continue;
+            }
+            if let Some(byte_size) = piece.byte_size {
+                if byte_size > max_bytes {
+                    issues.push(non_blocking_error_issue(
+                        "max_bytes",
+                        format!(
+                            "{} 최적화 후보가 {} 제한을 초과했습니다. 현재 크기: {}",
+                            piece.file_name,
+                            format_bytes(max_bytes),
+                            format_bytes(byte_size),
+                        ),
+                        Some(icon.icon_id.clone()),
+                        Some(piece.piece_id.clone()),
+                    ));
+                }
+            }
+        }
+    }
+
+    issues
+}
+
+#[derive(Debug, Default)]
+struct RenderPlanResult {
+    rendered_files: Vec<(String, PathBuf, i64, Option<String>)>,
+    issues: Vec<ExportValidationIssueDto>,
+}
+
+fn render_plan(plan: &ExportPlan, output_dir: &Path) -> RenderPlanResult {
+    let mut result = RenderPlanResult::default();
+
+    for icon in &plan.icons {
+        for piece in icon
+            .pieces
+            .iter()
+            .filter(|piece| piece.included && piece.active_variant.is_some())
+        {
+            if let Some(active_variant) = &piece.active_variant {
+                let output_path = output_dir.join(&piece.file_name);
+                match copy_active_variant(active_variant, &output_path) {
+                    Ok(byte_size) => {
+                        result.rendered_files.push((
+                            piece.piece_id.clone(),
+                            output_path,
+                            byte_size,
+                            Some(active_variant.id.clone()),
+                        ));
+                    }
+                    Err(error) => {
+                        result.issues.push(error_issue(
+                            "optimization_variant_failed",
+                            format!(
+                                "{} optimized variant copy failed: {}",
+                                piece.file_name, error.message
+                            ),
+                            Some(icon.icon_id.clone()),
+                            Some(piece.piece_id.clone()),
+                        ));
+                    }
+                }
+            }
+        }
+
         let render_pieces: Vec<ExportRenderPiece> = icon
             .pieces
             .iter()
+            .filter(|piece| piece.included && piece.active_variant.is_none())
             .map(|piece| ExportRenderPiece {
                 piece_index: piece.piece_index,
                 file_name: piece.file_name.clone(),
             })
             .collect();
-        let output_paths = render_icon_export(ExportRenderRequest {
+
+        if render_pieces.is_empty() {
+            continue;
+        }
+
+        let output_paths = match render_icon_export(ExportRenderRequest {
             source_path: &icon.source_path,
             source_extension: &icon.source_extension,
             shape: &icon.shape,
@@ -707,43 +922,105 @@ fn render_plan(plan: &ExportPlan, output_dir: &Path) -> AppResult<Vec<(String, P
             gif_loop_count: icon.gif_loop_count,
             source_gif_loop_mode: &icon.source_gif_loop_mode,
             source_gif_loop_count: icon.source_gif_loop_count,
+            text_overlay: icon.text_overlay.clone(),
             output_dir,
             pieces: &render_pieces,
-        })?;
+        }) {
+            Ok(paths) => paths,
+            Err(error) => {
+                for render_piece in &render_pieces {
+                    let _ = fs::remove_file(output_dir.join(&render_piece.file_name));
+                }
+                for piece in icon
+                    .pieces
+                    .iter()
+                    .filter(|piece| piece.included && piece.active_variant.is_none())
+                {
+                    result.issues.push(error_issue(
+                        "render_failed",
+                        format!("{} render failed: {}", piece.file_name, error.message),
+                        Some(icon.icon_id.clone()),
+                        Some(piece.piece_id.clone()),
+                    ));
+                }
+                continue;
+            }
+        };
 
-        for (piece, output_path) in icon.pieces.iter().zip(output_paths) {
-            let byte_size = i64::try_from(fs::metadata(&output_path)?.len()).unwrap_or(i64::MAX);
-            rendered_files.push((piece.piece_id.clone(), output_path, byte_size));
+        for (piece, output_path) in icon
+            .pieces
+            .iter()
+            .filter(|piece| piece.included && piece.active_variant.is_none())
+            .zip(output_paths)
+        {
+            match fs::metadata(&output_path) {
+                Ok(metadata) => {
+                    let byte_size = i64::try_from(metadata.len()).unwrap_or(i64::MAX);
+                    result.rendered_files.push((
+                        piece.piece_id.clone(),
+                        output_path,
+                        byte_size,
+                        None,
+                    ));
+                }
+                Err(error) => {
+                    result.issues.push(error_issue(
+                        "write_metadata_failed",
+                        format!("{} metadata check failed: {error}", piece.file_name),
+                        Some(icon.icon_id.clone()),
+                        Some(piece.piece_id.clone()),
+                    ));
+                }
+            }
         }
     }
 
-    Ok(rendered_files)
+    result
+}
+
+fn copy_active_variant(variant: &ActiveExportVariant, output_path: &Path) -> AppResult<i64> {
+    if !variant.path.is_file() {
+        return Err(AppError::not_found(
+            "활성 최적화 후보 파일을 찾을 수 없습니다.",
+        ));
+    }
+    if let Some(parent) = output_path.parent() {
+        fs::create_dir_all(parent)?;
+    }
+    if output_path.exists() {
+        fs::remove_file(output_path)?;
+    }
+    fs::copy(&variant.path, output_path)?;
+    Ok(i64::try_from(fs::metadata(output_path)?.len()).unwrap_or(i64::MAX))
 }
 
 fn apply_rendered_metadata(
     plan: &mut ExportPlan,
-    rendered_files: Vec<(String, PathBuf, i64)>,
-) -> AppResult<()> {
-    let mut by_piece_id: HashMap<String, (PathBuf, i64)> = rendered_files
+    rendered_files: Vec<(String, PathBuf, i64, Option<String>)>,
+) {
+    let mut by_piece_id: HashMap<String, (PathBuf, i64, Option<String>)> = rendered_files
         .into_iter()
-        .map(|(piece_id, output_path, byte_size)| (piece_id, (output_path, byte_size)))
+        .map(|(piece_id, output_path, byte_size, variant_id)| {
+            (piece_id, (output_path, byte_size, variant_id))
+        })
         .collect();
 
     for icon in &mut plan.icons {
         for piece in &mut icon.pieces {
-            let (output_path, byte_size) =
-                by_piece_id.remove(&piece.piece_id).ok_or_else(|| {
-                    AppError::new(
-                        "export",
-                        "렌더링된 내보내기 파일을 조각에 매핑할 수 없습니다.",
-                    )
-                })?;
-            piece.output_path = Some(output_path);
-            piece.byte_size = Some(byte_size);
+            if let Some((output_path, byte_size, variant_id)) = by_piece_id.remove(&piece.piece_id)
+            {
+                let _unused = AppError::new(
+                    "export",
+                    "렌더링된 내보내기 파일을 조각에 매핑할 수 없습니다.",
+                );
+                piece.output_path = Some(output_path);
+                piece.byte_size = Some(byte_size);
+                if variant_id.is_some() {
+                    piece.used_optimized_variant = true;
+                }
+            }
         }
     }
-
-    Ok(())
 }
 
 fn validation_result(
@@ -752,7 +1029,9 @@ fn validation_result(
 ) -> ExportValidationResultDto {
     let errors = hard_errors(&issues);
     let warnings = soft_warnings(&issues);
-    let can_export = errors.is_empty() && !(plan.profile.strict_warnings && !warnings.is_empty());
+    let can_export = plan.output_count() > 0
+        && session_blocking_errors(&issues).is_empty()
+        && !(plan.profile.strict_warnings && !warnings.is_empty());
 
     ExportValidationResultDto {
         can_export,
@@ -760,7 +1039,7 @@ fn validation_result(
         output_count: plan.output_count(),
         errors,
         warnings,
-        items: plan.items(),
+        items: plan.items(&issues),
     }
 }
 
@@ -768,6 +1047,19 @@ fn hard_errors(issues: &[ExportValidationIssueDto]) -> Vec<ExportValidationIssue
     issues
         .iter()
         .filter(|issue| issue.severity == "error")
+        .cloned()
+        .collect()
+}
+
+fn session_blocking_errors(issues: &[ExportValidationIssueDto]) -> Vec<ExportValidationIssueDto> {
+    issues
+        .iter()
+        .filter(|issue| {
+            issue.severity == "error"
+                && issue.blocking
+                && issue.icon_id.is_none()
+                && issue.piece_id.is_none()
+        })
         .cloned()
         .collect()
 }
@@ -788,7 +1080,11 @@ fn write_alts_txt(output_dir: &Path, plan: &ExportPlan) -> AppResult<PathBuf> {
         format!("# Profile: {}", plan.profile.name),
     ];
 
-    for item in plan.items() {
+    for item in plan.items(&[]) {
+        if !item.included || item.byte_size.is_none() {
+            continue;
+        }
+
         lines.push(format!(
             "{}\t{:03}\t{}\t{}\t{}",
             item.file_name, item.export_index, item.piece_id, item.display_name, item.alt_text,
@@ -799,53 +1095,344 @@ fn write_alts_txt(output_dir: &Path, plan: &ExportPlan) -> AppResult<PathBuf> {
     Ok(path)
 }
 
-fn write_manifest(output_dir: &Path, plan: &ExportPlan) -> AppResult<PathBuf> {
-    let path = output_dir.join("export-manifest.json");
-    let manifest = ExportManifest {
-        product: "PMTCONCON Studio".to_string(),
-        collection_id: plan.collection_id.clone(),
-        collection_name: plan.collection_name.clone(),
-        profile_id: plan.profile.id.clone(),
-        profile_name: plan.profile.name.clone(),
-        created_at_unix: now_unix_seconds(),
-        items: plan.items(),
-    };
-    let bytes = serde_json::to_vec_pretty(&manifest)
-        .map_err(|error| AppError::new("json", error.to_string()))?;
-    fs::write(&path, bytes)?;
+#[derive(Debug)]
+struct ExportReportPaths {
+    txt_path: PathBuf,
+    json_path: PathBuf,
+    issues_csv_path: PathBuf,
+}
 
-    Ok(path)
+fn write_export_reports(
+    output_dir: &Path,
+    plan: &ExportPlan,
+    validation: &ExportValidationResultDto,
+) -> AppResult<ExportReportPaths> {
+    let txt_path = output_dir.join("export_report.txt");
+    let json_path = output_dir.join("export_report.json");
+    let issues_csv_path = output_dir.join("export_issues.csv");
+    let report = build_export_report(plan, validation);
+
+    fs::write(&txt_path, report_text(&report))?;
+    let json_bytes = serde_json::to_vec_pretty(&report)
+        .map_err(|error| AppError::new("json", error.to_string()))?;
+    fs::write(&json_path, json_bytes)?;
+    fs::write(&issues_csv_path, report_issues_csv(&report))?;
+
+    Ok(ExportReportPaths {
+        txt_path,
+        json_path,
+        issues_csv_path,
+    })
 }
 
 #[derive(Debug, Serialize)]
 #[serde(rename_all = "camelCase")]
-struct ExportManifest {
+struct ExportReport {
     product: String,
     collection_id: String,
     collection_name: String,
     profile_id: String,
     profile_name: String,
     created_at_unix: u64,
-    items: Vec<ExportPlanItemDto>,
+    summary: ExportReportSummary,
+    items: Vec<ExportReportItem>,
+}
+
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+struct ExportReportSummary {
+    total_items: i64,
+    included_items: i64,
+    written_items: i64,
+    upload_ready_items: i64,
+    warning_items: i64,
+    not_upload_ready_items: i64,
+    failed_items: i64,
+}
+
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+struct ExportReportItem {
+    export_index: i64,
+    icon_id: String,
+    piece_id: String,
+    display_name: String,
+    alt: String,
+    filename: String,
+    status: String,
+    byte_size: Option<i64>,
+    limit: i64,
+    warnings: Vec<String>,
+    errors: Vec<String>,
+    suggested_fix: String,
+    output_path: Option<String>,
+    optimized_variant_used: bool,
+    optimized_variant_id: Option<String>,
+}
+
+fn build_export_report(plan: &ExportPlan, validation: &ExportValidationResultDto) -> ExportReport {
+    let issues_by_piece_id = issues_by_piece_id(validation);
+    let mut items = Vec::with_capacity(validation.items.len());
+
+    for item in &validation.items {
+        let issues = issues_by_piece_id
+            .get(item.piece_id.as_str())
+            .cloned()
+            .unwrap_or_default();
+        let warnings = issues
+            .iter()
+            .filter(|issue| issue.severity == "warning")
+            .map(|issue| issue.message.clone())
+            .collect::<Vec<_>>();
+        let errors = issues
+            .iter()
+            .filter(|issue| issue.severity == "error")
+            .map(|issue| issue.message.clone())
+            .collect::<Vec<_>>();
+
+        items.push(ExportReportItem {
+            export_index: item.export_index,
+            icon_id: item.icon_id.clone(),
+            piece_id: item.piece_id.clone(),
+            display_name: item.display_name.clone(),
+            alt: item.alt_text.clone(),
+            filename: item.file_name.clone(),
+            status: item.status.clone(),
+            byte_size: item.byte_size,
+            limit: item.limit_bytes,
+            warnings,
+            errors,
+            suggested_fix: suggested_fix_for_item(item, &issues),
+            output_path: item.export_path.clone(),
+            optimized_variant_used: plan
+                .piece(item.piece_id.as_str())
+                .is_some_and(|piece| piece.used_optimized_variant),
+            optimized_variant_id: plan
+                .piece(item.piece_id.as_str())
+                .and_then(|piece| piece.active_variant.as_ref())
+                .map(|variant| variant.id.clone()),
+        });
+    }
+
+    ExportReport {
+        product: "PMTCONCON Studio".to_string(),
+        collection_id: plan.collection_id.clone(),
+        collection_name: plan.collection_name.clone(),
+        profile_id: plan.profile.id.clone(),
+        profile_name: plan.profile.name.clone(),
+        created_at_unix: now_unix_seconds(),
+        summary: report_summary(validation),
+        items,
+    }
+}
+
+fn report_summary(validation: &ExportValidationResultDto) -> ExportReportSummary {
+    let included_items = validation.items.iter().filter(|item| item.included).count() as i64;
+    let written_items = validation
+        .items
+        .iter()
+        .filter(|item| {
+            matches!(
+                item.status.as_str(),
+                "written_ok" | "written_with_warning" | "written_not_upload_ready"
+            )
+        })
+        .count() as i64;
+    let upload_ready_items = validation
+        .items
+        .iter()
+        .filter(|item| matches!(item.status.as_str(), "preflight_ok" | "written_ok"))
+        .count() as i64;
+    let warning_items = validation
+        .items
+        .iter()
+        .filter(|item| {
+            matches!(
+                item.status.as_str(),
+                "preflight_warning" | "written_with_warning"
+            )
+        })
+        .count() as i64;
+    let not_upload_ready_items = validation
+        .items
+        .iter()
+        .filter(|item| {
+            matches!(
+                item.status.as_str(),
+                "preflight_not_upload_ready" | "written_not_upload_ready"
+            )
+        })
+        .count() as i64;
+    let failed_items = validation
+        .items
+        .iter()
+        .filter(|item| item.status == "failed_to_render")
+        .count() as i64;
+
+    ExportReportSummary {
+        total_items: validation.items.len() as i64,
+        included_items,
+        written_items,
+        upload_ready_items,
+        warning_items,
+        not_upload_ready_items,
+        failed_items,
+    }
+}
+
+fn issues_by_piece_id(
+    validation: &ExportValidationResultDto,
+) -> HashMap<&str, Vec<ExportValidationIssueDto>> {
+    let mut map: HashMap<&str, Vec<ExportValidationIssueDto>> = HashMap::new();
+    for issue in validation.errors.iter().chain(validation.warnings.iter()) {
+        if let Some(piece_id) = issue.piece_id.as_deref() {
+            map.entry(piece_id).or_default().push(issue.clone());
+        }
+    }
+    map
+}
+
+fn report_text(report: &ExportReport) -> String {
+    let mut lines = vec![
+        "PMTCONCON Studio export report".to_string(),
+        format!("Collection: {}", report.collection_name),
+        format!("Profile: {}", report.profile_name),
+        format!("Created: {}", report.created_at_unix),
+        String::new(),
+        format!("Generated: {}", report.summary.written_items),
+        format!("Upload ready: {}", report.summary.upload_ready_items),
+        format!("Warnings: {}", report.summary.warning_items),
+        format!(
+            "Not upload-ready: {}",
+            report.summary.not_upload_ready_items
+        ),
+        format!("Failed: {}", report.summary.failed_items),
+        String::new(),
+    ];
+
+    for item in &report.items {
+        if item.status == "excluded" {
+            continue;
+        }
+        lines.push(format!(
+            "{:03} {} {} {} bytes={}",
+            item.export_index,
+            item.filename,
+            item.status,
+            item.alt,
+            item.byte_size
+                .map(|size| size.to_string())
+                .unwrap_or_else(|| "-".to_string())
+        ));
+        for warning in &item.warnings {
+            lines.push(format!("  warning: {warning}"));
+        }
+        for error in &item.errors {
+            lines.push(format!("  error: {error}"));
+        }
+        if item.optimized_variant_used {
+            lines.push(format!(
+                "  optimized_variant: {}",
+                item.optimized_variant_id.as_deref().unwrap_or("active")
+            ));
+        }
+        if !item.suggested_fix.is_empty() {
+            lines.push(format!("  suggested_fix: {}", item.suggested_fix));
+        }
+    }
+
+    format!("{}\n", lines.join("\n"))
+}
+
+fn report_issues_csv(report: &ExportReport) -> String {
+    let mut lines = vec![
+        "export_index,filename,piece_id,status,byte_size,limit,warnings,errors,suggested_fix"
+            .to_string(),
+    ];
+
+    for item in &report.items {
+        if item.warnings.is_empty() && item.errors.is_empty() && item.status != "failed_to_render" {
+            continue;
+        }
+
+        lines.push(
+            [
+                item.export_index.to_string(),
+                item.filename.clone(),
+                item.piece_id.clone(),
+                item.status.clone(),
+                item.byte_size
+                    .map(|size| size.to_string())
+                    .unwrap_or_default(),
+                item.limit.to_string(),
+                item.warnings.join(" / "),
+                item.errors.join(" / "),
+                item.suggested_fix.clone(),
+            ]
+            .into_iter()
+            .map(csv_escape)
+            .collect::<Vec<_>>()
+            .join(","),
+        );
+    }
+
+    format!("{}\n", lines.join("\n"))
+}
+
+fn csv_escape(value: String) -> String {
+    if value.contains([',', '"', '\n', '\r']) {
+        format!("\"{}\"", value.replace('"', "\"\""))
+    } else {
+        value
+    }
+}
+
+fn suggested_fix_for_item(item: &ExportPlanItemDto, issues: &[ExportValidationIssueDto]) -> String {
+    if !item.included {
+        return "excluded from this export".to_string();
+    }
+    if issues.iter().any(|issue| issue.code == "max_bytes") && item.output_format == "gif" {
+        return "GIF optimization is the next implementation stage.".to_string();
+    }
+    if issues
+        .iter()
+        .any(|issue| issue.code == "invalid_alt" || issue.code == "duplicate_alt")
+    {
+        return "edit alt text".to_string();
+    }
+    if issues.iter().any(|issue| issue.code == "render_failed") {
+        return "open the icon editor and check the source/crop settings".to_string();
+    }
+    String::new()
 }
 
 fn update_export_status(
     connection: &mut Connection,
     plan: &ExportPlan,
     final_dir: &Path,
+    validation: &ExportValidationResultDto,
 ) -> AppResult<()> {
     let transaction = connection.transaction()?;
+    let status_by_piece_id = export_status_by_piece_id(validation);
 
     for icon in &plan.icons {
         for piece in &icon.pieces {
-            let final_path = final_dir.join(&piece.file_name);
+            if !piece.included {
+                continue;
+            }
+
+            let final_path = final_dir.join("files").join(&piece.file_name);
+            let export_status = status_by_piece_id
+                .get(piece.piece_id.as_str())
+                .map(String::as_str)
+                .unwrap_or("ready");
             transaction.execute(
                 "UPDATE icon_pieces
                  SET last_export_path = ?1,
-                     export_status = 'ready',
+                     export_status = ?2,
                      updated_at = strftime('%Y-%m-%dT%H:%M:%fZ', 'now')
-                 WHERE id = ?2",
-                params![path_string(&final_path), piece.piece_id],
+                 WHERE id = ?3",
+                params![path_string(&final_path), export_status, piece.piece_id],
             )?;
         }
     }
@@ -860,6 +1447,37 @@ fn update_export_status(
 
     transaction.commit()?;
     Ok(())
+}
+
+fn apply_final_paths(plan: &mut ExportPlan, final_dir: &Path) {
+    let final_files_dir = final_dir.join("files");
+    for icon in &mut plan.icons {
+        for piece in &mut icon.pieces {
+            if piece.included && piece.byte_size.is_some() && !piece.file_name.is_empty() {
+                piece.output_path = Some(final_files_dir.join(&piece.file_name));
+            }
+        }
+    }
+}
+
+fn export_status_by_piece_id(validation: &ExportValidationResultDto) -> HashMap<&str, String> {
+    let mut status_by_piece_id = HashMap::new();
+
+    for warning in &validation.warnings {
+        if let Some(piece_id) = warning.piece_id.as_deref() {
+            status_by_piece_id
+                .entry(piece_id)
+                .or_insert_with(|| "warning".to_string());
+        }
+    }
+
+    for error in &validation.errors {
+        if let Some(piece_id) = error.piece_id.as_deref() {
+            status_by_piece_id.insert(piece_id, "error".to_string());
+        }
+    }
+
+    status_by_piece_id
 }
 
 fn output_root(paths: &AppPaths, payload: &ExportRequestPayload) -> AppResult<PathBuf> {
@@ -917,6 +1535,48 @@ fn unique_path(base: PathBuf) -> AppResult<PathBuf> {
     ))
 }
 
+fn finalize_export_directory(temp_dir: &Path, final_dir: &Path) -> AppResult<()> {
+    match fs::rename(temp_dir, final_dir) {
+        Ok(()) => Ok(()),
+        Err(rename_error) => {
+            if final_dir.exists() {
+                return Err(rename_error.into());
+            }
+
+            if let Err(copy_error) = copy_dir_recursive(temp_dir, final_dir) {
+                let _ = fs::remove_dir_all(final_dir);
+                return Err(AppError::new(
+                    "export_finalize_failed",
+                    format!(
+                        "export files were written but the final folder could not be created. rename failed: {rename_error}; copy fallback failed: {copy_error}"
+                    ),
+                ));
+            }
+
+            let _ = fs::remove_dir_all(temp_dir);
+            Ok(())
+        }
+    }
+}
+
+fn copy_dir_recursive(source: &Path, target: &Path) -> std::io::Result<()> {
+    fs::create_dir_all(target)?;
+
+    for entry in fs::read_dir(source)? {
+        let entry = entry?;
+        let source_path = entry.path();
+        let target_path = target.join(entry.file_name());
+
+        if source_path.is_dir() {
+            copy_dir_recursive(&source_path, &target_path)?;
+        } else {
+            fs::copy(&source_path, &target_path)?;
+        }
+    }
+
+    Ok(())
+}
+
 fn now_unix_seconds() -> u64 {
     SystemTime::now()
         .duration_since(UNIX_EPOCH)
@@ -955,6 +1615,49 @@ fn output_format_for_icon(profile_format: &str, source_extension: &str) -> Strin
         "gif" => "gif".to_string(),
         _ => "png".to_string(),
     }
+}
+
+fn active_variant_crop_hash(
+    shape: &str,
+    crop: &ExportCropRect,
+    cell_width: i64,
+    cell_height: i64,
+    piece_index: usize,
+    gif_loop_mode: &str,
+    gif_loop_count: Option<i64>,
+    text_overlay: Option<&TextOverlayRenderSpec>,
+) -> String {
+    let mut parts = vec![
+        shape.to_string(),
+        format!("{:.3}", crop.x),
+        format!("{:.3}", crop.y),
+        format!("{:.3}", crop.width),
+        format!("{:.3}", crop.height),
+        cell_width.to_string(),
+        cell_height.to_string(),
+        piece_index.to_string(),
+        gif_loop_mode.to_string(),
+        gif_loop_count.unwrap_or_default().to_string(),
+    ];
+    if let Some(text_overlay) = text_overlay {
+        parts.extend(text_overlay.normalized_hash_parts());
+    }
+    hash_text(&parts)
+}
+
+fn active_variant_profile_hash(
+    profile: &ExportProfileDto,
+    output_format: &str,
+    cell_width: i64,
+    cell_height: i64,
+) -> String {
+    hash_text(&[
+        profile.id.clone(),
+        output_format.to_string(),
+        profile.max_bytes.to_string(),
+        cell_width.to_string(),
+        cell_height.to_string(),
+    ])
 }
 
 fn normalize_format(value: &str) -> String {
@@ -1056,6 +1759,23 @@ fn error_issue(
 ) -> ExportValidationIssueDto {
     ExportValidationIssueDto {
         severity: "error".to_string(),
+        blocking: true,
+        code: code.into(),
+        message: message.into(),
+        icon_id,
+        piece_id,
+    }
+}
+
+fn non_blocking_error_issue(
+    code: impl Into<String>,
+    message: impl Into<String>,
+    icon_id: Option<String>,
+    piece_id: Option<String>,
+) -> ExportValidationIssueDto {
+    ExportValidationIssueDto {
+        severity: "error".to_string(),
+        blocking: false,
         code: code.into(),
         message: message.into(),
         icon_id,
@@ -1071,6 +1791,7 @@ fn warning_issue(
 ) -> ExportValidationIssueDto {
     ExportValidationIssueDto {
         severity: "warning".to_string(),
+        blocking: false,
         code: code.into(),
         message: message.into(),
         icon_id,
@@ -1151,27 +1872,105 @@ fn open_path(path: &Path, mode: OpenMode) -> AppResult<()> {
 
 impl ExportPlan {
     fn output_count(&self) -> i64 {
-        self.icons.iter().map(|icon| icon.pieces.len() as i64).sum()
+        self.icons
+            .iter()
+            .flat_map(|icon| icon.pieces.iter())
+            .filter(|piece| piece.included)
+            .count() as i64
     }
 
-    fn items(&self) -> Vec<ExportPlanItemDto> {
+    fn piece(&self, piece_id: &str) -> Option<&PlannedPiece> {
+        self.icons
+            .iter()
+            .flat_map(|icon| icon.pieces.iter())
+            .find(|piece| piece.piece_id == piece_id)
+    }
+
+    fn items(&self, issues: &[ExportValidationIssueDto]) -> Vec<ExportPlanItemDto> {
+        let max_bytes = self.profile.max_bytes;
+        let issues_by_piece_id = issues.iter().fold(
+            HashMap::<&str, Vec<&ExportValidationIssueDto>>::new(),
+            |mut map, issue| {
+                if let Some(piece_id) = issue.piece_id.as_deref() {
+                    map.entry(piece_id).or_default().push(issue);
+                }
+                map
+            },
+        );
+
         self.icons
             .iter()
             .flat_map(|icon| {
-                icon.pieces.iter().map(|piece| ExportPlanItemDto {
-                    export_index: piece.export_index,
-                    file_name: piece.file_name.clone(),
-                    icon_id: icon.icon_id.clone(),
-                    piece_id: piece.piece_id.clone(),
-                    display_name: icon.display_name.clone(),
-                    alt_text: piece.alt_text.clone(),
-                    output_format: icon.output_format.clone(),
-                    width: icon.cell_width,
-                    height: icon.cell_height,
-                    byte_size: piece.byte_size,
+                let issues_by_piece_id = &issues_by_piece_id;
+                icon.pieces.iter().map(move |piece| {
+                    let piece_issues = issues_by_piece_id
+                        .get(piece.piece_id.as_str())
+                        .map(Vec::as_slice)
+                        .unwrap_or(&[]);
+
+                    ExportPlanItemDto {
+                        export_index: piece.export_index,
+                        file_name: piece.file_name.clone(),
+                        icon_id: icon.icon_id.clone(),
+                        piece_id: piece.piece_id.clone(),
+                        piece_role: piece.piece_role.clone(),
+                        display_name: icon.display_name.clone(),
+                        alt_text: piece.alt_text.clone(),
+                        output_format: icon.output_format.clone(),
+                        width: icon.cell_width,
+                        height: icon.cell_height,
+                        byte_size: piece.byte_size,
+                        limit_bytes: max_bytes,
+                        included: piece.included,
+                        is_animated: icon.source_is_animated || icon.output_format == "gif",
+                        source_preview_url: icon.source_preview_url.clone(),
+                        export_path: piece.output_path.as_ref().map(|path| path_string(path)),
+                        status: export_item_status(piece, piece_issues),
+                    }
                 })
             })
             .collect()
+    }
+}
+
+fn export_item_status(piece: &PlannedPiece, issues: &[&ExportValidationIssueDto]) -> String {
+    if !piece.included {
+        return "excluded".to_string();
+    }
+
+    let has_error = issues.iter().any(|issue| issue.severity == "error");
+    let has_warning = issues.iter().any(|issue| issue.severity == "warning");
+    let has_render_failure = issues.iter().any(|issue| {
+        issue.severity == "error"
+            && matches!(
+                issue.code.as_str(),
+                "render_failed" | "missing_output" | "write_metadata_failed" | "missing_source"
+            )
+    });
+
+    if piece.byte_size.is_some() && piece.active_variant.is_some() && !piece.used_optimized_variant
+    {
+        if has_error {
+            "preflight_not_upload_ready".to_string()
+        } else if has_warning {
+            "preflight_warning".to_string()
+        } else {
+            "optimized".to_string()
+        }
+    } else if piece.byte_size.is_some() {
+        if has_error {
+            "written_not_upload_ready".to_string()
+        } else {
+            "written_ok".to_string()
+        }
+    } else if has_render_failure {
+        "failed_to_render".to_string()
+    } else if has_error {
+        "preflight_not_upload_ready".to_string()
+    } else if has_warning {
+        "preflight_warning".to_string()
+    } else {
+        "preflight_ok".to_string()
     }
 }
 
@@ -1198,10 +1997,10 @@ mod tests {
     use std::time::{SystemTime, UNIX_EPOCH};
 
     use image::{DynamicImage, ImageBuffer, ImageFormat, Rgba};
-    use rusqlite::Connection;
+    use rusqlite::{params, Connection};
 
     use super::{
-        assign_filenames, export_collection, sanitized_alt_filename_stem,
+        assign_filenames, copy_dir_recursive, export_collection, sanitized_alt_filename_stem,
         validate_export_collection, ExportPlan, PlannedIcon, PlannedPiece,
     };
 
@@ -1247,6 +2046,8 @@ mod tests {
                 shape: "single".to_string(),
                 source_path: "source.png".into(),
                 source_extension: "png".to_string(),
+                source_preview_url: None,
+                source_is_animated: false,
                 source_width: 200,
                 source_height: 200,
                 source_gif_loop_mode: "once".to_string(),
@@ -1262,16 +2063,20 @@ mod tests {
                 output_format: "png".to_string(),
                 gif_loop_mode: "preserve".to_string(),
                 gif_loop_count: None,
+                text_overlay: None,
                 pieces: (0..count)
                     .map(|index| PlannedPiece {
                         piece_id: format!("piece-{index}"),
                         piece_index: index,
                         piece_role: "single".to_string(),
                         alt_text: format!("가{index}"),
+                        included: true,
                         export_index: 0,
                         file_name: String::new(),
                         byte_size: None,
                         output_path: None,
+                        active_variant: None,
+                        used_optimized_variant: false,
                     })
                     .collect(),
             }],
@@ -1364,14 +2169,15 @@ mod tests {
                 ),
                 open_folder_after_export: false,
                 open_alt_txt_after_export: false,
+                excluded_piece_ids: Vec::new(),
             },
         )
         .unwrap();
 
         assert!(result.validation.can_export);
         let export_dir = Path::new(result.export_directory.as_ref().unwrap());
-        let first = export_dir.join("001.png");
-        let second = export_dir.join("002.png");
+        let first = export_dir.join("files").join("001.png");
+        let second = export_dir.join("files").join("002.png");
         assert_eq!(image::image_dimensions(&first).unwrap(), (20, 20));
         assert_eq!(image::image_dimensions(&second).unwrap(), (20, 20));
         let alts = std::fs::read_to_string(result.alt_txt_path.as_ref().unwrap()).unwrap();
@@ -1419,15 +2225,92 @@ mod tests {
                 ),
                 open_folder_after_export: false,
                 open_alt_txt_after_export: false,
+                excluded_piece_ids: Vec::new(),
             },
         )
         .unwrap();
 
         assert!(result.validation.can_export);
         let export_dir = Path::new(result.export_directory.as_ref().unwrap());
-        let summary = gif_summary(&export_dir.join("001.gif"));
+        let summary = gif_summary(&export_dir.join("files").join("001.gif"));
         assert_eq!(summary.frame_sizes, vec![(200, 200), (200, 200)]);
         assert_eq!(summary.delays, vec![5, 7]);
+
+        std::fs::remove_dir_all(paths.root).unwrap();
+    }
+
+    #[test]
+    fn unchanged_single_gif_export_copies_original_without_reencoding() {
+        let mut connection = connection();
+        let paths = temp_paths("pmtconcon-export-gif-pass-through");
+        let collection =
+            create_collection(&mut connection, Some("GIF 원본 유지".to_string())).unwrap();
+        let source_bytes = animated_gif_bytes();
+        let imported = import_image_files(
+            &mut connection,
+            &paths,
+            &collection.id,
+            vec![ImportImageFilePayload {
+                original_filename: "same-size.gif".to_string(),
+                bytes: source_bytes.clone(),
+            }],
+        )
+        .unwrap();
+        let icon_id = imported.imported_icons[0].id.clone();
+
+        apply_icon_crop(
+            &mut connection,
+            &paths,
+            &collection.id,
+            ApplyIconCropPayload {
+                icon_id,
+                shape: "single".to_string(),
+                crop_mode: "fixed".to_string(),
+                crop_x: 0.0,
+                crop_y: 0.0,
+                crop_w: 8.0,
+                crop_h: 8.0,
+                preset_position: "center".to_string(),
+                cell_width: 8,
+                cell_height: 8,
+                gif_loop_mode: "preserve".to_string(),
+                gif_loop_count: None,
+            },
+        )
+        .unwrap();
+
+        let custom_profile = custom_profile_id(&connection, &collection.id);
+        let result = export_collection(
+            &mut connection,
+            &paths,
+            &collection.id,
+            &ExportRequestPayload {
+                profile_id: custom_profile,
+                target_format: "gif".to_string(),
+                target_cell_width: 8,
+                target_cell_height: 8,
+                max_bytes: 10_000_000,
+                filename_mode: "sequence".to_string(),
+                include_alt_txt: true,
+                strict_warnings: false,
+                output_directory: Some(
+                    paths
+                        .root
+                        .join("exports-pass-through")
+                        .to_string_lossy()
+                        .to_string(),
+                ),
+                open_folder_after_export: false,
+                open_alt_txt_after_export: false,
+                excluded_piece_ids: Vec::new(),
+            },
+        )
+        .unwrap();
+
+        assert!(result.validation.can_export);
+        let export_dir = Path::new(result.export_directory.as_ref().unwrap());
+        let exported_bytes = std::fs::read(export_dir.join("files").join("001.gif")).unwrap();
+        assert_eq!(exported_bytes, source_bytes);
 
         std::fs::remove_dir_all(paths.root).unwrap();
     }
@@ -1436,8 +2319,7 @@ mod tests {
     fn validation_warns_when_jpg_output_may_drop_transparency() {
         let mut connection = connection();
         let paths = temp_paths("pmtconcon-export-jpg-warning");
-        let collection =
-            create_collection(&mut connection, Some("JPG 경고".to_string())).unwrap();
+        let collection = create_collection(&mut connection, Some("JPG 경고".to_string())).unwrap();
         import_image_files(
             &mut connection,
             &paths,
@@ -1466,6 +2348,7 @@ mod tests {
                 output_directory: None,
                 open_folder_after_export: false,
                 open_alt_txt_after_export: false,
+                excluded_piece_ids: Vec::new(),
             },
         )
         .unwrap();
@@ -1527,6 +2410,7 @@ mod tests {
                 ),
                 open_folder_after_export: false,
                 open_alt_txt_after_export: false,
+                excluded_piece_ids: Vec::new(),
             },
         )
         .unwrap();
@@ -1543,6 +2427,261 @@ mod tests {
             .warnings
             .iter()
             .any(|warning| warning.code == "invalid_alt"));
+
+        std::fs::remove_dir_all(paths.root).unwrap();
+    }
+
+    #[test]
+    fn export_skips_working_icons_and_user_excluded_pieces() {
+        let mut connection = connection();
+        let paths = temp_paths("pmtconcon-export-exclusions");
+        let collection =
+            create_collection(&mut connection, Some("제외 테스트".to_string())).unwrap();
+        let imported = import_image_files(
+            &mut connection,
+            &paths,
+            &collection.id,
+            vec![
+                ImportImageFilePayload {
+                    original_filename: "one.png".to_string(),
+                    bytes: png_bytes(200, 200),
+                },
+                ImportImageFilePayload {
+                    original_filename: "two.png".to_string(),
+                    bytes: png_bytes(200, 200),
+                },
+                ImportImageFilePayload {
+                    original_filename: "three.png".to_string(),
+                    bytes: png_bytes(200, 200),
+                },
+            ],
+        )
+        .unwrap();
+        let working_icon_id = imported.imported_icons[1].id.clone();
+        let excluded_piece_id = imported.imported_icons[2].pieces[0].id.clone();
+        connection
+            .execute(
+                "UPDATE icons SET readiness = 'working' WHERE id = ?1",
+                [&working_icon_id],
+            )
+            .unwrap();
+
+        let custom_profile = custom_profile_id(&connection, &collection.id);
+        let result = export_collection(
+            &mut connection,
+            &paths,
+            &collection.id,
+            &ExportRequestPayload {
+                profile_id: custom_profile,
+                target_format: "png".to_string(),
+                target_cell_width: 200,
+                target_cell_height: 200,
+                max_bytes: 10_000_000,
+                filename_mode: "sequence".to_string(),
+                include_alt_txt: true,
+                strict_warnings: false,
+                output_directory: Some(
+                    paths.root.join("exports-out").to_string_lossy().to_string(),
+                ),
+                open_folder_after_export: false,
+                open_alt_txt_after_export: false,
+                excluded_piece_ids: vec![excluded_piece_id],
+            },
+        )
+        .unwrap();
+
+        assert!(result.validation.can_export);
+        assert_eq!(result.validation.output_count, 1);
+        assert_eq!(result.validation.items.len(), 2);
+        assert_eq!(
+            result
+                .validation
+                .items
+                .iter()
+                .filter(|item| item.included)
+                .map(|item| item.file_name.as_str())
+                .collect::<Vec<_>>(),
+            vec!["001.png"]
+        );
+        assert!(result
+            .validation
+            .items
+            .iter()
+            .any(|item| !item.included && item.status == "excluded"));
+        let alts = std::fs::read_to_string(result.alt_txt_path.as_ref().unwrap()).unwrap();
+        assert!(alts.contains("001.png"));
+        assert!(!alts.contains("002.png"));
+
+        std::fs::remove_dir_all(paths.root).unwrap();
+    }
+
+    #[test]
+    fn export_writes_not_upload_ready_file_and_reports_oversized_output() {
+        let mut connection = connection();
+        let paths = temp_paths("pmtconcon-export-oversized-report");
+        let collection =
+            create_collection(&mut connection, Some("oversized report".to_string())).unwrap();
+        import_image_files(
+            &mut connection,
+            &paths,
+            &collection.id,
+            vec![ImportImageFilePayload {
+                original_filename: "source.png".to_string(),
+                bytes: png_bytes(200, 200),
+            }],
+        )
+        .unwrap();
+
+        let custom_profile = custom_profile_id(&connection, &collection.id);
+        let result = export_collection(
+            &mut connection,
+            &paths,
+            &collection.id,
+            &ExportRequestPayload {
+                profile_id: custom_profile,
+                target_format: "png".to_string(),
+                target_cell_width: 200,
+                target_cell_height: 200,
+                max_bytes: 1,
+                filename_mode: "sequence".to_string(),
+                include_alt_txt: true,
+                strict_warnings: false,
+                output_directory: Some(
+                    paths.root.join("exports-out").to_string_lossy().to_string(),
+                ),
+                open_folder_after_export: false,
+                open_alt_txt_after_export: false,
+                excluded_piece_ids: Vec::new(),
+            },
+        )
+        .unwrap();
+
+        let export_dir = Path::new(result.export_directory.as_ref().unwrap());
+        assert!(export_dir.join("files").join("001.png").is_file());
+        assert_eq!(
+            result.validation.items[0].status,
+            "written_not_upload_ready"
+        );
+        assert!(result
+            .validation
+            .errors
+            .iter()
+            .any(|issue| issue.code == "max_bytes" && !issue.blocking));
+        assert!(Path::new(result.report_txt_path.as_ref().unwrap()).is_file());
+        assert!(Path::new(result.report_json_path.as_ref().unwrap()).is_file());
+        assert!(Path::new(result.issues_csv_path.as_ref().unwrap()).is_file());
+        let report = std::fs::read_to_string(result.report_txt_path.as_ref().unwrap()).unwrap();
+        assert!(report.contains("001.png"));
+        assert!(report.contains("written_not_upload_ready"));
+
+        std::fs::remove_dir_all(paths.root).unwrap();
+    }
+
+    #[test]
+    fn one_item_render_failure_does_not_stop_the_whole_export() {
+        let mut connection = connection();
+        let paths = temp_paths("pmtconcon-export-partial-render-failure");
+        let collection =
+            create_collection(&mut connection, Some("partial render".to_string())).unwrap();
+        let imported = import_image_files(
+            &mut connection,
+            &paths,
+            &collection.id,
+            vec![
+                ImportImageFilePayload {
+                    original_filename: "good.png".to_string(),
+                    bytes: png_bytes(200, 200),
+                },
+                ImportImageFilePayload {
+                    original_filename: "missing.png".to_string(),
+                    bytes: png_bytes(180, 180),
+                },
+            ],
+        )
+        .unwrap();
+        let bad_icon_id = imported.imported_icons[1].id.clone();
+        let missing_path = paths
+            .root
+            .join("missing-original.png")
+            .to_string_lossy()
+            .to_string();
+        connection
+            .execute(
+                "UPDATE source_files
+                 SET original_path_in_library = ?1
+                 WHERE id = (
+                   SELECT source_file_id FROM icons WHERE id = ?2
+                 )",
+                params![missing_path, bad_icon_id],
+            )
+            .unwrap();
+
+        let custom_profile = custom_profile_id(&connection, &collection.id);
+        let result = export_collection(
+            &mut connection,
+            &paths,
+            &collection.id,
+            &ExportRequestPayload {
+                profile_id: custom_profile,
+                target_format: "png".to_string(),
+                target_cell_width: 200,
+                target_cell_height: 200,
+                max_bytes: 10_000_000,
+                filename_mode: "sequence".to_string(),
+                include_alt_txt: true,
+                strict_warnings: false,
+                output_directory: Some(
+                    paths.root.join("exports-out").to_string_lossy().to_string(),
+                ),
+                open_folder_after_export: false,
+                open_alt_txt_after_export: false,
+                excluded_piece_ids: Vec::new(),
+            },
+        )
+        .unwrap();
+
+        let export_dir = Path::new(result.export_directory.as_ref().unwrap());
+        assert!(export_dir.join("files").join("001.png").is_file());
+        assert!(!export_dir.join("files").join("002.png").exists());
+        assert!(result
+            .validation
+            .items
+            .iter()
+            .any(|item| item.file_name == "001.png" && item.status == "written_ok"));
+        assert!(result
+            .validation
+            .items
+            .iter()
+            .any(|item| item.file_name == "002.png" && item.status == "failed_to_render"));
+        let alts = std::fs::read_to_string(result.alt_txt_path.as_ref().unwrap()).unwrap();
+        assert!(alts.contains("001.png"));
+        assert!(!alts.contains("002.png"));
+        let issues = std::fs::read_to_string(result.issues_csv_path.as_ref().unwrap()).unwrap();
+        assert!(issues.contains("002.png"));
+        assert!(issues.contains("render failed"));
+
+        std::fs::remove_dir_all(paths.root).unwrap();
+    }
+
+    #[test]
+    fn copy_dir_recursive_copies_nested_export_tree() {
+        let paths = temp_paths("pmtconcon-export-copy-dir");
+        let source = paths.root.join("source");
+        let target = paths.root.join("target");
+        std::fs::create_dir_all(source.join("files")).unwrap();
+        std::fs::write(source.join("alts.txt"), "001.png\talt").unwrap();
+        std::fs::write(source.join("files").join("001.png"), [1_u8, 2, 3, 4]).unwrap();
+
+        copy_dir_recursive(&source, &target).unwrap();
+
+        assert_eq!(
+            std::fs::read_to_string(target.join("alts.txt")).unwrap(),
+            "001.png\talt"
+        );
+        assert_eq!(
+            std::fs::read(target.join("files").join("001.png")).unwrap(),
+            vec![1_u8, 2, 3, 4]
+        );
 
         std::fs::remove_dir_all(paths.root).unwrap();
     }

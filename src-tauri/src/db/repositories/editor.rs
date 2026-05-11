@@ -11,8 +11,10 @@ use crate::imaging::geometry::{piece_roles, viewport_size};
 use crate::imaging::preview::{
     generate_icon_preview, CropRect, GeneratePreviewRequest, GeneratedPreview,
 };
+use crate::imaging::text_overlay::{text_overlay_from_fields, TextOverlayRenderSpec};
 use crate::models::{
     ApplyIconCropPayload, CropSettingsDto, IconDto, IconEditorStateDto, SourceFileDto,
+    TextOverlayDto, UpdateIconTextOverlayPayload,
 };
 use crate::paths::AppPaths;
 
@@ -24,8 +26,14 @@ pub fn get_icon_editor_state(
     let icon = icon_repository::get_icon(connection, collection_id, icon_id)?;
     let source = source_file_for_icon(connection, collection_id, icon_id)?;
     let crop = crop_settings_for_icon(connection, icon_id)?;
+    let text_overlay = text_overlay_for_icon(connection, collection_id, icon_id)?;
 
-    Ok(IconEditorStateDto { icon, source, crop })
+    Ok(IconEditorStateDto {
+        icon,
+        source,
+        crop,
+        text_overlay,
+    })
 }
 
 pub fn apply_icon_crop(
@@ -38,6 +46,8 @@ pub fn apply_icon_crop(
     let apply_record = apply_record_for_icon(connection, collection_id, &payload.icon_id)?;
     let viewport = viewport_size(&payload.shape, payload.cell_width, payload.cell_height)?;
     let source_path = PathBuf::from(&apply_record.original_path_in_library);
+    let text_overlay =
+        text_overlay_render_spec_for_icon(connection, collection_id, &payload.icon_id)?;
 
     let preview = generate_icon_preview(
         paths,
@@ -59,6 +69,7 @@ pub fn apply_icon_crop(
             gif_loop_count: payload.gif_loop_count,
             source_gif_loop_mode: Some(&apply_record.original_loop_mode),
             source_gif_loop_count: apply_record.original_loop_count,
+            text_overlay,
         },
     )?;
     validate_generated_piece_outputs(&preview, apply_record.max_bytes)?;
@@ -86,6 +97,61 @@ pub fn apply_icon_crop(
     icon_repository::get_icon(connection, collection_id, &payload.icon_id)
 }
 
+pub fn update_icon_text_overlay(
+    connection: &mut Connection,
+    paths: &AppPaths,
+    collection_id: &str,
+    payload: UpdateIconTextOverlayPayload,
+) -> AppResult<IconEditorStateDto> {
+    validate_text_overlay_payload(&payload)?;
+    let preview_record = text_overlay_preview_record(connection, collection_id, &payload.icon_id)?;
+    let source_path = PathBuf::from(&preview_record.original_path_in_library);
+    let text_overlay = text_overlay_render_spec_from_payload(&payload)?;
+
+    let preview = generate_icon_preview(
+        paths,
+        GeneratePreviewRequest {
+            collection_id,
+            icon_id: &payload.icon_id,
+            source_path: &source_path,
+            source_extension: &preview_record.original_extension,
+            shape: &preview_record.shape,
+            crop: CropRect {
+                x: preview_record.crop_x,
+                y: preview_record.crop_y,
+                width: preview_record.crop_w,
+                height: preview_record.crop_h,
+            },
+            cell_width: preview_record.cell_width,
+            cell_height: preview_record.cell_height,
+            gif_loop_mode: &preview_record.gif_loop_mode,
+            gif_loop_count: preview_record.gif_loop_count,
+            source_gif_loop_mode: Some(&preview_record.original_loop_mode),
+            source_gif_loop_count: preview_record.original_loop_count,
+            text_overlay: text_overlay.clone(),
+        },
+    )?;
+    validate_generated_piece_outputs(&preview, preview_record.max_bytes)?;
+
+    let transaction = connection.transaction()?;
+    ensure_icon_still_editable(&transaction, collection_id, &payload.icon_id)?;
+    update_text_overlay_record(
+        &transaction,
+        collection_id,
+        &payload,
+        preview.current_preview_path.to_string_lossy().as_ref(),
+    )?;
+    reconcile_icon_pieces(
+        &transaction,
+        collection_id,
+        &payload_as_crop(&preview_record, &payload),
+        &preview.piece_paths,
+    )?;
+    transaction.commit()?;
+
+    get_icon_editor_state(connection, collection_id, &payload.icon_id)
+}
+
 #[derive(Debug)]
 struct ApplyRecord {
     source_width: i64,
@@ -96,6 +162,26 @@ struct ApplyRecord {
     original_loop_count: Option<i64>,
     default_cell_width: i64,
     default_cell_height: i64,
+    max_bytes: i64,
+}
+
+#[derive(Debug)]
+struct TextOverlayPreviewRecord {
+    original_path_in_library: String,
+    original_extension: String,
+    original_loop_mode: String,
+    original_loop_count: Option<i64>,
+    shape: String,
+    cell_width: i64,
+    cell_height: i64,
+    gif_loop_mode: String,
+    gif_loop_count: Option<i64>,
+    crop_mode: String,
+    crop_x: f64,
+    crop_y: f64,
+    crop_w: f64,
+    crop_h: f64,
+    preset_position: String,
     max_bytes: i64,
 }
 
@@ -139,7 +225,7 @@ fn validate_apply_payload(payload: &ApplyIconCropPayload) -> AppResult<()> {
     }
 
     match payload.gif_loop_mode.as_str() {
-        "preserve" | "infinite" | "once" | "count" => {}
+        "preserve" | "infinite" | "once" | "count" | "pingpong" => {}
         _ => {
             return Err(AppError::new(
                 "validation",
@@ -309,6 +395,233 @@ fn source_file_for_icon(
         .ok_or_else(|| AppError::not_found("원본 이미지를 찾을 수 없습니다."))
 }
 
+fn text_overlay_for_icon(
+    connection: &Connection,
+    collection_id: &str,
+    icon_id: &str,
+) -> AppResult<TextOverlayDto> {
+    connection
+        .query_row(
+            "SELECT
+               text_overlay_enabled,
+               text_overlay_text,
+               text_overlay_font_path,
+               text_overlay_font_size,
+               text_overlay_x,
+               text_overlay_y,
+               text_overlay_color,
+               text_overlay_stroke_color,
+               text_overlay_stroke_width
+             FROM icons
+             WHERE id = ?1
+               AND collection_id = ?2
+               AND deleted_at IS NULL",
+            params![icon_id, collection_id],
+            |row| {
+                let enabled: i64 = row.get("text_overlay_enabled")?;
+                Ok(TextOverlayDto {
+                    enabled: enabled != 0,
+                    text: row.get("text_overlay_text")?,
+                    font_path: row.get("text_overlay_font_path")?,
+                    font_size: row.get("text_overlay_font_size")?,
+                    x: row.get("text_overlay_x")?,
+                    y: row.get("text_overlay_y")?,
+                    color: row.get("text_overlay_color")?,
+                    stroke_color: row.get("text_overlay_stroke_color")?,
+                    stroke_width: row.get("text_overlay_stroke_width")?,
+                })
+            },
+        )
+        .optional()?
+        .ok_or_else(|| AppError::not_found("텍스트 설정을 찾을 수 없습니다."))
+}
+
+fn text_overlay_render_spec_for_icon(
+    connection: &Connection,
+    collection_id: &str,
+    icon_id: &str,
+) -> AppResult<Option<TextOverlayRenderSpec>> {
+    let overlay = text_overlay_for_icon(connection, collection_id, icon_id)?;
+    text_overlay_from_fields(
+        overlay.enabled,
+        Some(overlay.text),
+        overlay.font_path,
+        Some(overlay.font_size),
+        Some(overlay.x),
+        Some(overlay.y),
+        Some(overlay.color),
+        Some(overlay.stroke_color),
+        Some(overlay.stroke_width),
+    )
+}
+
+fn text_overlay_render_spec_from_payload(
+    payload: &UpdateIconTextOverlayPayload,
+) -> AppResult<Option<TextOverlayRenderSpec>> {
+    text_overlay_from_fields(
+        payload.enabled,
+        Some(payload.text.clone()),
+        payload.font_path.clone(),
+        Some(payload.font_size),
+        Some(payload.x),
+        Some(payload.y),
+        Some(payload.color.clone()),
+        Some(payload.stroke_color.clone()),
+        Some(payload.stroke_width),
+    )
+}
+
+fn validate_text_overlay_payload(payload: &UpdateIconTextOverlayPayload) -> AppResult<()> {
+    if payload.text.chars().count() > 120 {
+        return Err(AppError::new(
+            "validation",
+            "텍스트는 120자 이하로 입력해 주세요.",
+        ));
+    }
+    if !(1.0..=512.0).contains(&payload.font_size) {
+        return Err(AppError::new(
+            "validation",
+            "글자 크기는 1~512px 사이여야 합니다.",
+        ));
+    }
+    if !(0.0..=1.0).contains(&payload.x) || !(0.0..=1.0).contains(&payload.y) {
+        return Err(AppError::new(
+            "validation",
+            "텍스트 위치는 0~100% 범위여야 합니다.",
+        ));
+    }
+    if !(0.0..=64.0).contains(&payload.stroke_width) {
+        return Err(AppError::new(
+            "validation",
+            "외곽선 두께는 0~64px 사이여야 합니다.",
+        ));
+    }
+    let _ = text_overlay_render_spec_from_payload(payload)?;
+    Ok(())
+}
+
+fn text_overlay_preview_record(
+    connection: &Connection,
+    collection_id: &str,
+    icon_id: &str,
+) -> AppResult<TextOverlayPreviewRecord> {
+    connection
+        .query_row(
+            "SELECT
+               s.original_path_in_library,
+               s.original_extension,
+               COALESCE(s.original_loop_mode, 'preserve') AS original_loop_mode,
+               s.original_loop_count,
+               i.shape,
+               COALESCE(i.cell_width_override, c.default_cell_width) AS cell_width,
+               COALESCE(i.cell_height_override, c.default_cell_height) AS cell_height,
+               CASE WHEN i.gif_pingpong = 1 THEN 'pingpong' ELSE i.gif_loop_mode END AS gif_loop_mode,
+               i.gif_loop_count,
+               cs.crop_mode,
+               cs.crop_x,
+               cs.crop_y,
+               cs.crop_w,
+               cs.crop_h,
+               cs.preset_position,
+               c.max_bytes
+             FROM icons i
+             JOIN source_files s ON s.id = i.source_file_id
+             JOIN collections c ON c.id = i.collection_id
+             JOIN crop_settings cs ON cs.icon_id = i.id
+             WHERE i.id = ?1
+               AND i.collection_id = ?2
+               AND i.deleted_at IS NULL
+               AND c.deleted_at IS NULL",
+            params![icon_id, collection_id],
+            |row| {
+                Ok(TextOverlayPreviewRecord {
+                    original_path_in_library: row.get("original_path_in_library")?,
+                    original_extension: row.get("original_extension")?,
+                    original_loop_mode: row.get("original_loop_mode")?,
+                    original_loop_count: row.get("original_loop_count")?,
+                    shape: row.get("shape")?,
+                    cell_width: row.get("cell_width")?,
+                    cell_height: row.get("cell_height")?,
+                    gif_loop_mode: row.get("gif_loop_mode")?,
+                    gif_loop_count: row.get("gif_loop_count")?,
+                    crop_mode: row.get("crop_mode")?,
+                    crop_x: row.get("crop_x")?,
+                    crop_y: row.get("crop_y")?,
+                    crop_w: row.get("crop_w")?,
+                    crop_h: row.get("crop_h")?,
+                    preset_position: row.get("preset_position")?,
+                    max_bytes: row.get("max_bytes")?,
+                })
+            },
+        )
+        .optional()?
+        .ok_or_else(|| AppError::not_found("텍스트를 적용할 아이콘을 찾을 수 없습니다."))
+}
+
+fn update_text_overlay_record(
+    transaction: &Transaction<'_>,
+    collection_id: &str,
+    payload: &UpdateIconTextOverlayPayload,
+    current_preview_path: &str,
+) -> AppResult<()> {
+    transaction.execute(
+        "UPDATE icons
+         SET text_overlay_enabled = ?1,
+             text_overlay_text = ?2,
+             text_overlay_font_path = ?3,
+             text_overlay_font_size = ?4,
+             text_overlay_x = ?5,
+             text_overlay_y = ?6,
+             text_overlay_color = ?7,
+             text_overlay_stroke_color = ?8,
+             text_overlay_stroke_width = ?9,
+             current_preview_path = ?10,
+             updated_at = strftime('%Y-%m-%dT%H:%M:%fZ', 'now')
+         WHERE id = ?11
+           AND collection_id = ?12
+           AND deleted_at IS NULL",
+        params![
+            if payload.enabled { 1 } else { 0 },
+            payload.text.trim(),
+            payload
+                .font_path
+                .as_ref()
+                .map(|value| value.trim())
+                .filter(|value| !value.is_empty()),
+            payload.font_size,
+            payload.x,
+            payload.y,
+            payload.color,
+            payload.stroke_color,
+            payload.stroke_width,
+            current_preview_path,
+            payload.icon_id,
+            collection_id,
+        ],
+    )?;
+    Ok(())
+}
+
+fn payload_as_crop(
+    record: &TextOverlayPreviewRecord,
+    payload: &UpdateIconTextOverlayPayload,
+) -> ApplyIconCropPayload {
+    ApplyIconCropPayload {
+        icon_id: payload.icon_id.clone(),
+        shape: record.shape.clone(),
+        crop_mode: record.crop_mode.clone(),
+        crop_x: record.crop_x,
+        crop_y: record.crop_y,
+        crop_w: record.crop_w,
+        crop_h: record.crop_h,
+        preset_position: record.preset_position.clone(),
+        cell_width: record.cell_width,
+        cell_height: record.cell_height,
+        gif_loop_mode: record.gif_loop_mode.clone(),
+        gif_loop_count: record.gif_loop_count,
+    }
+}
+
 fn crop_settings_for_icon(connection: &Connection, icon_id: &str) -> AppResult<CropSettingsDto> {
     connection
         .query_row(
@@ -394,6 +707,12 @@ fn update_icon_record(
     } else {
         None
     };
+    let gif_pingpong = payload.gif_loop_mode == "pingpong";
+    let stored_gif_loop_mode = if gif_pingpong {
+        "infinite"
+    } else {
+        payload.gif_loop_mode.as_str()
+    };
 
     transaction.execute(
         "UPDATE icons
@@ -403,17 +722,19 @@ fn update_icon_record(
              current_preview_path = ?4,
              gif_loop_mode = ?5,
              gif_loop_count = ?6,
+             gif_pingpong = ?7,
              updated_at = strftime('%Y-%m-%dT%H:%M:%fZ', 'now')
-         WHERE id = ?7
-           AND collection_id = ?8
+         WHERE id = ?8
+           AND collection_id = ?9
            AND deleted_at IS NULL",
         params![
             payload.shape,
             cell_width_override,
             cell_height_override,
             current_preview_path,
-            payload.gif_loop_mode,
+            stored_gif_loop_mode,
             gif_loop_count,
+            if gif_pingpong { 1 } else { 0 },
             payload.icon_id,
             collection_id,
         ],
