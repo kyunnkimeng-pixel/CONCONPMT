@@ -181,3 +181,20 @@ Done when: license generation records the manual resolutions, image/GIF/resize c
 4. Update README documentation links and screenshots to point at the new manual assets instead of rejected crop/full-box imagery.
 
 Done when: the manual references only the new `docs/manual-assets/manual-*` screenshots, all linked assets exist, and docs-only checks pass.
+
+## Stage PROFESSIONAL_SPRITE_SHEET_TOOLS_MVP - Reversible sheet tools
+1. Add written design docs for static sheet import, work sheet export, manifest reimport, PNG alpha handling, page splitting, GIF frame sheet future scope, manual slices, and auto-detect.
+2. Implement Rust `sheet` modules for grid math, static import, static export, manifest validation, static reimport, preview metadata, and future GIF/manual slice scaffolding.
+3. Register Tauri commands:
+   - `analyze_sheet_grid`
+   - `preview_sheet_slices`
+   - `import_sheet_cells`
+   - `export_edit_sheet`
+   - `reimport_edit_sheet`
+4. Implement collection toolbar UI:
+   - `시트 가져오기`
+   - `작업 시트`
+5. Keep GIF frame sheet, manual slices, and auto-detect out of visible action menus until their commands are fully implemented.
+6. Add Rust and frontend tests for grid math, alpha preservation, manifest mapping, output dimensions, page estimates, and selection behavior.
+
+Done when: static sheet import/export/reimport works without overwriting originals, clean sheets preserve alpha, guide sheets are separate, manifests roundtrip cells, and GIF frame sheet is explicitly documented as the next stage.

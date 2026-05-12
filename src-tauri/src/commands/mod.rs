@@ -5,3 +5,4 @@ pub mod icons;
 pub mod import;
 pub mod library;
 pub mod settings;
+pub mod sheet;

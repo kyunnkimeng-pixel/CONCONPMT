@@ -10,7 +10,17 @@ pub struct AppPaths {
     pub originals_dir: PathBuf,
     pub generated_crops_dir: PathBuf,
     pub processed_variants_dir: PathBuf,
+    pub sheet_reimport_variants_dir: PathBuf,
     pub exports_dir: PathBuf,
+    pub sheet_import_originals_dir: PathBuf,
+    pub sheet_import_cells_dir: PathBuf,
+    pub sheet_import_manifests_dir: PathBuf,
+    pub sheet_export_static_clean_dir: PathBuf,
+    pub sheet_export_static_guide_dir: PathBuf,
+    pub sheet_export_static_manifests_dir: PathBuf,
+    pub sheet_export_gif_clean_dir: PathBuf,
+    pub sheet_export_gif_guide_dir: PathBuf,
+    pub sheet_export_gif_manifests_dir: PathBuf,
     pub thumbnails_dir: PathBuf,
     pub source_file_thumbnails_dir: PathBuf,
     pub previews_dir: PathBuf,
@@ -26,7 +36,26 @@ impl AppPaths {
             originals_dir: root.join("originals"),
             generated_crops_dir: root.join("generated").join("crops"),
             processed_variants_dir: root.join("generated").join("variants"),
+            sheet_reimport_variants_dir: root
+                .join("generated")
+                .join("variants")
+                .join("sheet_reimports"),
             exports_dir: root.join("exports"),
+            sheet_import_originals_dir: root.join("sheet_imports").join("original_sheets"),
+            sheet_import_cells_dir: root.join("sheet_imports").join("extracted_cells"),
+            sheet_import_manifests_dir: root.join("sheet_imports").join("manifests"),
+            sheet_export_static_clean_dir: root.join("sheet_exports").join("static").join("clean"),
+            sheet_export_static_guide_dir: root.join("sheet_exports").join("static").join("guide"),
+            sheet_export_static_manifests_dir: root
+                .join("sheet_exports")
+                .join("static")
+                .join("manifests"),
+            sheet_export_gif_clean_dir: root.join("sheet_exports").join("gif_frames").join("clean"),
+            sheet_export_gif_guide_dir: root.join("sheet_exports").join("gif_frames").join("guide"),
+            sheet_export_gif_manifests_dir: root
+                .join("sheet_exports")
+                .join("gif_frames")
+                .join("manifests"),
             thumbnails_dir: root.join("thumbnails"),
             source_file_thumbnails_dir: root.join("thumbnails").join("source-files"),
             previews_dir: root.join("previews"),
@@ -49,13 +78,23 @@ impl AppPaths {
         Ok(())
     }
 
-    fn required_directories(&self) -> [&Path; 11] {
-        [
+    fn required_directories(&self) -> Vec<&Path> {
+        vec![
             &self.root,
             &self.originals_dir,
             &self.generated_crops_dir,
             &self.processed_variants_dir,
+            &self.sheet_reimport_variants_dir,
             &self.exports_dir,
+            &self.sheet_import_originals_dir,
+            &self.sheet_import_cells_dir,
+            &self.sheet_import_manifests_dir,
+            &self.sheet_export_static_clean_dir,
+            &self.sheet_export_static_guide_dir,
+            &self.sheet_export_static_manifests_dir,
+            &self.sheet_export_gif_clean_dir,
+            &self.sheet_export_gif_guide_dir,
+            &self.sheet_export_gif_manifests_dir,
             &self.thumbnails_dir,
             &self.source_file_thumbnails_dir,
             &self.previews_dir,
@@ -86,7 +125,17 @@ mod tests {
         assert!(paths.originals_dir.is_dir());
         assert!(paths.generated_crops_dir.is_dir());
         assert!(paths.processed_variants_dir.is_dir());
+        assert!(paths.sheet_reimport_variants_dir.is_dir());
         assert!(paths.exports_dir.is_dir());
+        assert!(paths.sheet_import_originals_dir.is_dir());
+        assert!(paths.sheet_import_cells_dir.is_dir());
+        assert!(paths.sheet_import_manifests_dir.is_dir());
+        assert!(paths.sheet_export_static_clean_dir.is_dir());
+        assert!(paths.sheet_export_static_guide_dir.is_dir());
+        assert!(paths.sheet_export_static_manifests_dir.is_dir());
+        assert!(paths.sheet_export_gif_clean_dir.is_dir());
+        assert!(paths.sheet_export_gif_guide_dir.is_dir());
+        assert!(paths.sheet_export_gif_manifests_dir.is_dir());
         assert!(paths.source_file_thumbnails_dir.is_dir());
         assert!(paths.collection_previews_dir.is_dir());
         assert!(paths.temp_import_dir.is_dir());

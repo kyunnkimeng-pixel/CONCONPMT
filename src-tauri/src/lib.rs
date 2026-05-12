@@ -54,6 +54,11 @@ pub fn run() {
             commands::settings::save_app_settings,
             commands::library::preview_library_cleanup,
             commands::library::cleanup_library,
+            commands::sheet::analyze_sheet_grid,
+            commands::sheet::preview_sheet_slices,
+            commands::sheet::import_sheet_cells,
+            commands::sheet::export_edit_sheet,
+            commands::sheet::reimport_edit_sheet,
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");
@@ -69,3 +74,4 @@ mod imaging;
 mod models;
 mod optimization;
 mod paths;
+mod sheet;

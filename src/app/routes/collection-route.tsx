@@ -7,6 +7,7 @@ import {
   Download,
   FileImage,
   FolderPlus,
+  Grid3X3,
   ImagePlus,
   Images,
   LayoutGrid,
@@ -31,6 +32,8 @@ import type {
 } from "@/features/collections/types";
 import { EditorPanel } from "@/features/editor/components/EditorPanel";
 import { ExportDialog } from "@/features/export/components/ExportDialog";
+import { SheetExportDialog } from "@/features/sheets/components/SheetExportDialog";
+import { SheetImportWizard } from "@/features/sheets/components/SheetImportWizard";
 import {
   createPlaceholderIcon,
   deleteIcons,
@@ -102,6 +105,8 @@ export function CollectionRoute() {
   const [isImporting, setIsImporting] = useState(false);
   const [editingIconId, setEditingIconId] = useState<string | null>(null);
   const [isExportDialogOpen, setIsExportDialogOpen] = useState(false);
+  const [isSheetImportOpen, setIsSheetImportOpen] = useState(false);
+  const [isSheetExportOpen, setIsSheetExportOpen] = useState(false);
   const [isSettingsOpen, setIsSettingsOpen] = useState(false);
   const [viewMode, setViewMode] = useState<"explorer" | "usagePreview">("explorer");
   const [isThumbnailOnly, setIsThumbnailOnly] = useState(false);
@@ -686,6 +691,24 @@ export function CollectionRoute() {
               내보내기
             </button>
             <button
+              className="inline-flex items-center gap-2 rounded-md border border-border bg-white px-3 py-2 text-sm font-medium hover:bg-menu-hover focus-visible:outline focus-visible:outline-2 focus-visible:outline-focus disabled:cursor-not-allowed disabled:text-muted"
+              type="button"
+              onClick={() => setIsSheetImportOpen(true)}
+            >
+              <Grid3X3 aria-hidden="true" />
+              시트 가져오기
+            </button>
+            <button
+              className="inline-flex items-center gap-2 rounded-md border border-border bg-white px-3 py-2 text-sm font-medium hover:bg-menu-hover focus-visible:outline focus-visible:outline-2 focus-visible:outline-focus disabled:cursor-not-allowed disabled:text-muted"
+              disabled={icons.length === 0}
+              title={icons.length === 0 ? "작업 시트로 내보낼 아이콘이 없습니다." : undefined}
+              type="button"
+              onClick={() => setIsSheetExportOpen(true)}
+            >
+              <Grid3X3 aria-hidden="true" />
+              작업 시트
+            </button>
+            <button
               className={viewModeButtonClass(isSortPanelOpen)}
               disabled={icons.length < 2}
               title={icons.length < 2 ? "정렬할 항목이 부족합니다." : undefined}
@@ -908,6 +931,22 @@ export function CollectionRoute() {
           onClose={() => setIsExportDialogOpen(false)}
           onExported={handleExported}
           onIconUpdated={handleIconUpdated}
+        />
+      ) : null}
+      {isSheetImportOpen ? (
+        <SheetImportWizard
+          collection={collection}
+          onClose={() => setIsSheetImportOpen(false)}
+          onImported={async () => {
+            await refreshCollectionAndIcons();
+          }}
+        />
+      ) : null}
+      {isSheetExportOpen ? (
+        <SheetExportDialog
+          collection={collection}
+          icons={icons}
+          onClose={() => setIsSheetExportOpen(false)}
         />
       ) : null}
       {operationProgress ? <OperationProgressOverlay progress={operationProgress} /> : null}
