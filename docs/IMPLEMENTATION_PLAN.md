@@ -182,6 +182,17 @@ Done when: license generation records the manual resolutions, image/GIF/resize c
 
 Done when: the manual references only the new `docs/manual-assets/manual-*` screenshots, all linked assets exist, and docs-only checks pass.
 
+Stage 16D status: the public GitHub Pages manual exists at `docs/index.html`, README links to the manual and tracked manual screenshots, and the original 11 `docs/manual-assets/manual-*` screenshots are tracked.
+
+## Stage PUBLIC_USER_MANUAL_AND_RELEASE_READINESS
+1. Extend the public manual beyond the original editor/export walkthrough to include sheet import/export/reimport, GIF frame work sheets, context-menu workflows, icon memos, shared sheet presets, auto-detect proposals, GIF FPS preview behavior, file preservation, and release links.
+2. Add a tracked release-readiness summary outside ignored `docs/QA_*.md` files.
+3. Add tracked manual screenshots for the newer workflows under `docs/manual-assets/manual-*`.
+4. Update README and feature inventory so public users can find the manual, release checklist, license policy, and third-party notices.
+5. Run docs link/asset validation plus lint, tests, build, license guardrails, Rust tests, and Tauri packaging where reasonable.
+
+Done when: public docs cover all currently implemented production workflows, all manual image links resolve to tracked assets, MIT/license-readiness links are visible, and verification commands pass or have explicit non-product blockers.
+
 ## Stage PROFESSIONAL_SPRITE_SHEET_TOOLS_MVP - Reversible sheet tools
 1. Add written design docs for static sheet import, work sheet export, manifest reimport, PNG alpha handling, page splitting, GIF frame sheet future scope, manual slices, and auto-detect.
 2. Implement Rust `sheet` modules for grid math, static import, static export, manifest validation, static reimport, preview metadata, and future GIF/manual slice scaffolding.
@@ -198,3 +209,31 @@ Done when: the manual references only the new `docs/manual-assets/manual-*` scre
 6. Add Rust and frontend tests for grid math, alpha preservation, manifest mapping, output dimensions, page estimates, and selection behavior.
 
 Done when: static sheet import/export/reimport works without overwriting originals, clean sheets preserve alpha, guide sheets are separate, manifests roundtrip cells, and GIF frame sheet is explicitly documented as the next stage.
+
+## Stage CONTEXT_MENU_SHEET_WORKFLOW_AND_PRESETS_MVP
+1. Reuse implemented GIF frame sheet export/reimport commands and expose them through GIF-only icon context menu actions.
+2. Add collection-card context menu duplication using `duplicate_collection` with numbered copy names.
+3. Add persistent icon notes, note context menu actions, and a hover note indicator beside icon names.
+4. Add selected-icon static work sheet export from icon multi-selection without changing whole-collection export behavior.
+5. Add persistent sheet grid presets shared by import, static export, and GIF frame export, including protected built-in presets.
+
+Done when: every new context menu action is wired to a real command or dialog, selected export uses only selected icons, notes survive reload, presets can be saved/applied/defaulted across import/export, and original source files remain preserved.
+
+## Stage MANUAL_SLICE_MODE_MVP
+1. Replace manual-slice placeholder backend with real rectangular slice analysis, import, and metadata save/load.
+2. Wire `직접 Slice 지정` into `SheetImportWizard` without adding auto-detect or atlas-style packing behavior.
+3. Add `ManualSliceCanvas` for drag-create, move, resize, exact X/Y/W/H editing, include/exclude, duplicate/delete, and metadata save.
+4. Import included in-bounds slices as new PNG icons while preserving the original sheet and PNG alpha.
+5. Add Rust coverage for bounds analysis, metadata roundtrip, original preservation, alpha-preserving import, and order.
+6. Add frontend render coverage for the manual slice production surface.
+
+Done when: users can manually define rectangular slices from a source sheet and import them as new icons without overwriting originals; auto-detect is left for the next stage.
+
+## Stage AUTO_DETECT_SHEET_SLICING_EXPERIMENTAL
+1. Add a backend proposal command that analyzes PNG/JPG/JPEG sheets without importing.
+2. Detect likely separator rows/columns from alpha transparency and solid background color.
+3. Return fixed-grid settings with confidence and warnings.
+4. Add a `자동 감지 (실험)` UI path in `시트 가져오기`.
+5. Let users apply a proposal into the existing grid overlay/review workflow.
+
+Done when: auto-detect never auto-imports cells, proposal application still requires grid overlay and cell review, transparent separator / solid background / no-proposal cases have Rust tests, and frontend proposal rendering has test coverage.

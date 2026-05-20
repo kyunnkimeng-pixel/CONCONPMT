@@ -32,11 +32,14 @@ import {
 } from "@/features/editor/crop-math";
 import { CropCanvas } from "@/features/editor/components/CropCanvas";
 import {
+  applyGifOriginalPlaybackToPreview,
   applyOptimizationCandidate,
+  applyOptimizationCandidateToPreview,
   clearOptimizationCandidate,
   generateGifOptimizationCandidates,
   generateStaticOptimizationCandidates,
   listExportProfiles,
+  previewGifPlaybackFps,
 } from "@/features/export/api";
 import type {
   ExportProfile,
@@ -504,6 +507,7 @@ export function EditorPanel({
                   <button
                     aria-label="고급 편집 열기"
                     className="inline-flex h-8 items-center gap-1 rounded-md border border-border bg-white px-2 text-xs font-medium hover:bg-menu-hover focus-visible:outline focus-visible:outline-2 focus-visible:outline-focus"
+                    data-testid="editor-advanced-open"
                     title="고급 편집"
                     type="button"
                     onClick={() => setIsAdvancedOpen(true)}
@@ -795,6 +799,13 @@ function AdvancedEditPanel({
   const [result, setResult] = useState<OptimizationResult | null>(null);
   const [isBusy, setIsBusy] = useState(false);
   const [errorMessage, setErrorMessage] = useState<string | null>(null);
+  const playbackPreviewRequestRef = useRef(0);
+  const [playbackPreviewPath, setPlaybackPreviewPath] = useState<string | null>(null);
+  const [playbackPreviewCacheKey, setPlaybackPreviewCacheKey] = useState<string | null>(
+    null,
+  );
+  const [isPlaybackPreviewLoading, setIsPlaybackPreviewLoading] = useState(false);
+  const [playbackPreviewError, setPlaybackPreviewError] = useState<string | null>(null);
 
   useEffect(() => {
     let isActive = true;
@@ -833,6 +844,50 @@ function AdvancedEditPanel({
   const usesJpegQuality =
     !editorState.source.isAnimated && selectedProfile?.targetFormat === "jpg";
 
+  useEffect(() => {
+    const requestId = playbackPreviewRequestRef.current + 1;
+    playbackPreviewRequestRef.current = requestId;
+    setPlaybackPreviewError(null);
+
+    if (!editorState.source.isAnimated || playbackFps === null) {
+      setPlaybackPreviewPath(null);
+      setPlaybackPreviewCacheKey(null);
+      setIsPlaybackPreviewLoading(false);
+      return;
+    }
+
+    let isActive = true;
+    setIsPlaybackPreviewLoading(true);
+    const timer = window.setTimeout(() => {
+      previewGifPlaybackFps(editorState.icon.id, playbackFps)
+        .then((preview) => {
+          if (!isActive || playbackPreviewRequestRef.current !== requestId) {
+            return;
+          }
+          setPlaybackPreviewPath(preview.previewPath);
+          setPlaybackPreviewCacheKey(preview.generatedAt);
+        })
+        .catch((error) => {
+          if (!isActive || playbackPreviewRequestRef.current !== requestId) {
+            return;
+          }
+          setPlaybackPreviewPath(null);
+          setPlaybackPreviewCacheKey(null);
+          setPlaybackPreviewError(getCommandErrorMessage(error));
+        })
+        .finally(() => {
+          if (isActive && playbackPreviewRequestRef.current === requestId) {
+            setIsPlaybackPreviewLoading(false);
+          }
+        });
+    }, 450);
+
+    return () => {
+      isActive = false;
+      window.clearTimeout(timer);
+    };
+  }, [editorState.icon.id, editorState.source.isAnimated, playbackFps]);
+
   const handleGenerate = async () => {
     if (!selectedProfile || !selectedPiece) {
       return;
@@ -862,7 +917,7 @@ function AdvancedEditPanel({
   };
 
   const handleApplyPlaybackFps = async () => {
-    if (!selectedProfile || !selectedPiece || !editorState.source.isAnimated || playbackFps === null) {
+    if (!selectedProfile || !selectedPiece || !editorState.source.isAnimated) {
       return;
     }
 
@@ -871,6 +926,18 @@ function AdvancedEditPanel({
     setResult(null);
 
     try {
+      if (playbackFps === null) {
+        await applyGifOriginalPlaybackToPreview(
+          editorState.icon.id,
+          selectedProfile.id,
+          selectedPiece.id,
+        );
+        const nextState = await getIconEditorState(collection.id, editorState.icon.id);
+        onEditorStateUpdated(nextState);
+        onStatus("원본 GIF 프레임 지연 시간을 실제 미리보기와 내보내기 결과에 적용했습니다.");
+        return;
+      }
+
       const nextResult = await generateGifOptimizationCandidates(
         editorState.icon.id,
         profileId,
@@ -888,20 +955,15 @@ function AdvancedEditPanel({
         null;
 
       if (!candidate) {
-        setResult(nextResult);
-        setErrorMessage("GIF 재생 FPS 후보를 만들 수 없습니다.");
+        setErrorMessage("GIF 재생 FPS를 적용할 후보를 만들 수 없습니다.");
         return;
       }
 
-      const applied = await applyOptimizationCandidate(candidate.id);
-      setResult({
-        ...nextResult,
-        candidates: nextResult.candidates.map((next) => ({
-          ...next,
-          isActiveForExport: next.id === candidate.id,
-        })),
-      });
-      onStatus(`${applied.message} GIF 재생 FPS ${playbackFps}를 적용했습니다.`);
+      await applyOptimizationCandidateToPreview(candidate.id);
+      const nextState = await getIconEditorState(collection.id, editorState.icon.id);
+      onEditorStateUpdated(nextState);
+      setResult(null);
+      onStatus(`GIF 재생 FPS ${playbackFps}를 실제 미리보기와 내보내기 결과에 적용했습니다.`);
     } catch (error) {
       setErrorMessage(getCommandErrorMessage(error));
     } finally {
@@ -1104,7 +1166,8 @@ function AdvancedEditPanel({
                       />
                       <button
                         className="rounded border border-border px-2 py-1 text-[11px] font-medium hover:bg-menu-hover disabled:cursor-not-allowed disabled:text-muted"
-                        disabled={isBusy || playbackFps === null}
+                        data-testid="advanced-playback-original-fps"
+                        disabled={isBusy}
                         type="button"
                         onClick={() => setPlaybackFps(null)}
                       >
@@ -1128,7 +1191,8 @@ function AdvancedEditPanel({
                   </p>
                   <button
                     className="rounded-md border border-accent bg-white px-3 py-2 text-xs font-semibold text-accent hover:bg-menu-hover focus-visible:outline focus-visible:outline-2 focus-visible:outline-focus disabled:cursor-not-allowed disabled:opacity-60"
-                    disabled={isBusy || !selectedProfile || !selectedPiece || playbackFps === null}
+                    data-testid="advanced-playback-fps-apply"
+                    disabled={isBusy || !selectedProfile || !selectedPiece}
                     type="button"
                     onClick={() => {
                       void handleApplyPlaybackFps();
@@ -1325,8 +1389,18 @@ function AdvancedEditPanel({
               disabled={isBusy}
               enabled={textEnabled}
               fontSize={textFontSize}
+              isPlaybackPreviewLoading={isPlaybackPreviewLoading}
+              playbackPreviewError={playbackPreviewError}
+              playbackPreviewLabel={
+                editorState.source.isAnimated
+                  ? playbackFps === null
+                    ? "원본 FPS 미리보기"
+                    : `${playbackFps} FPS 미리보기`
+                  : null
+              }
+              sourceCacheKey={playbackPreviewCacheKey}
               sourceHeight={editorState.source.height}
-              sourceUrl={editorState.source.originalImageUrl}
+              sourceUrl={playbackPreviewPath ?? editorState.source.originalImageUrl}
               sourceWidth={editorState.source.width}
               strokeColor={textStrokeColor}
               strokeWidth={textStrokeWidth}
@@ -1386,6 +1460,10 @@ function AdvancedLivePreview({
   disabled,
   enabled,
   fontSize,
+  isPlaybackPreviewLoading,
+  playbackPreviewError,
+  playbackPreviewLabel,
+  sourceCacheKey,
   sourceHeight,
   sourceUrl,
   sourceWidth,
@@ -1401,6 +1479,10 @@ function AdvancedLivePreview({
   disabled: boolean;
   enabled: boolean;
   fontSize: number;
+  isPlaybackPreviewLoading: boolean;
+  playbackPreviewError: string | null;
+  playbackPreviewLabel: string | null;
+  sourceCacheKey: string | null;
   sourceHeight: number;
   sourceUrl: string | null;
   sourceWidth: number;
@@ -1420,7 +1502,7 @@ function AdvancedLivePreview({
     startFontSize: number;
   } | null>(null);
   const [previewWidth, setPreviewWidth] = useState(0);
-  const assetUrl = filePathToAssetUrl(sourceUrl);
+  const assetUrl = filePathToAssetUrl(sourceUrl, sourceCacheKey);
   const displayScale =
     previewWidth > 0 ? previewWidth / Math.max(1, sourceWidth) : 1;
 
@@ -1493,7 +1575,16 @@ function AdvancedLivePreview({
     <section className="rounded-md border border-border bg-white p-3">
       <div className="mb-2 flex items-center justify-between gap-2">
         <h4 className="text-xs font-semibold tracking-normal">실시간 편집 미리보기</h4>
-        <span className="text-[11px] text-muted">{fontSize}px</span>
+        <div className="flex items-center gap-2 text-[11px] text-muted">
+          {playbackPreviewLabel ? (
+            <span data-testid="advanced-live-preview-fps-status">
+              {isPlaybackPreviewLoading
+                ? `${playbackPreviewLabel} 생성 중`
+                : playbackPreviewLabel}
+            </span>
+          ) : null}
+          <span>{fontSize}px</span>
+        </div>
       </div>
       <div
         className="relative w-full overflow-hidden rounded-md border border-border bg-preview"
@@ -1506,7 +1597,9 @@ function AdvancedLivePreview({
           <img
             alt=""
             className="size-full object-fill"
+            data-testid="advanced-live-preview-image"
             draggable={false}
+            key={assetUrl}
             src={assetUrl}
             onDragStart={(event) => event.preventDefault()}
           />
@@ -1515,6 +1608,11 @@ function AdvancedLivePreview({
             미리보기 없음
           </div>
         )}
+        {isPlaybackPreviewLoading ? (
+          <div className="pointer-events-none absolute inset-x-2 bottom-2 rounded bg-white/85 px-2 py-1 text-center text-[11px] font-medium text-muted shadow-sm">
+            GIF 재생 속도 미리보기 생성 중
+          </div>
+        ) : null}
         {enabled ? (
           <div
             className={cn(
@@ -1546,6 +1644,11 @@ function AdvancedLivePreview({
           </div>
         ) : null}
       </div>
+      {playbackPreviewError ? (
+        <p className="mt-2 rounded border border-yellow-200 bg-yellow-50 px-2 py-1 text-[11px] text-muted">
+          FPS 미리보기를 만들 수 없습니다. 적용 버튼을 누르면 동일한 검증을 다시 수행합니다.
+        </p>
+      ) : null}
     </section>
   );
 }

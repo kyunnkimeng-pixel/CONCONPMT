@@ -234,10 +234,23 @@ fn resolve_sheet_paths(
     manifest_path: &Path,
     explicit_paths: &[String],
 ) -> HashMap<i64, PathBuf> {
-    let mut by_file_name = explicit_paths
+    let explicit_paths = explicit_paths
         .iter()
         .map(|path| PathBuf::from(path.trim()))
         .filter(|path| !path.as_os_str().is_empty())
+        .collect::<Vec<_>>();
+    if explicit_paths.len() == manifest.pages.len() {
+        let mut pages = manifest.pages.iter().collect::<Vec<_>>();
+        pages.sort_by_key(|page| page.page_index);
+        return pages
+            .into_iter()
+            .zip(explicit_paths)
+            .map(|(page, path)| (page.page_index, path))
+            .collect();
+    }
+
+    let mut by_file_name = explicit_paths
+        .iter()
         .filter_map(|path| {
             path.file_name()
                 .and_then(|name| name.to_str())

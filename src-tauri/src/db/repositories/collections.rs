@@ -1,4 +1,4 @@
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 
 use rusqlite::{params, Connection, OptionalExtension, Row, Transaction};
 
@@ -196,7 +196,7 @@ pub fn duplicate_collection(
     let transaction = connection.transaction()?;
     let original = get_collection(&transaction, collection_id)?;
     let duplicate_id = create_id("collection");
-    let duplicate_name = format!("{} 복사본", original.name);
+    let duplicate_name = next_duplicate_collection_name(&transaction, &original.name)?;
     let order_index = next_collection_order_index(&transaction)?;
 
     transaction.execute(
@@ -807,10 +807,46 @@ fn duplicate_icons(
 
         duplicate_icon_pieces(transaction, &icon.id, &duplicate_icon_id)?;
         duplicate_crop_settings(transaction, &icon.id, &duplicate_icon_id)?;
+        duplicate_icon_note(transaction, &icon.id, &duplicate_icon_id)?;
         icon_id_map.insert(icon.id, duplicate_icon_id);
     }
 
     Ok(icon_id_map)
+}
+
+fn next_duplicate_collection_name(
+    connection: &Connection,
+    original_name: &str,
+) -> AppResult<String> {
+    let base = format!("{original_name} 복사본");
+    let existing_names = active_collection_names(connection)?;
+    if !existing_names.contains(&base) {
+        return Ok(base);
+    }
+
+    for copy_number in 2..10_000 {
+        let candidate = format!("{base} {copy_number}");
+        if !existing_names.contains(&candidate) {
+            return Ok(candidate);
+        }
+    }
+
+    Err(AppError::new(
+        "validation",
+        "복제할 모음 이름을 만들 수 없습니다.",
+    ))
+}
+
+fn active_collection_names(connection: &Connection) -> AppResult<HashSet<String>> {
+    let mut statement = connection.prepare(
+        "SELECT name
+         FROM collections
+         WHERE deleted_at IS NULL",
+    )?;
+    let names = statement
+        .query_map([], |row| row.get::<_, String>(0))?
+        .collect::<Result<HashSet<_>, _>>()?;
+    Ok(names)
 }
 
 fn duplicate_icon_pieces(
@@ -979,6 +1015,32 @@ fn duplicate_crop_settings(
     Ok(())
 }
 
+fn duplicate_icon_note(
+    transaction: &Transaction<'_>,
+    source_icon_id: &str,
+    target_icon_id: &str,
+) -> AppResult<()> {
+    let note = transaction
+        .query_row(
+            "SELECT note
+             FROM icon_notes
+             WHERE icon_id = ?1",
+            params![source_icon_id],
+            |row| row.get::<_, String>(0),
+        )
+        .optional()?;
+
+    if let Some(note) = note {
+        transaction.execute(
+            "INSERT INTO icon_notes (icon_id, note, updated_at)
+             VALUES (?1, ?2, strftime('%Y-%m-%dT%H:%M:%fZ', 'now'))",
+            params![target_icon_id, note],
+        )?;
+    }
+
+    Ok(())
+}
+
 #[cfg(test)]
 mod tests {
     use std::io::Cursor;
@@ -1057,6 +1119,18 @@ mod tests {
             )
             .unwrap();
         assert_eq!(profile_count, 1);
+    }
+
+    #[test]
+    fn duplicate_collection_uses_numbered_copy_names() {
+        let mut connection = connection();
+        let created = create_collection(&mut connection, Some("Original".to_string())).unwrap();
+
+        let first = duplicate_collection(&mut connection, &created.id).unwrap();
+        let second = duplicate_collection(&mut connection, &created.id).unwrap();
+
+        assert_eq!(first.name, "Original 복사본");
+        assert_eq!(second.name, "Original 복사본 2");
     }
 
     #[test]

@@ -4,8 +4,10 @@ import {
   CheckCircle2,
   Copy,
   FileImage,
+  Film,
   FolderOpen,
   ImagePlus,
+  NotebookPen,
   Pencil,
   Star,
   Tags,
@@ -21,6 +23,8 @@ interface IconContextMenuProps {
   y: number;
   isCover: boolean;
   hasExportResult: boolean;
+  isGifIcon: boolean;
+  hasNote: boolean;
   selectionCount: number;
   altSelectionCount: number;
   onClose: () => void;
@@ -28,6 +32,11 @@ interface IconContextMenuProps {
   onDelete: () => void;
   onDuplicate: () => void;
   onEdit: () => void;
+  onEditNote: () => void;
+  onClearNote: () => void;
+  onExportSelectedSheet: () => void;
+  onExportGifFrameSheet: () => void;
+  onReimportGifFrameSheet: () => void;
   onRevealExportResult: () => void;
   onRevealOriginal: () => void;
   onReplaceImage: () => void;
@@ -42,6 +51,8 @@ export function IconContextMenu({
   y,
   isCover,
   hasExportResult,
+  isGifIcon,
+  hasNote,
   selectionCount,
   altSelectionCount,
   onClose,
@@ -49,6 +60,11 @@ export function IconContextMenu({
   onDelete,
   onDuplicate,
   onEdit,
+  onEditNote,
+  onClearNote,
+  onExportSelectedSheet,
+  onExportGifFrameSheet,
+  onReimportGifFrameSheet,
   onRevealExportResult,
   onRevealOriginal,
   onReplaceImage,
@@ -201,6 +217,25 @@ export function IconContextMenu({
         <Pencil aria-hidden="true" />
         {altSelectionCount > 1 ? `선택 ${altSelectionCount}개 alt 일괄 변경` : "alt 변경"}
       </MenuButton>
+      <MenuButton testId="icon-context-note-edit" onClick={() => runAction(onEditNote)}>
+        <NotebookPen aria-hidden="true" />
+        {hasNote ? "메모 수정" : "메모하기"}
+      </MenuButton>
+      {hasNote ? (
+        <MenuButton testId="icon-context-note-clear" onClick={() => runAction(onClearNote)}>
+          <NotebookPen aria-hidden="true" />
+          메모 삭제
+        </MenuButton>
+      ) : null}
+      <MenuButton
+        testId="icon-context-selected-sheet-export"
+        onClick={() => runAction(onExportSelectedSheet)}
+      >
+        <FileImage aria-hidden="true" />
+        {selectionCount > 1
+          ? `선택 항목 ${selectionCount}개 작업시트로 내보내기`
+          : "작업시트로 내보내기"}
+      </MenuButton>
       <MenuButton testId="icon-context-thumbnail" onClick={() => runAction(onSetThumbnailOverride)}>
         <ImagePlus aria-hidden="true" />
         썸네일 바꾸기
@@ -235,6 +270,24 @@ export function IconContextMenu({
         <FolderOpen aria-hidden="true" />
         원본 위치 열기
       </MenuButton>
+      {isGifIcon ? (
+        <>
+          <MenuButton
+            testId="icon-context-gif-frame-export"
+            onClick={() => runAction(onExportGifFrameSheet)}
+          >
+            <Film aria-hidden="true" />
+            GIF 프레임 작업시트로 내보내기
+          </MenuButton>
+          <MenuButton
+            testId="icon-context-gif-frame-reimport"
+            onClick={() => runAction(onReimportGifFrameSheet)}
+          >
+            <Film aria-hidden="true" />
+            GIF 프레임 작업시트로 교체하기
+          </MenuButton>
+        </>
+      ) : null}
       <MenuButton
         disabled={!hasExportResult}
         testId="icon-context-reveal-export"

@@ -35,6 +35,37 @@ pub fn rename_icon(
 }
 
 #[tauri::command]
+pub fn get_icon_note(
+    state: State<'_, AppState>,
+    collection_id: String,
+    icon_id: String,
+) -> AppResult<Option<String>> {
+    let connection = state.connection()?;
+    icon_repository::get_icon_note(&connection, &collection_id, &icon_id)
+}
+
+#[tauri::command]
+pub fn update_icon_note(
+    state: State<'_, AppState>,
+    collection_id: String,
+    icon_id: String,
+    note: String,
+) -> AppResult<IconDto> {
+    let connection = state.connection()?;
+    icon_repository::update_icon_note(&connection, &collection_id, &icon_id, note)
+}
+
+#[tauri::command]
+pub fn clear_icon_note(
+    state: State<'_, AppState>,
+    collection_id: String,
+    icon_id: String,
+) -> AppResult<IconDto> {
+    let connection = state.connection()?;
+    icon_repository::clear_icon_note(&connection, &collection_id, &icon_id)
+}
+
+#[tauri::command]
 pub fn set_icon_thumbnail_override(
     state: State<'_, AppState>,
     collection_id: String,

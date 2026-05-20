@@ -176,7 +176,18 @@ pub fn analyze_sheet_grid(request: SheetGridAnalyzeRequest) -> AppResult<SheetGr
         read_order: request.read_order,
         empty_cell_threshold: request.empty_cell_threshold,
     };
-    analyze_rgba_grid(&image, &settings, sheet_width, sheet_height)
+    let mut analysis = analyze_rgba_grid(&image, &settings, sheet_width, sheet_height)?;
+    if let Some(warning) = alpha_warning_for_extension(&source.extension) {
+        analysis.warnings.push(warning.to_string());
+    }
+    Ok(analysis)
+}
+
+pub(crate) fn alpha_warning_for_extension(extension: &str) -> Option<&'static str> {
+    match extension {
+        "jpg" | "jpeg" => Some("JPG/JPEG 시트는 alpha 투명도를 포함하지 않습니다. 투명 배경이 필요한 작업 시트에는 PNG를 사용하세요."),
+        _ => None,
+    }
 }
 
 pub fn analyze_rgba_grid(
@@ -438,7 +449,7 @@ fn infer_count(available: i64, cell: i64, gap: i64) -> i64 {
     if available <= 0 || cell <= 0 {
         return 0;
     }
-    ((available + gap) / (cell + gap).max(1)).max(0)
+    ((available + gap) / (cell + gap).max(1)).max(1)
 }
 
 fn divide_grid_extent(available: i64, count: i64, gap: i64) -> i64 {
@@ -545,6 +556,29 @@ mod tests {
 
         assert_eq!(grid.columns, 3);
         assert_eq!(grid.rows, 2);
+    }
+
+    #[test]
+    fn cell_size_mode_keeps_one_preview_cell_when_extent_is_smaller_than_cell() {
+        let settings = SheetGridSettings {
+            mode: "cell_size".to_string(),
+            rows: None,
+            columns: Some(5),
+            cell_width: Some(200),
+            cell_height: Some(200),
+            border_left: 16,
+            border_top: 16,
+            border_right: 16,
+            border_bottom: 16,
+            gap_x: 8,
+            gap_y: 8,
+            read_order: "row_major".to_string(),
+            empty_cell_threshold: None,
+        };
+        let grid = resolve_grid(&settings, 600, 200).unwrap();
+
+        assert_eq!(grid.columns, 5);
+        assert_eq!(grid.rows, 1);
     }
 
     #[test]

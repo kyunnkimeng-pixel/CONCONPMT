@@ -125,8 +125,8 @@ export function HomeRoute() {
     }
   };
 
-  const handleDuplicateCollection = async () => {
-    if (!selectedCollectionId) {
+  const handleDuplicateCollection = async (collectionId = selectedCollectionId) => {
+    if (!collectionId) {
       return;
     }
 
@@ -134,7 +134,7 @@ export function HomeRoute() {
     setImportStatus(null);
 
     try {
-      const duplicated = await duplicateCollection(selectedCollectionId);
+      const duplicated = await duplicateCollection(collectionId);
       setCollections((currentCollections) => [...currentCollections, duplicated]);
       setSelectedCollectionId(duplicated.id);
       setImportStatus("모음을 복제했습니다.");
@@ -340,6 +340,9 @@ export function HomeRoute() {
               collections={collections}
               selectedCollectionId={selectedCollectionId}
               onOpenCollection={openCollection}
+              onDuplicateCollection={(collectionId) => {
+                void handleDuplicateCollection(collectionId);
+              }}
               onRenameCollection={(collectionId, name) => {
                 void handleRenameCollection(collectionId, name);
               }}

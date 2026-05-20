@@ -1,7 +1,7 @@
 import type { CSSProperties, MouseEvent } from "react";
 import { useSortable } from "@dnd-kit/sortable";
 import { CSS } from "@dnd-kit/utilities";
-import { Images, Star } from "lucide-react";
+import { Images, NotebookText, Star } from "lucide-react";
 
 import { InlineNameEditor } from "@/components/explorer/InlineNameEditor";
 import type { IconPieceSummary, IconSummary } from "@/features/collections/types";
@@ -122,13 +122,16 @@ export function IconTile({
 
       {showDetails ? (
         <figcaption className="mt-1.5 flex w-full flex-col items-center gap-1">
-          <InlineNameEditor
-            ariaLabel={`${icon.displayName} 아이콘명 변경`}
-            value={icon.displayName}
-            onCommit={(value) => {
-              void onRename(icon.id, value);
-            }}
-          />
+          <div className="flex max-w-full items-center justify-center gap-1">
+            <InlineNameEditor
+              ariaLabel={`${icon.displayName} 아이콘명 변경`}
+              value={icon.displayName}
+              onCommit={(value) => {
+                void onRename(icon.id, value);
+              }}
+            />
+            <MemoIndicator note={icon.note} />
+          </div>
           <div
             className={cn(
               "w-full gap-1",
@@ -237,6 +240,28 @@ function PreviewImage({ src }: { src: string | null }) {
       style={nonDraggableImageStyle}
       onDragStart={(event) => event.preventDefault()}
     />
+  );
+}
+
+function MemoIndicator({ note }: { note: string | null }) {
+  const trimmed = note?.trim();
+  if (!trimmed) {
+    return null;
+  }
+
+  return (
+    <span
+      className="group/memo relative inline-flex shrink-0 text-muted"
+      data-testid="icon-memo-indicator"
+      title="메모 있음"
+      onClick={(event) => event.stopPropagation()}
+      onPointerDown={(event) => event.stopPropagation()}
+    >
+      <NotebookText aria-hidden="true" className="size-3.5" />
+      <span className="pointer-events-none absolute left-1/2 top-full z-20 mt-2 hidden w-64 -translate-x-1/2 whitespace-pre-wrap rounded-md border border-border bg-white px-3 py-2 text-left text-xs leading-5 text-foreground shadow-lg group-hover/memo:inline-block">
+        {trimmed}
+      </span>
+    </span>
   );
 }
 

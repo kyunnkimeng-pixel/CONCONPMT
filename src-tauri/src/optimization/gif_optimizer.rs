@@ -35,17 +35,25 @@ pub fn generate_candidates(
     baseline: &RenderedBaseline,
     advanced_settings: Option<&OptimizationAdvancedSettingsPayload>,
 ) -> AppResult<Vec<OptimizationCandidateDto>> {
+    if is_playback_fps_only_request(advanced_settings) {
+        let playback_fps = advanced_settings
+            .and_then(|settings| settings.playback_fps)
+            .unwrap_or(24);
+        return Ok(vec![encode_playback_fps_only_candidate(
+            connection,
+            paths,
+            baseline,
+            playback_fps,
+        )?]);
+    }
+
     let decoded = decode_gif(&baseline.path)?;
     let mut candidates = Vec::new();
-    let presets = if is_playback_fps_only_request(advanced_settings) {
-        vec![OptimizationPreset::Quality]
-    } else {
-        vec![
-            OptimizationPreset::Quality,
-            OptimizationPreset::Balanced,
-            OptimizationPreset::Smallest,
-        ]
-    };
+    let presets = vec![
+        OptimizationPreset::Quality,
+        OptimizationPreset::Balanced,
+        OptimizationPreset::Smallest,
+    ];
 
     for preset in presets {
         match encode_candidate(
@@ -71,6 +79,70 @@ pub fn generate_candidates(
     }
 
     Ok(candidates)
+}
+
+fn encode_playback_fps_only_candidate(
+    connection: &Connection,
+    paths: &AppPaths,
+    baseline: &RenderedBaseline,
+    playback_fps: i64,
+) -> AppResult<OptimizationCandidateDto> {
+    let frame_count = baseline.frame_count.unwrap_or(1).max(1) as usize;
+    let mut settings = gif_settings_for_preset(OptimizationPreset::Quality, frame_count);
+    settings.playback_fps = Some(playback_fps.clamp(1, 60));
+    settings.frame_step = 1;
+    settings.fps_limit = None;
+    settings.color_limit = None;
+
+    let settings_json = serde_json::to_string(&settings)
+        .map_err(|error| AppError::new("json", error.to_string()))?;
+    let settings_hash = hash_text(&[settings_json.clone()]);
+    let variant_id = create_id("variant");
+    let final_path = variant_path(paths, &baseline.target, &variant_id, "gif")?;
+    let temp_path = temp_path_for(&final_path);
+
+    write_gif_playback_fps_candidate_streaming(
+        &temp_path,
+        &baseline.path,
+        settings.encoder_speed,
+        settings.playback_fps,
+    )?;
+    move_temp_file(&temp_path, &final_path)?;
+    let byte_size = file_size(&final_path)?;
+    let file_analysis = analyze_file(&final_path, "gif")?;
+
+    let variant = insert_variant(
+        connection,
+        &NewProcessedAssetVariant {
+            id: variant_id,
+            icon_id: baseline.target.icon_id.clone(),
+            piece_id: Some(baseline.target.piece_id.clone()),
+            profile_id: Some(baseline.target.profile.id.clone()),
+            source_file_id: Some(baseline.target.source_file_id.clone()),
+            kind: "optimized_gif".to_string(),
+            preset: Some(OptimizationPreset::Quality.as_str().to_string()),
+            path: path_string(&final_path),
+            format: "gif".to_string(),
+            width: file_analysis.width,
+            height: file_analysis.height,
+            byte_size,
+            frame_count: file_analysis.frame_count,
+            duration_ms: file_analysis.duration_ms,
+            loop_mode: file_analysis.loop_mode,
+            settings_json,
+            source_hash: baseline.target.source_hash.clone(),
+            crop_hash: baseline.target.crop_hash.clone(),
+            profile_hash: baseline.target.profile_hash.clone(),
+            settings_hash,
+        },
+    )?;
+
+    Ok(crate::db::repositories::optimization::to_candidate_dto(
+        &variant,
+        baseline.target.profile.max_bytes,
+        baseline.frame_count,
+        baseline.duration_ms,
+    ))
 }
 
 fn is_playback_fps_only_request(
@@ -246,6 +318,52 @@ fn write_gif_candidate(
 
     if !wrote_any {
         return Err(AppError::new("gif", "GIF 후보 프레임을 만들 수 없습니다."));
+    }
+
+    Ok(())
+}
+
+pub(crate) fn write_gif_playback_fps_candidate_streaming(
+    path: &Path,
+    source_path: &Path,
+    encoder_speed: i32,
+    playback_fps: Option<i64>,
+) -> AppResult<()> {
+    if let Some(parent) = path.parent() {
+        fs::create_dir_all(parent)?;
+    }
+
+    let mut options = DecodeOptions::new();
+    options.set_color_output(ColorOutput::RGBA);
+    let input = fs::File::open(source_path)?;
+    let mut reader = options.read_info(BufReader::new(input))?;
+    let width = reader.width();
+    let height = reader.height();
+    let repeat = reader.repeat();
+    let output = fs::File::create(path)?;
+    let mut encoder = Encoder::new(BufWriter::new(output), width, height, &[])
+        .map_err(|error| AppError::new("gif", error.to_string()))?;
+    encoder
+        .set_repeat(repeat)
+        .map_err(|error| AppError::new("gif", error.to_string()))?;
+    let delay = playback_delay_cs(playback_fps).unwrap_or(1);
+    let mut wrote_any = false;
+
+    while let Some(frame) = reader.read_next_frame()? {
+        let mut rgba = frame.buffer.to_vec();
+        let mut output_frame = Frame::from_rgba_speed(width, height, &mut rgba, encoder_speed);
+        output_frame.delay = delay;
+        encoder
+            .write_frame(&output_frame)
+            .map_err(|error| AppError::new("gif", error.to_string()))?;
+        wrote_any = true;
+    }
+
+    if !wrote_any {
+        return Err(AppError::new(
+            "gif",
+            "GIF ?꾨낫 ?꾨젅?꾩쓣 留뚮뱾 ???놁뒿?덈떎.",
+        ));
     }
 
     Ok(())

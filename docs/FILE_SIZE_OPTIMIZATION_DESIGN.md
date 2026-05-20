@@ -3,6 +3,8 @@
 Stage: `15_REAL_QA_STABILIZATION`
 Date: 2026-05-10
 
+Status update 2026-05-12: the original design gate is reconciled as complete. Subsequent implementation stages added measured local GIF/static optimization candidates, candidate comparison UI, active variant usage during export, advanced GIF/JPG controls, and playback-FPS separation without adding forbidden external optimizer dependencies.
+
 ## Decision
 
 GIF/file-size optimization should be designed before adding a user-facing optimizer button. The current stabilization patch adds the export grid and per-piece problem reporting first, so oversized GIFs can be identified by exact export index and piece. Actual optimization remains a follow-up implementation task.
@@ -41,3 +43,13 @@ GIF/file-size optimization should be designed before adding a user-facing optimi
 - Export now continues after non-blocking post-render size issues when files can be produced.
 - The export grid marks problematic pieces and exposes their export index, filename, alt value, status, and edit button.
 - `export-manifest.json` includes validation errors and warnings for diagnostics.
+
+## Implemented Follow-Up Coverage
+
+- F084 implements local GIF optimization candidates using the existing permissive pipeline.
+- F085 implements static PNG/JPG resize/size candidates.
+- F086 makes active optimized variants available to export.
+- F087 exposes candidate comparison and apply/clear UI.
+- F088 adds advanced editor optimization entry and GIF ping-pong support.
+- F100 exposes advanced GIF/JPG output controls.
+- QA-038 and QA-042 record native Tauri validation of color-limit optimization and separate GIF playback-FPS application.

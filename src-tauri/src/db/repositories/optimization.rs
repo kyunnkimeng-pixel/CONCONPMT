@@ -319,6 +319,64 @@ pub fn set_active_variant(
     get_variant(connection, candidate_id)
 }
 
+pub fn promote_variant_to_preview(
+    connection: &Connection,
+    candidate_id: &str,
+) -> AppResult<ProcessedAssetVariantRecord> {
+    let variant = get_variant(connection, candidate_id)?;
+    let piece_id = variant.piece_id.as_deref().ok_or_else(|| {
+        AppError::new(
+            "optimization",
+            "조각 정보가 없는 후보는 미리보기로 적용할 수 없습니다.",
+        )
+    })?;
+
+    if !Path::new(&variant.path).is_file() {
+        return Err(AppError::not_found(
+            "적용할 후보 파일을 찾을 수 없습니다. 후보를 다시 생성하세요.",
+        ));
+    }
+
+    let piece_count: i64 = connection.query_row(
+        "SELECT COUNT(*)
+         FROM icon_pieces
+         WHERE icon_id = ?1",
+        params![variant.icon_id.as_str()],
+        |row| row.get(0),
+    )?;
+
+    connection.execute(
+        "UPDATE icon_pieces
+         SET generated_preview_path = ?1,
+             export_status = 'ready',
+             updated_at = strftime('%Y-%m-%dT%H:%M:%fZ', 'now')
+         WHERE id = ?2
+           AND icon_id = ?3",
+        params![variant.path.as_str(), piece_id, variant.icon_id.as_str()],
+    )?;
+
+    if piece_count == 1 {
+        connection.execute(
+            "UPDATE icons
+             SET current_preview_path = ?1,
+                 updated_at = strftime('%Y-%m-%dT%H:%M:%fZ', 'now')
+             WHERE id = ?2
+               AND deleted_at IS NULL",
+            params![variant.path.as_str(), variant.icon_id.as_str()],
+        )?;
+    } else {
+        connection.execute(
+            "UPDATE icons
+             SET updated_at = strftime('%Y-%m-%dT%H:%M:%fZ', 'now')
+             WHERE id = ?1
+               AND deleted_at IS NULL",
+            params![variant.icon_id.as_str()],
+        )?;
+    }
+
+    get_variant(connection, candidate_id)
+}
+
 pub fn clear_active_variant(
     connection: &Connection,
     icon_id: &str,

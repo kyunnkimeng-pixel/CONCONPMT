@@ -37,6 +37,11 @@ pub fn list_icons(connection: &Connection, collection_id: &str) -> AppResult<Vec
            collection_id,
            source_file_id,
            display_name,
+           (
+             SELECT note
+             FROM icon_notes
+             WHERE icon_id = icons.id
+           ) AS note,
            icon_kind,
            readiness,
            placeholder_text,
@@ -121,6 +126,79 @@ pub fn rename_icon(
             "이름을 변경할 아이콘을 찾을 수 없습니다.",
         ));
     }
+
+    get_icon(connection, collection_id, icon_id)
+}
+
+pub fn get_icon_note(
+    connection: &Connection,
+    collection_id: &str,
+    icon_id: &str,
+) -> AppResult<Option<String>> {
+    ensure_icon_exists(connection, collection_id, icon_id)?;
+    let note = connection
+        .query_row(
+            "SELECT note
+             FROM icon_notes
+             WHERE icon_id = ?1",
+            params![icon_id],
+            |row| row.get::<_, String>(0),
+        )
+        .optional()?;
+    Ok(note)
+}
+
+pub fn update_icon_note(
+    connection: &Connection,
+    collection_id: &str,
+    icon_id: &str,
+    note: String,
+) -> AppResult<IconDto> {
+    ensure_icon_exists(connection, collection_id, icon_id)?;
+    let normalized = normalized_note(note);
+    if normalized.is_empty() {
+        return clear_icon_note(connection, collection_id, icon_id);
+    }
+
+    connection.execute(
+        "INSERT INTO icon_notes (icon_id, note, updated_at)
+         VALUES (?1, ?2, strftime('%Y-%m-%dT%H:%M:%fZ', 'now'))
+         ON CONFLICT(icon_id) DO UPDATE SET
+           note = excluded.note,
+           updated_at = excluded.updated_at",
+        params![icon_id, normalized],
+    )?;
+    connection.execute(
+        "UPDATE icons
+         SET updated_at = strftime('%Y-%m-%dT%H:%M:%fZ', 'now')
+         WHERE id = ?1
+           AND collection_id = ?2
+           AND deleted_at IS NULL",
+        params![icon_id, collection_id],
+    )?;
+
+    get_icon(connection, collection_id, icon_id)
+}
+
+pub fn clear_icon_note(
+    connection: &Connection,
+    collection_id: &str,
+    icon_id: &str,
+) -> AppResult<IconDto> {
+    ensure_icon_exists(connection, collection_id, icon_id)?;
+    connection.execute(
+        "DELETE FROM icon_notes
+         WHERE icon_id = ?1",
+        params![icon_id],
+    )?;
+    connection.execute(
+        "UPDATE icons
+         SET updated_at = strftime('%Y-%m-%dT%H:%M:%fZ', 'now')
+         WHERE id = ?1
+           AND collection_id = ?2
+           AND deleted_at IS NULL",
+        params![icon_id, collection_id],
+    )?;
 
     get_icon(connection, collection_id, icon_id)
 }
@@ -449,6 +527,7 @@ pub fn duplicate_icon(
 
     duplicate_icon_pieces(&transaction, collection_id, icon_id, &duplicate_icon_id)?;
     duplicate_crop_settings(&transaction, icon_id, &duplicate_icon_id)?;
+    duplicate_icon_note(&transaction, icon_id, &duplicate_icon_id)?;
     transaction.commit()?;
 
     get_icon(connection, collection_id, &duplicate_icon_id)
@@ -584,6 +663,7 @@ fn icon_from_row(connection: &Connection, row: &Row<'_>) -> rusqlite::Result<Ico
         collection_id: row.get("collection_id")?,
         source_file_id: row.get("source_file_id")?,
         display_name: row.get("display_name")?,
+        note: row.get("note")?,
         icon_kind: row.get("icon_kind")?,
         readiness: row.get("readiness")?,
         placeholder_text: row.get("placeholder_text")?,
@@ -651,6 +731,11 @@ pub(crate) fn get_icon(
                collection_id,
                source_file_id,
                display_name,
+               (
+                 SELECT note
+                 FROM icon_notes
+                 WHERE icon_id = icons.id
+               ) AS note,
                order_index,
                icon_kind,
                readiness,
@@ -1078,6 +1163,32 @@ fn duplicate_crop_settings(
     Ok(())
 }
 
+fn duplicate_icon_note(
+    transaction: &Transaction<'_>,
+    source_icon_id: &str,
+    target_icon_id: &str,
+) -> AppResult<()> {
+    let note = transaction
+        .query_row(
+            "SELECT note
+             FROM icon_notes
+             WHERE icon_id = ?1",
+            params![source_icon_id],
+            |row| row.get::<_, String>(0),
+        )
+        .optional()?;
+
+    if let Some(note) = note {
+        transaction.execute(
+            "INSERT INTO icon_notes (icon_id, note, updated_at)
+             VALUES (?1, ?2, strftime('%Y-%m-%dT%H:%M:%fZ', 'now'))",
+            params![target_icon_id, note],
+        )?;
+    }
+
+    Ok(())
+}
+
 fn repair_cover_after_delete(
     transaction: &Transaction<'_>,
     collection_id: &str,
@@ -1368,6 +1479,10 @@ fn normalized_alt_text(alt_text: String) -> String {
     alt_text.trim().to_string()
 }
 
+fn normalized_note(note: String) -> String {
+    note.trim().to_string()
+}
+
 fn normalized_display_name(display_name: String) -> String {
     let trimmed = display_name.trim();
     if trimmed.is_empty() {
@@ -1423,7 +1538,7 @@ mod tests {
     use super::{
         create_placeholder_icon, delete_icons, duplicate_icon, list_icons, rename_icon,
         reorder_icons, replace_icon_source, set_icon_thumbnail_override, set_icons_readiness,
-        update_icon_piece_alt,
+        update_icon_note, update_icon_piece_alt,
     };
 
     fn connection() -> Connection {
@@ -1736,6 +1851,57 @@ mod tests {
         assert_eq!(duplicated.order_index, 1);
         assert_eq!(duplicated.pieces[0].alt_text, "가");
         assert_eq!(list_icons(&connection, &collection.id).unwrap().len(), 2);
+    }
+
+    #[test]
+    fn icon_note_persists_and_whitespace_clears() {
+        let mut connection = connection();
+        let collection = create_collection(&mut connection, Some("memo test".to_string())).unwrap();
+        let (icon_id, _) = seed_icon(&connection, &collection.id, 0, "ga");
+
+        let updated = update_icon_note(
+            &connection,
+            &collection.id,
+            &icon_id,
+            "  작업 메모\n두 번째 줄  ".to_string(),
+        )
+        .unwrap();
+        assert_eq!(updated.note.as_deref(), Some("작업 메모\n두 번째 줄"));
+        assert_eq!(
+            list_icons(&connection, &collection.id).unwrap()[0]
+                .note
+                .as_deref(),
+            Some("작업 메모\n두 번째 줄")
+        );
+
+        let cleared =
+            update_icon_note(&connection, &collection.id, &icon_id, "   ".to_string()).unwrap();
+        assert_eq!(cleared.note, None);
+    }
+
+    #[test]
+    fn duplicate_icon_copies_note_without_mutating_source() {
+        let mut connection = connection();
+        let collection =
+            create_collection(&mut connection, Some("memo duplicate test".to_string())).unwrap();
+        let (icon_id, _) = seed_icon(&connection, &collection.id, 0, "ga");
+        update_icon_note(
+            &connection,
+            &collection.id,
+            &icon_id,
+            "원본 메모".to_string(),
+        )
+        .unwrap();
+
+        let duplicated = duplicate_icon(&mut connection, &collection.id, &icon_id).unwrap();
+
+        assert_eq!(duplicated.note.as_deref(), Some("원본 메모"));
+        let original = list_icons(&connection, &collection.id)
+            .unwrap()
+            .into_iter()
+            .find(|icon| icon.id == icon_id)
+            .unwrap();
+        assert_eq!(original.note.as_deref(), Some("원본 메모"));
     }
 
     #[test]

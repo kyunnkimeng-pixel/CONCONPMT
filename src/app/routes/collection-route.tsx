@@ -32,10 +32,12 @@ import type {
 } from "@/features/collections/types";
 import { EditorPanel } from "@/features/editor/components/EditorPanel";
 import { ExportDialog } from "@/features/export/components/ExportDialog";
+import { GifFrameSheetDialog } from "@/features/sheets/components/GifFrameSheetDialog";
 import { SheetExportDialog } from "@/features/sheets/components/SheetExportDialog";
 import { SheetImportWizard } from "@/features/sheets/components/SheetImportWizard";
 import {
   createPlaceholderIcon,
+  clearIconNote,
   deleteIcons,
   duplicateIcon,
   importImagesIntoCollection,
@@ -47,6 +49,7 @@ import {
   revealIconOriginal,
   setIconThumbnailOverride,
   setIconsReadiness,
+  updateIconNote,
   updateIconPieceAlt,
 } from "@/features/icons/api";
 import { IconGrid } from "@/features/icons/components/IconGrid";
@@ -107,6 +110,11 @@ export function CollectionRoute() {
   const [isExportDialogOpen, setIsExportDialogOpen] = useState(false);
   const [isSheetImportOpen, setIsSheetImportOpen] = useState(false);
   const [isSheetExportOpen, setIsSheetExportOpen] = useState(false);
+  const [sheetExportSelectedIconIds, setSheetExportSelectedIconIds] = useState<string[]>([]);
+  const [gifFrameSheetRequest, setGifFrameSheetRequest] = useState<{
+    icon: IconSummary;
+    mode: "export" | "reimport";
+  } | null>(null);
   const [isSettingsOpen, setIsSettingsOpen] = useState(false);
   const [viewMode, setViewMode] = useState<"explorer" | "usagePreview">("explorer");
   const [isThumbnailOnly, setIsThumbnailOnly] = useState(false);
@@ -357,6 +365,46 @@ export function CollectionRoute() {
     [collectionId],
   );
 
+  const handleUpdateIconNote = useCallback(
+    async (iconId: string, note: string) => {
+      setErrorMessage(null);
+      setImportStatus(null);
+
+      try {
+        const updatedIcon = await updateIconNote(collectionId, iconId, note);
+        setIcons((currentIcons) =>
+          currentIcons.map((icon) => (icon.id === updatedIcon.id ? updatedIcon : icon)),
+        );
+        setImportStatus(updatedIcon.note ? "메모를 저장했습니다." : "메모를 삭제했습니다.");
+        return true;
+      } catch (error) {
+        setErrorMessage(getCommandErrorMessage(error));
+        return false;
+      }
+    },
+    [collectionId],
+  );
+
+  const handleClearIconNote = useCallback(
+    async (iconId: string) => {
+      setErrorMessage(null);
+      setImportStatus(null);
+
+      try {
+        const updatedIcon = await clearIconNote(collectionId, iconId);
+        setIcons((currentIcons) =>
+          currentIcons.map((icon) => (icon.id === updatedIcon.id ? updatedIcon : icon)),
+        );
+        setImportStatus("메모를 삭제했습니다.");
+        return true;
+      } catch (error) {
+        setErrorMessage(getCommandErrorMessage(error));
+        return false;
+      }
+    },
+    [collectionId],
+  );
+
   const handleEditIcon = useCallback(
     (iconId: string) => {
       setEditingIconId(iconId);
@@ -515,6 +563,17 @@ export function CollectionRoute() {
       }
     },
     [collectionId],
+  );
+
+  const handleGifFrameSheet = useCallback(
+    (iconId: string, mode: "export" | "reimport") => {
+      const icon = icons.find((candidate) => candidate.id === iconId);
+      if (!icon) {
+        return;
+      }
+      setGifFrameSheetRequest({ icon, mode });
+    },
+    [icons],
   );
 
   const handleSortIcons = useCallback(async () => {
@@ -703,7 +762,10 @@ export function CollectionRoute() {
               disabled={icons.length === 0}
               title={icons.length === 0 ? "작업 시트로 내보낼 아이콘이 없습니다." : undefined}
               type="button"
-              onClick={() => setIsSheetExportOpen(true)}
+              onClick={() => {
+                setSheetExportSelectedIconIds([]);
+                setIsSheetExportOpen(true);
+              }}
             >
               <Grid3X3 aria-hidden="true" />
               작업 시트
@@ -874,8 +936,16 @@ export function CollectionRoute() {
                   onDeleteIcons={handleDeleteIcons}
                   onDuplicateIcon={handleDuplicateIcon}
                   onEditIcon={handleEditIcon}
+                  onExportSelectedSheet={(iconIds) => {
+                    setSheetExportSelectedIconIds(iconIds);
+                    setIsSheetExportOpen(true);
+                  }}
+                  onExportGifFrameSheet={(iconId) => handleGifFrameSheet(iconId, "export")}
+                  onUpdateIconNote={handleUpdateIconNote}
+                  onClearIconNote={handleClearIconNote}
                   onRenameIcon={handleRenameIcon}
                   onReorderIcons={handleReorderIcons}
+                  onReimportGifFrameSheet={(iconId) => handleGifFrameSheet(iconId, "reimport")}
                   onRevealExportResult={handleRevealExportResult}
                   onRevealOriginal={handleRevealOriginal}
                   onReplaceImage={handleReplaceImage}
@@ -946,7 +1016,19 @@ export function CollectionRoute() {
         <SheetExportDialog
           collection={collection}
           icons={icons}
+          selectedIconIds={sheetExportSelectedIconIds}
           onClose={() => setIsSheetExportOpen(false)}
+        />
+      ) : null}
+      {gifFrameSheetRequest ? (
+        <GifFrameSheetDialog
+          collection={collection}
+          icon={gifFrameSheetRequest.icon}
+          mode={gifFrameSheetRequest.mode}
+          onClose={() => setGifFrameSheetRequest(null)}
+          onVariantCreated={async () => {
+            await refreshCollectionAndIcons();
+          }}
         />
       ) : null}
       {operationProgress ? <OperationProgressOverlay progress={operationProgress} /> : null}

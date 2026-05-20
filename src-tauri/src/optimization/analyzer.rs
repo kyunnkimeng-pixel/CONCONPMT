@@ -346,7 +346,7 @@ pub struct FileAnalysis {
 
 pub fn analyze_file(path: &Path, format: &str) -> AppResult<FileAnalysis> {
     if format == "gif" {
-        analyze_gif_file(path)
+        analyze_gif_file_streaming(path)
     } else {
         analyze_static_file(path)
     }
@@ -367,6 +367,52 @@ fn analyze_static_file(path: &Path) -> AppResult<FileAnalysis> {
     })
 }
 
+fn analyze_gif_file_streaming(path: &Path) -> AppResult<FileAnalysis> {
+    let mut options = gif::DecodeOptions::new();
+    options.set_color_output(gif::ColorOutput::RGBA);
+    let file = fs::File::open(path)?;
+    let mut reader = options.read_info(BufReader::new(file))?;
+    let width = i64::from(reader.width());
+    let height = i64::from(reader.height());
+    let loop_mode = match reader.repeat() {
+        gif::Repeat::Infinite | gif::Repeat::Finite(0) => "infinite".to_string(),
+        gif::Repeat::Finite(1) => "once".to_string(),
+        gif::Repeat::Finite(count) => format!("count:{count}"),
+    };
+    let mut frame_count = 0_i64;
+    let mut duration_ms = 0_i64;
+    let mut has_transparency = false;
+
+    while let Some(frame) = reader.read_next_frame()? {
+        frame_count += 1;
+        duration_ms += i64::from(frame.delay.max(1)) * 10;
+        if frame.buffer.chunks_exact(4).any(|pixel| pixel[3] < 255) {
+            has_transparency = true;
+        }
+    }
+
+    if frame_count == 0 {
+        return Err(AppError::new("gif", "GIF ?꾨젅?꾩쓣 李얠쓣 ???놁뒿?덈떎."));
+    }
+
+    let average_fps = if duration_ms > 0 {
+        Some(frame_count as f64 / (duration_ms as f64 / 1000.0))
+    } else {
+        None
+    };
+
+    Ok(FileAnalysis {
+        width,
+        height,
+        frame_count: Some(frame_count),
+        duration_ms: Some(duration_ms),
+        average_fps,
+        loop_mode: Some(loop_mode),
+        has_transparency: Some(has_transparency),
+    })
+}
+
+#[allow(dead_code)]
 fn analyze_gif_file(path: &Path) -> AppResult<FileAnalysis> {
     let file = fs::File::open(path)?;
     let decoder = image::codecs::gif::GifDecoder::new(BufReader::new(file))?;
@@ -409,6 +455,7 @@ fn analyze_gif_file(path: &Path) -> AppResult<FileAnalysis> {
     })
 }
 
+#[allow(dead_code)]
 fn loop_mode_for_gif(path: &Path) -> AppResult<String> {
     let mut options = gif::DecodeOptions::new();
     options.set_color_output(gif::ColorOutput::RGBA);

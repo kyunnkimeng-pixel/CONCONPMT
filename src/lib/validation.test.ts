@@ -44,6 +44,7 @@ function icon(iconId: string, pieceId: string, altText: string): IconSummary {
     collectionId: "collection",
     sourceFileId: `source-${iconId}`,
     displayName: iconId,
+    note: null,
     iconKind: "image",
     readiness: "complete",
     placeholderText: null,

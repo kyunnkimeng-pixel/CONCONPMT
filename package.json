@@ -1,7 +1,7 @@
 {
   "name": "pmtconcon-studio",
   "private": true,
-  "version": "0.1.0",
+  "version": "0.1.1",
   "description": "PMTCONCON Studio desktop app scaffold",
   "license": "MIT",
   "type": "module",
@@ -16,6 +16,7 @@
     "license:forbidden": "powershell -NoProfile -ExecutionPolicy Bypass -File scripts/check-forbidden-dependencies.ps1",
     "license:check": "powershell -NoProfile -ExecutionPolicy Bypass -File scripts/check-licenses.ps1",
     "license:generate": "powershell -NoProfile -ExecutionPolicy Bypass -File scripts/generate-third-party-licenses.ps1",
+    "release:checksums": "powershell -NoProfile -ExecutionPolicy Bypass -File scripts/write-release-checksums.ps1",
     "preview": "vite preview",
     "tauri": "tauri",
     "tauri:dev": "tauri dev",

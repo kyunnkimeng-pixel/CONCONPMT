@@ -1,4 +1,5 @@
 import { Images } from "lucide-react";
+import type { MouseEvent } from "react";
 
 import { InlineNameEditor } from "@/components/explorer/InlineNameEditor";
 import type { CollectionSummary } from "@/features/collections/types";
@@ -7,6 +8,7 @@ interface CollectionCardProps {
   collection: CollectionSummary;
   isSelected: boolean;
   onOpen: () => void;
+  onContextMenu: (event: MouseEvent) => void;
   onRename: (name: string) => void;
   onSelect: () => void;
 }
@@ -15,6 +17,7 @@ export function CollectionCard({
   collection,
   isSelected,
   onOpen,
+  onContextMenu,
   onRename,
   onSelect,
 }: CollectionCardProps) {
@@ -25,6 +28,7 @@ export function CollectionCard({
       role="option"
       tabIndex={0}
       onClick={onSelect}
+      onContextMenu={onContextMenu}
       onDoubleClick={onOpen}
       onKeyDown={(event) => {
         if (event.key === "Enter") {

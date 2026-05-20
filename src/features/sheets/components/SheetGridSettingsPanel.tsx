@@ -23,7 +23,10 @@ export function SheetGridSettingsPanel({
   };
 
   return (
-    <aside className="flex min-w-72 flex-col gap-3 border-l border-border bg-surface p-4">
+    <aside
+      className="flex max-h-80 w-full shrink-0 flex-col gap-3 overflow-y-auto border-t border-border bg-surface p-4 lg:max-h-none lg:w-80 lg:min-w-72 lg:border-l lg:border-t-0"
+      data-testid="sheet-grid-settings-panel"
+    >
       <div>
         <h3 className="text-sm font-semibold">분할 설정</h3>
         <p className="mt-1 text-xs text-muted">정확한 수치를 입력하고 미리보기로 확인합니다.</p>

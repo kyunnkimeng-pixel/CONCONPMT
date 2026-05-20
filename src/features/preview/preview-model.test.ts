@@ -110,6 +110,7 @@ function icon(overrides: Partial<IconSummary> = {}): IconSummary {
     collectionId: collection.id,
     sourceFileId: "source-1",
     displayName: "아이콘",
+    note: null,
     iconKind: "image",
     readiness: "complete",
     placeholderText: null,

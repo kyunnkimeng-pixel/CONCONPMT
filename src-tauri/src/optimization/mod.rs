@@ -10,11 +10,11 @@ pub mod variants;
 use rusqlite::Connection;
 
 use crate::db::repositories::optimization as optimization_repository;
-use crate::error::AppResult;
+use crate::error::{AppError, AppResult};
 use crate::models::{
     ActiveVariantDto, ApplyOptimizationResultDto, ClearOptimizationResultDto,
-    ExportAssetAnalysisDto, OptimizationAdvancedSettingsPayload, OptimizationCandidateDto,
-    OptimizationResultDto,
+    ExportAssetAnalysisDto, GifPlaybackPreviewResultDto, OptimizationAdvancedSettingsPayload,
+    OptimizationCandidateDto, OptimizationResultDto,
 };
 use crate::paths::AppPaths;
 
@@ -155,12 +155,114 @@ pub fn apply_optimization_candidate(
     })
 }
 
+pub fn apply_optimization_candidate_to_preview(
+    connection: &Connection,
+    candidate_id: &str,
+) -> AppResult<ApplyOptimizationResultDto> {
+    let variant = optimization_repository::set_active_variant(connection, candidate_id)?;
+    let variant = optimization_repository::promote_variant_to_preview(connection, &variant.id)?;
+    let target_max_bytes = variant
+        .profile_id
+        .as_deref()
+        .and_then(|profile_id| profile_max_bytes(connection, profile_id).ok())
+        .unwrap_or(variant.byte_size);
+    let candidate =
+        optimization_repository::to_candidate_dto(&variant, target_max_bytes, None, None);
+    Ok(ApplyOptimizationResultDto {
+        message: "GIF 재생 FPS를 실제 미리보기와 내보내기 결과에 적용했습니다.".to_string(),
+        candidate,
+    })
+}
+
+pub fn preview_gif_playback_fps(
+    connection: &Connection,
+    paths: &AppPaths,
+    icon_id: &str,
+    playback_fps: i64,
+) -> AppResult<GifPlaybackPreviewResultDto> {
+    let (source_path, is_animated): (String, i64) = connection
+        .query_row(
+            "SELECT s.original_path_in_library, s.is_animated
+             FROM source_files s
+             JOIN icons i ON i.source_file_id = s.id
+             WHERE i.id = ?1
+               AND i.deleted_at IS NULL",
+            [icon_id],
+            |row| Ok((row.get(0)?, row.get(1)?)),
+        )
+        .map_err(AppError::from)?;
+
+    if is_animated == 0 || !source_path.to_ascii_lowercase().ends_with(".gif") {
+        return Err(AppError::new(
+            "validation",
+            "GIF 아이콘에서만 재생 FPS 미리보기를 만들 수 있습니다.",
+        ));
+    }
+
+    let playback_fps = playback_fps.clamp(1, 60);
+    let preview_dir = paths
+        .temp_export_dir
+        .join("gif-playback-preview")
+        .join(icon_id);
+    std::fs::create_dir_all(&preview_dir)?;
+    let final_path = preview_dir.join(format!("fps_{playback_fps}.gif"));
+    let temp_path = final_path.with_extension("tmp");
+    gif_optimizer::write_gif_playback_fps_candidate_streaming(
+        &temp_path,
+        std::path::Path::new(&source_path),
+        10,
+        Some(playback_fps),
+    )?;
+    analyzer::move_temp_file(&temp_path, &final_path)?;
+
+    Ok(GifPlaybackPreviewResultDto {
+        preview_path: final_path.to_string_lossy().to_string(),
+        playback_fps,
+        generated_at: chrono_like_timestamp(),
+    })
+}
+
+pub fn apply_gif_original_playback_to_preview(
+    connection: &Connection,
+    paths: &AppPaths,
+    icon_id: &str,
+    profile_id: &str,
+    piece_id: Option<&str>,
+) -> AppResult<ApplyOptimizationResultDto> {
+    let baseline = analyzer::render_baseline(connection, paths, icon_id, profile_id, piece_id)?;
+    let candidate_id = baseline.analysis.baseline_variant_id.clone();
+    let variant = optimization_repository::set_active_variant(connection, &candidate_id)?;
+    let variant = optimization_repository::promote_variant_to_preview(connection, &variant.id)?;
+    let candidate = optimization_repository::to_candidate_dto(
+        &variant,
+        baseline.target.profile.max_bytes,
+        baseline.frame_count,
+        baseline.duration_ms,
+    );
+
+    Ok(ApplyOptimizationResultDto {
+        message: "원본 GIF 프레임 지연 시간을 실제 미리보기와 내보내기 결과에 적용했습니다."
+            .to_string(),
+        candidate,
+    })
+}
+
 fn profile_max_bytes(connection: &Connection, profile_id: &str) -> AppResult<i64> {
     Ok(connection.query_row(
         "SELECT max_bytes FROM export_profiles WHERE id = ?1",
         [profile_id],
         |row| row.get(0),
     )?)
+}
+
+fn chrono_like_timestamp() -> String {
+    use std::time::{SystemTime, UNIX_EPOCH};
+
+    let millis = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map(|duration| duration.as_millis())
+        .unwrap_or_default();
+    millis.to_string()
 }
 
 pub fn clear_optimization_candidate(
@@ -252,8 +354,10 @@ mod tests {
     use rusqlite::Connection;
 
     use super::{
-        apply_optimization_candidate, generate_gif_optimization_candidates,
+        apply_gif_original_playback_to_preview, apply_optimization_candidate,
+        apply_optimization_candidate_to_preview, generate_gif_optimization_candidates,
         generate_static_optimization_candidates, get_active_export_variant,
+        preview_gif_playback_fps,
     };
     use crate::db::migrations;
     use crate::db::repositories::collections::create_collection;
@@ -402,6 +506,10 @@ mod tests {
         let payload = payload(&profile_id, "gif", 10_000_000);
         update_export_profile_settings(&connection, &collection.id, &payload).unwrap();
 
+        let preview = preview_gif_playback_fps(&connection, &paths, &icon_id, 12).unwrap();
+        assert_eq!(preview.playback_fps, 12);
+        assert!(Path::new(&preview.preview_path).is_file());
+
         let result = generate_gif_optimization_candidates(
             &connection,
             &paths,
@@ -430,6 +538,96 @@ mod tests {
             .unwrap();
         assert_eq!(quality.frame_count, Some(8));
         assert!(quality.duration_ms.unwrap_or_default() >= 780);
+
+        let applied = apply_optimization_candidate_to_preview(&connection, &quality.id).unwrap();
+        assert_eq!(applied.candidate.id, quality.id);
+        let (current_preview_path, generated_preview_path): (Option<String>, Option<String>) =
+            connection
+                .query_row(
+                    "SELECT i.current_preview_path, p.generated_preview_path
+                     FROM icons i
+                     JOIN icon_pieces p ON p.icon_id = i.id
+                     WHERE i.id = ?1
+                       AND p.id = ?2",
+                    [&icon_id, &piece_id],
+                    |row| Ok((row.get(0)?, row.get(1)?)),
+                )
+                .unwrap();
+        assert_eq!(current_preview_path.as_deref(), Some(quality.path.as_str()));
+        assert_eq!(
+            generated_preview_path.as_deref(),
+            Some(quality.path.as_str())
+        );
+
+        let restored = apply_gif_original_playback_to_preview(
+            &connection,
+            &paths,
+            &icon_id,
+            &profile_id,
+            Some(&piece_id),
+        )
+        .unwrap();
+        assert_ne!(restored.candidate.path, quality.path);
+        let restored_preview_path: Option<String> = connection
+            .query_row(
+                "SELECT current_preview_path FROM icons WHERE id = ?1",
+                [&icon_id],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert_eq!(
+            restored_preview_path.as_deref(),
+            Some(restored.candidate.path.as_str())
+        );
+
+        std::fs::remove_dir_all(paths.root).unwrap();
+    }
+
+    #[test]
+    fn gif_playback_fps_handles_many_frames_without_frame_reduction() {
+        let mut connection = connection();
+        let paths = temp_paths("pmtconcon-gif-playback-fps-many");
+        let collection =
+            create_collection(&mut connection, Some("gif playback fps many".to_string())).unwrap();
+        let imported = import_image_files(
+            &mut connection,
+            &paths,
+            &collection.id,
+            vec![ImportImageFilePayload {
+                original_filename: "many.gif".to_string(),
+                bytes: animated_gif_bytes_with_frames(80),
+            }],
+        )
+        .unwrap();
+        let icon_id = imported.imported_icons[0].id.clone();
+        let piece_id = imported.imported_icons[0].pieces[0].id.clone();
+        let profile_id = custom_profile_id(&connection, &collection.id);
+        let payload = payload(&profile_id, "gif", 10_000_000);
+        update_export_profile_settings(&connection, &collection.id, &payload).unwrap();
+
+        let result = generate_gif_optimization_candidates(
+            &connection,
+            &paths,
+            &icon_id,
+            &profile_id,
+            Some(&piece_id),
+            Some("custom".to_string()),
+            Some(OptimizationAdvancedSettingsPayload {
+                target_max_bytes: None,
+                safety_margin_percent: None,
+                fps_limit: None,
+                playback_fps: Some(20),
+                frame_step: None,
+                color_limit: None,
+                jpeg_quality: None,
+            }),
+        )
+        .unwrap();
+
+        assert_eq!(result.candidates.len(), 1);
+        let candidate = &result.candidates[0];
+        assert_eq!(candidate.frame_count, Some(80));
+        assert_eq!(candidate.duration_ms, Some(4_000));
 
         std::fs::remove_dir_all(paths.root).unwrap();
     }
@@ -511,6 +709,31 @@ mod tests {
                 }
                 let mut frame = gif::Frame::from_rgba_speed(24, 24, &mut pixels, 10);
                 frame.delay = 6;
+                encoder.write_frame(&frame).unwrap();
+            }
+        }
+        bytes
+    }
+
+    fn animated_gif_bytes_with_frames(frame_count: u8) -> Vec<u8> {
+        let mut bytes = Vec::new();
+        {
+            let mut encoder = gif::Encoder::new(&mut bytes, 48, 48, &[]).unwrap();
+            encoder.set_repeat(gif::Repeat::Infinite).unwrap();
+            for frame_index in 0..frame_count {
+                let mut pixels = Vec::with_capacity(48 * 48 * 4);
+                for y in 0..48_u8 {
+                    for x in 0..48_u8 {
+                        pixels.extend_from_slice(&[
+                            x.wrapping_mul(5).wrapping_add(frame_index.wrapping_mul(3)),
+                            y.wrapping_mul(7).wrapping_add(frame_index.wrapping_mul(5)),
+                            frame_index.wrapping_mul(11),
+                            255,
+                        ]);
+                    }
+                }
+                let mut frame = gif::Frame::from_rgba_speed(48, 48, &mut pixels, 10);
+                frame.delay = 3;
                 encoder.write_frame(&frame).unwrap();
             }
         }

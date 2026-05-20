@@ -75,7 +75,7 @@ Roundtrip rules:
 
 ## `pmtcon-gif-frame-sheet-v1`
 
-GIF frame sheet manifest for future frame export/reimport.
+GIF frame sheet manifest for editable frame export/reimport.
 
 ```json
 {
@@ -83,8 +83,13 @@ GIF frame sheet manifest for future frame export/reimport.
   "app": "PMTCONCON Studio",
   "created_at": "2026-05-12T00:00:00Z",
   "icon_id": "icon_uuid",
+  "source_file_id": "source_uuid",
   "source_hash": "sha256",
+  "display_name": "icon name",
   "loop_mode": "infinite",
+  "loop_count": null,
+  "frame_count": 4,
+  "duration_ms": 320,
   "frame_cell_width": 200,
   "frame_cell_height": 200,
   "columns": 8,
@@ -92,10 +97,11 @@ GIF frame sheet manifest for future frame export/reimport.
   "gap_y": 8,
   "border_x": 16,
   "border_y": 16,
+  "background": "transparent",
   "pages": [
     {
       "page_index": 0,
-      "sheet_file": "frames_sheet_001.png",
+      "clean_sheet_file": "frames_sheet_001.png",
       "guide_sheet_file": "frames_guide_001.png",
       "width": 1680,
       "height": 1680
@@ -123,14 +129,20 @@ GIF frame sheet manifest for future frame export/reimport.
 Validation rules:
 
 - `schema` must be `pmtcon-gif-frame-sheet-v1`.
+- `app` must be `PMTCONCON Studio`.
 - `frame_cell_width` and `frame_cell_height` must be positive.
+- `columns` must be positive.
+- At least one page is required.
 - At least one frame is required.
+- `frame_count` must match the number of `frames`.
 - Reimport must detect missing pages, frame count mismatch, changed dimensions, and out-of-bounds cells before reassembly.
 
-GIF reassembly requirements for the future implementation:
+GIF reassembly rules:
 
 - Preserve `frame_index` order.
 - Preserve `duration_ms`.
 - Preserve `loop_mode`.
 - Preserve disposal where the encoder supports it.
 - Create a new GIF processed variant and never overwrite the original GIF.
+- Edited frame sheet PNG alpha is preserved where GIF encoding allows.
+- Guide sheets are not used for reimport unless a user explicitly selects them as page PNGs and accepts the mismatch risk.

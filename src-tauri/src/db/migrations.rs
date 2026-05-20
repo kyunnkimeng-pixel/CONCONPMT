@@ -27,6 +27,10 @@ const MIGRATIONS: &[(&str, &str)] = &[
         "006_icon_text_overlay",
         include_str!("../../migrations/006_icon_text_overlay.sql"),
     ),
+    (
+        "007_context_menu_sheet_workflows",
+        include_str!("../../migrations/007_context_menu_sheet_workflows.sql"),
+    ),
 ];
 
 pub fn run(connection: &mut Connection) -> AppResult<()> {
@@ -85,6 +89,8 @@ mod tests {
             "export_profiles",
             "processed_asset_variants",
             "optimization_jobs",
+            "icon_notes",
+            "sheet_grid_presets",
             "app_settings",
         ] {
             let exists: i64 = connection

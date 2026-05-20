@@ -1,11 +1,16 @@
+pub mod auto_detect;
 pub mod exporter;
 pub mod gif_frames;
 pub mod grid;
 pub mod importer;
 pub mod manifest;
+pub mod presets;
 pub mod preview;
 pub mod reimport;
 pub mod slices;
+
+#[cfg(test)]
+mod real_qa;
 
 use std::fs;
 use std::path::{Path, PathBuf};

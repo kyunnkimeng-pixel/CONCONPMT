@@ -26,6 +26,7 @@ pub struct IconDto {
     pub collection_id: String,
     pub source_file_id: String,
     pub display_name: String,
+    pub note: Option<String>,
     pub icon_kind: String,
     pub readiness: String,
     pub placeholder_text: Option<String>,
@@ -389,6 +390,14 @@ pub struct OptimizationResultDto {
 pub struct ApplyOptimizationResultDto {
     pub candidate: OptimizationCandidateDto,
     pub message: String,
+}
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct GifPlaybackPreviewResultDto {
+    pub preview_path: String,
+    pub playback_fps: i64,
+    pub generated_at: String,
 }
 
 #[derive(Debug, Clone, Serialize)]

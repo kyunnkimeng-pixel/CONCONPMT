@@ -19,7 +19,7 @@ use crate::ids::create_id;
 use crate::models::{IconDto, ImportImageFilePayload};
 use crate::paths::AppPaths;
 
-use super::grid::{analyze_rgba_grid, SheetCell, SheetGridSettings};
+use super::grid::{alpha_warning_for_extension, analyze_rgba_grid, SheetCell, SheetGridSettings};
 use super::{image_format_for_extension, path_string, read_sheet_image_input};
 
 #[derive(Debug, Clone, Deserialize)]
@@ -116,6 +116,9 @@ pub fn import_sheet_cells(
     let mut skipped_cells = Vec::new();
     let mut cell_imports = Vec::new();
     let mut warnings = analysis.warnings;
+    if let Some(warning) = alpha_warning_for_extension(&source.extension) {
+        warnings.push(warning.to_string());
+    }
 
     if !request.preserve_alpha {
         warnings.push(

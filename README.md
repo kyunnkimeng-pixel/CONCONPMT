@@ -1,10 +1,12 @@
 # PMTCONCON Studio
 
-PMTCONCON Studio는 DCInside 스타일 디시콘과 커스텀 이모티콘 모음을 제작하기 위한 Windows 데스크톱 앱입니다. 이미지와 GIF를 가져오고, 모음 단위로 정리하고, 아이콘을 편집한 뒤, 업로드 가능한 파일과 `alts.txt`를 내보내는 작업 흐름을 제공합니다.
+PMTCONCON Studio는 DCInside 스타일 디시콘과 커스텀 이모티콘 모음을 제작하기 위한 Windows 데스크톱 앱입니다. 이미지와 GIF를 가져오고, 모음 단위로 정리하고, 아이콘과 작업 시트를 편집한 뒤, 업로드 가능한 파일과 `alts.txt`를 내보내는 작업 흐름을 제공합니다.
 
 최신 Windows 설치파일은 [GitHub Releases](https://github.com/kyunnkimeng-pixel/CONCONPMT/releases)에서 받을 수 있습니다.
 
 상세 사용 설명서는 [PMTCONCON Studio 사용 설명서](https://kyunnkimeng-pixel.github.io/CONCONPMT/)에서 볼 수 있습니다.
+릴리스 전 확인 범위는 [Release Readiness](docs/RELEASE_READINESS.md)에 정리되어 있습니다.
+이번 버전의 주요 변경 사항은 [Release Notes 0.1.1](docs/RELEASE_NOTES_0.1.1.md)에서 볼 수 있습니다.
 
 ## 화면
 
@@ -38,6 +40,18 @@ PMTCONCON Studio는 DCInside 스타일 디시콘과 커스텀 이모티콘 모�
 
 ![PMTCONCON Studio export workspace](docs/manual-assets/manual-10-export-workspace-disicon-3.png)
 
+### 스프라이트 시트와 작업 시트
+
+큰 PNG/JPG 시트를 격자로 잘라 새 아이콘으로 가져오고, 선택한 아이콘이나 모음 전체를 clean sheet, guide sheet, manifest JSON으로 내보낼 수 있습니다. 수정된 작업 시트는 manifest로 다시 가져와 원본을 덮어쓰지 않고 새 아이콘이나 처리 variant로 저장합니다.
+
+![PMTCONCON Studio work sheet export dialog](docs/manual-assets/manual-14-work-sheet-export-dialog.png)
+
+### GIF 프레임 작업 시트
+
+GIF 아이콘은 우클릭 메뉴에서 모든 프레임을 PNG frame sheet로 내보내고, 수정된 frame sheet를 manifest로 다시 가져와 새 animated GIF variant를 만들 수 있습니다. 원본 GIF 파일은 보존됩니다.
+
+![PMTCONCON Studio GIF frame sheet export dialog](docs/manual-assets/manual-16-gif-frame-sheet-export.png)
+
 ## 주요 기능
 
 - Windows 파일 탐색기와 비슷한 모음/아이콘 관리 화면
@@ -51,11 +65,18 @@ PMTCONCON Studio는 DCInside 스타일 디시콘과 커스텀 이모티콘 모�
 - Ctrl/Shift 다중 선택과 드래그 앤 드롭 순서 변경
 - 텍스트 오버레이 추가, 위치/크기/색상/외곽선/폰트 조정
 - GIF FPS/색상 수 조정, JPG 품질 후보 생성
+- GIF 재생 FPS 실시간 편집 미리보기와 variant 적용
 - DCInside 규칙과 커스텀 프로필 기반 내보내기 검증
 - Nearest, Bilinear, Bicubic, Gaussian, Lanczos 리사이즈 필터 선택
 - 선택 항목만 다시 내보내기와 선택 항목 용량 압축
 - 순서 기반 파일명 또는 alt 기반 파일명 내보내기
 - 선택 가능한 `alts.txt` 생성
+- 스프라이트 시트 가져오기와 manifest 기반 작업 시트 재가져오기
+- 선택 아이콘만 작업 시트로 내보내기
+- GIF 프레임 작업 시트 내보내기/교체하기
+- 아이콘 메모와 hover 표시
+- 가져오기/내보내기/GIF frame sheet에 공유되는 grid 프리셋
+- 직접 Slice 지정과 자동 감지(실험) proposal 적용
 
 ## DCInside 내보내기
 
@@ -114,6 +135,11 @@ npm.cmd run tauri:build
 - [구현 계획](docs/IMPLEMENTATION_PLAN.md)
 - [아키텍처](docs/ARCHITECTURE.md)
 - [기술 결정 기록](docs/DECISIONS.md)
+- [Release Readiness](docs/RELEASE_READINESS.md)
+- [Release Notes 0.1.1](docs/RELEASE_NOTES_0.1.1.md)
+- [Installer Distribution QA](docs/INSTALLER_DISTRIBUTION_QA.md)
+- [라이선스 정책](docs/LICENSE_POLICY.md)
+- [서드파티 라이선스 고지 안내](docs/THIRD_PARTY_LICENSES_GUIDE.md)
 
 ## 라이선스
 

@@ -6,6 +6,7 @@ import type {
   ExportProfile,
   ExportRequestPayload,
   ExportValidationResult,
+  GifPlaybackPreviewResult,
   OptimizationAdvancedSettings,
   OptimizationResult,
 } from "@/features/export/types";
@@ -98,6 +99,31 @@ export function generateStaticOptimizationCandidates(
 export function applyOptimizationCandidate(candidateId: string) {
   return invokeCommand<ApplyOptimizationResult>("apply_optimization_candidate", {
     candidateId,
+  });
+}
+
+export function applyOptimizationCandidateToPreview(candidateId: string) {
+  return invokeCommand<ApplyOptimizationResult>("apply_optimization_candidate_to_preview", {
+    candidateId,
+  });
+}
+
+export function previewGifPlaybackFps(iconId: string, playbackFps: number) {
+  return invokeCommand<GifPlaybackPreviewResult>("preview_gif_playback_fps", {
+    iconId,
+    playbackFps,
+  });
+}
+
+export function applyGifOriginalPlaybackToPreview(
+  iconId: string,
+  profileId: string,
+  pieceId: string,
+) {
+  return invokeCommand<ApplyOptimizationResult>("apply_gif_original_playback_to_preview", {
+    iconId,
+    profileId,
+    pieceId,
   });
 }
 

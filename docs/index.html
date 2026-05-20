@@ -6,7 +6,7 @@
     <title>PMTCONCON Studio 사용 설명서</title>
     <meta
       name="description"
-      content="PMTCONCON Studio에서 디시콘 모음을 가져오고, 편집하고, 미리보고, 검증한 뒤 내보내는 과정을 스크린샷 중심으로 설명합니다."
+      content="PMTCONCON Studio에서 디시콘 모음을 가져오고, 편집하고, 시트 작업을 왕복하고, 검증한 뒤 내보내는 과정을 스크린샷 중심으로 설명합니다."
     />
     <style>
       :root {
@@ -433,8 +433,11 @@
           <a href="#overview">화면 구성</a>
           <a href="#organize">정리 작업</a>
           <a href="#edit">편집</a>
+          <a href="#sheets">작업 시트</a>
+          <a href="#context-presets">메뉴와 프리셋</a>
           <a href="#preview">미리보기</a>
           <a href="#export">내보내기</a>
+          <a href="#release">릴리스 준비</a>
         </nav>
       </div>
     </header>
@@ -447,13 +450,15 @@
             <h1>PMTCONCON Studio 사용 설명서</h1>
             <p class="lead">
               PMTCONCON Studio는 디시콘과 커스텀 이모티콘 모음을 가져와 정리하고,
-              crop과 alt를 편집한 뒤 업로드 가능한 파일로 내보내는 Windows 작업공간입니다.
+              crop, alt, GIF, 작업 시트, 메모를 편집한 뒤 업로드 가능한 파일로 내보내는 Windows 작업공간입니다.
               아래 설명은 주요 화면과 기능을 기준으로 실제 사용 방법을 안내합니다.
             </p>
             <div class="tagline" aria-label="주요 기능">
               <span class="tag">모음 관리</span>
               <span class="tag">crop 편집</span>
               <span class="tag">가로 2칸</span>
+              <span class="tag">작업 시트</span>
+              <span class="tag">GIF 프레임 시트</span>
               <span class="tag">내보내기 검증</span>
             </div>
             <div class="hero-actions">
@@ -483,6 +488,11 @@
             <a href="#advanced">6. GIF와 텍스트 고급 편집</a>
             <a href="#preview">7. 사용 미리보기</a>
             <a href="#export">8. 내보내기 작업공간</a>
+            <a href="#sheets">9. 스프라이트 시트 / 작업 시트</a>
+            <a href="#gif-sheets">10. GIF 프레임 작업 시트</a>
+            <a href="#context-presets">11. 우클릭 메뉴, 메모, 프리셋</a>
+            <a href="#auto-detect">12. 자동 감지 실험 기능</a>
+            <a href="#release">13. 릴리스 준비와 파일 보존</a>
           </div>
         </section>
 
@@ -690,7 +700,7 @@
           <div class="grid-3">
             <div class="panel">
               <strong>GIF 재생 FPS</strong>
-              <p>원본 frame 간격을 유지하거나 지정 FPS 기준으로 다시 인코딩할 수 있습니다.</p>
+              <p>원본 frame 간격을 유지하거나 지정 FPS 기준으로 다시 인코딩할 수 있습니다. 적용 전에도 실시간 편집 미리보기에서 속도를 확인할 수 있습니다.</p>
             </div>
             <div class="panel">
               <strong>최대 색상 수</strong>
@@ -793,12 +803,230 @@
             </table>
           </div>
         </section>
+
+        <section id="sheets" class="section">
+          <h2>9. 스프라이트 시트 / 작업 시트</h2>
+          <p>
+            <strong>시트 가져오기</strong>는 큰 PNG/JPG 시트를 고정 격자로 잘라 새 아이콘으로 가져오는 도구입니다.
+            <strong>작업 시트로 내보내기</strong>는 여러 아이콘을 같은 크기의 셀에 배치한 PNG와 manifest JSON으로 내보내 외부 편집 후 다시 가져오는 워크플로우입니다.
+            clean sheet에는 라벨과 격자가 없고, guide sheet는 사람 확인용 안내선과 이름을 포함합니다.
+          </p>
+
+          <figure class="shot">
+            <img
+              src="manual-assets/manual-12-sheet-import-grid-overlay.png"
+              alt="시트 가져오기 화면에서 간격과 여백이 있는 PNG 시트 위에 격자 오버레이가 정렬된 모습."
+            />
+            <figcaption>
+              행/열 또는 셀 크기 기준으로 자를 수 있고, 여백과 간격을 숫자로 조정하면 격자 오버레이가 다시 계산됩니다.
+              PNG 투명 배경은 checkerboard로 확인하며, 빈 셀 후보는 가져오기 전에 제외할 수 있습니다.
+            </figcaption>
+          </figure>
+
+          <figure class="shot">
+            <img
+              src="manual-assets/manual-13-sheet-cell-review.png"
+              alt="시트 가져오기 셀 검토 화면. 각 셀 썸네일과 포함 여부를 확인한다."
+            />
+            <figcaption>
+              가져오기 전에 셀 번호, 썸네일, 포함 여부, 빈 셀 후보 상태를 검토합니다. 선택한 셀만 새 아이콘으로 생성되고 원본 시트 파일은 보존됩니다.
+            </figcaption>
+          </figure>
+
+          <div class="grid-2">
+            <figure class="shot compact">
+              <img
+                src="manual-assets/manual-14-work-sheet-export-dialog.png"
+                alt="작업 시트로 내보내기 대화상자. clean sheet, guide sheet, manifest 옵션이 보인다."
+              />
+              <figcaption>
+                내보내기 대화상자에서는 셀 크기, 열 수, gap, border, 배경, 최대 시트 크기, guide label과 manifest 생성을 정합니다.
+              </figcaption>
+            </figure>
+            <figure class="shot compact">
+              <img
+                src="manual-assets/manual-15-work-sheet-reimport-dialog.png"
+                alt="수정된 작업 시트 다시 가져오기 대화상자. manifest와 sheet 파일 검증 요약이 보인다."
+              />
+              <figcaption>
+                수정된 시트는 manifest로 원래 아이콘 ID와 셀 좌표를 다시 매핑합니다. 재가져오기는 원본을 덮어쓰지 않고 새 아이콘이나 처리 variant를 만듭니다.
+              </figcaption>
+            </figure>
+          </div>
+
+          <div class="callout">
+            <strong>왕복 편집 규칙:</strong> clean sheet는 PNG 알파를 보존하고 라벨, 격자, trim, rotate, packing을 넣지 않습니다.
+            guide sheet는 참고용이며, 재가져오기는 manifest와 clean sheet 파일을 기준으로 진행합니다.
+          </div>
+        </section>
+
+        <section id="gif-sheets" class="section">
+          <h2>10. GIF 프레임 작업 시트</h2>
+          <p>
+            GIF 아이콘을 우클릭하면 <strong>GIF 프레임 작업시트로 내보내기</strong>와
+            <strong>GIF 프레임 작업시트로 교체하기</strong>를 사용할 수 있습니다. 내보내기는 모든 프레임을 PNG frame sheet로 펼치고,
+            manifest에 frame index, duration, loop mode, page와 cell 좌표를 저장합니다.
+          </p>
+
+          <figure class="shot">
+            <img
+              src="manual-assets/manual-16-gif-frame-sheet-export.png"
+              alt="GIF 프레임 작업시트 내보내기 대화상자. 프레임 수, 반복, 페이지 추정, cell 설정이 표시된다."
+            />
+            <figcaption>
+              기본값은 200×200 셀, 8열, 페이지당 64프레임, gap 8, border 16, 투명 배경입니다.
+              프레임이 많으면 자동으로 여러 페이지로 나뉘며, 원본 GIF 파일은 항상 보존됩니다.
+            </figcaption>
+          </figure>
+
+          <div class="table-wrap">
+            <table>
+              <thead>
+                <tr>
+                  <th>작업</th>
+                  <th>결과</th>
+                  <th>주의</th>
+                </tr>
+              </thead>
+              <tbody>
+                <tr>
+                  <td>정적 작업 시트에 GIF 포함</td>
+                  <td>첫 프레임만 contact sheet에 포함</td>
+                  <td>애니메이션 재구성에는 사용하지 않습니다.</td>
+                </tr>
+                <tr>
+                  <td>GIF 프레임 시트 내보내기</td>
+                  <td>모든 프레임 PNG sheet, guide sheet, GIF manifest 생성</td>
+                  <td>duration과 loop mode가 manifest에 저장됩니다.</td>
+                </tr>
+                <tr>
+                  <td>GIF 프레임 시트 교체하기</td>
+                  <td>수정된 frame sheet로 새 GIF variant 생성</td>
+                  <td>UI는 교체라고 표시하지만 원본 GIF는 덮어쓰지 않습니다.</td>
+                </tr>
+              </tbody>
+            </table>
+          </div>
+        </section>
+
+        <section id="context-presets" class="section">
+          <h2>11. 우클릭 메뉴, 메모, 프리셋</h2>
+          <p>
+            아이콘과 모음의 우클릭 메뉴는 실제로 실행 가능한 작업만 보여줍니다.
+            여러 썸네일을 선택한 뒤 우클릭하면 선택 항목만 작업 시트로 내보낼 수 있고,
+            모음 카드에서는 복제 메뉴로 원본 모음을 변경하지 않는 복사본을 만들 수 있습니다.
+          </p>
+
+          <div class="grid-2">
+            <figure class="shot compact">
+              <img
+                src="manual-assets/manual-17-icon-memo-hover.png"
+                alt="아이콘 이름 옆 메모 아이콘에 마우스를 올려 여러 줄 메모가 표시된 모습."
+              />
+              <figcaption>
+                <strong>메모하기</strong>로 저장한 내용은 아이콘 이름 옆 작은 메모 표시로 보입니다.
+                마우스를 올리면 줄바꿈이 유지된 메모가 근처에 표시되고, alt나 export 파일명에는 영향을 주지 않습니다.
+              </figcaption>
+            </figure>
+            <figure class="shot compact">
+              <img
+                src="manual-assets/manual-18-grid-preset-applied.png"
+                alt="시트 가져오기에서 DCInside 200x200 프리셋을 적용한 화면."
+              />
+              <figcaption>
+                시트 grid 프리셋은 가져오기, 작업 시트 내보내기, GIF frame sheet에 공유됩니다.
+                export에서 저장한 셀 크기, 열 수, gap, border, 배경, manifest 옵션을 import에서도 적용할 수 있습니다.
+              </figcaption>
+            </figure>
+          </div>
+
+          <div class="grid-3">
+            <div class="panel">
+              <strong>선택 항목 작업시트</strong>
+              <p>다중 선택 후 우클릭하면 현재 선택된 아이콘만 grid order로 내보냅니다. 전체 모음 내보내기와 구분됩니다.</p>
+            </div>
+            <div class="panel">
+              <strong>메모 관리</strong>
+              <p>메모하기, 메모 수정, 메모 삭제가 우클릭 메뉴에 나타납니다. 공백만 입력하면 메모 없음으로 처리됩니다.</p>
+            </div>
+            <div class="panel">
+              <strong>공유 프리셋</strong>
+              <p>기본 제공 `DCInside 200x200 / 5 columns`와 `GIF Frames 200x200 / 8 columns / 64 frames` 프리셋을 바로 쓸 수 있습니다.</p>
+            </div>
+          </div>
+        </section>
+
+        <section id="auto-detect" class="section">
+          <h2>12. 자동 감지 실험 기능</h2>
+          <p>
+            <strong>자동 감지(실험)</strong>은 PNG 투명 separator 또는 단색 배경 separator를 분석해 grid 설정 후보를 제안합니다.
+            이 기능은 자동으로 가져오지 않습니다. 후보를 적용하면 기존 grid overlay와 셀 검토 단계로 돌아가 사용자가 직접 확인해야 합니다.
+          </p>
+
+          <figure class="shot">
+            <img
+              src="manual-assets/manual-19-auto-detect-proposal.png"
+              alt="자동 감지 실험 패널에서 투명 separator 기반 grid 후보와 confidence가 표시된 화면."
+            />
+            <figcaption>
+              confidence, rows, columns, cell size, border, gap 후보를 보고 적용합니다.
+              confidence가 낮거나 separator를 찾지 못하면 수동 grid 설정 또는 직접 Slice 지정으로 전환하는 것이 안전합니다.
+            </figcaption>
+          </figure>
+        </section>
+
+        <section id="release" class="section">
+          <h2>13. 릴리스 준비와 파일 보존</h2>
+          <p>
+            PMTCONCON Studio는 MIT License로 배포되며, 외부 업로드나 로그인 자동화 없이 로컬 파일과 앱 라이브러리에서 작업합니다.
+            원본 이미지와 원본 GIF는 보존되고, crop, sheet reimport, GIF frame reimport, 용량 최적화 결과는 별도 생성 파일이나 variant로 저장됩니다.
+          </p>
+
+          <figure class="shot">
+            <img
+              src="manual-assets/manual-20-gif-fps-live-preview.png"
+              alt="고급 편집에서 GIF 재생 FPS 적용 후 실시간 편집 미리보기와 썸네일이 갱신된 화면."
+            />
+            <figcaption>
+              GIF 재생 FPS 변경은 적용 전 실시간 편집 미리보기에서 확인하고, 적용 후에는 생성된 variant가 실제 preview/export 후보로 연결됩니다.
+            </figcaption>
+          </figure>
+
+          <div class="table-wrap">
+            <table>
+              <thead>
+                <tr>
+                  <th>릴리스 확인 항목</th>
+                  <th>현재 기준</th>
+                </tr>
+              </thead>
+              <tbody>
+                <tr>
+                  <td>자동화 검사</td>
+                  <td><code>npm.cmd run lint</code>, <code>npm.cmd run test</code>, <code>cargo test</code>, <code>npm.cmd run build</code>, <code>npm.cmd run tauri -- build</code></td>
+                </tr>
+                <tr>
+                  <td>라이선스 가드레일</td>
+                  <td><code>npm.cmd run license:forbidden</code>와 <code>npm.cmd run license:check</code>로 금지 의존성을 확인합니다.</td>
+                </tr>
+                <tr>
+                  <td>오픈소스 고지</td>
+                  <td><a href="https://github.com/kyunnkimeng-pixel/CONCONPMT/blob/main/THIRD_PARTY_LICENSES.md">THIRD_PARTY_LICENSES.md</a>와 <a href="LICENSE_POLICY.md">LICENSE_POLICY.md</a>를 함께 제공합니다.</td>
+                </tr>
+                <tr>
+                  <td>릴리스 기록</td>
+                  <td><a href="RELEASE_READINESS.md">Release Readiness</a>에 최근 native QA와 빌드 확인 범위를 정리합니다.</td>
+                </tr>
+              </tbody>
+            </table>
+          </div>
+        </section>
       </div>
     </main>
 
     <footer class="footer">
       <div class="footer-inner">
-        PMTCONCON Studio 사용 설명서
+        PMTCONCON Studio 사용 설명서 · <a href="RELEASE_READINESS.md">Release Readiness</a> · <a href="https://github.com/kyunnkimeng-pixel/CONCONPMT/blob/main/LICENSE">MIT License</a>
       </div>
     </footer>
   </body>

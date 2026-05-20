@@ -33,6 +33,7 @@ export interface IconSummary {
   collectionId: string;
   sourceFileId: string;
   displayName: string;
+  note: string | null;
   iconKind: "image" | "placeholder";
   readiness: "complete" | "working";
   placeholderText: string | null;

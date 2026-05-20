@@ -100,6 +100,25 @@ export function renameIcon(
   }).then(normalizeIconSummary);
 }
 
+export function getIconNote(collectionId: string, iconId: string) {
+  return invokeCommand<string | null>("get_icon_note", { collectionId, iconId });
+}
+
+export function updateIconNote(collectionId: string, iconId: string, note: string) {
+  return invokeCommand<IconSummary>("update_icon_note", {
+    collectionId,
+    iconId,
+    note,
+  }).then(normalizeIconSummary);
+}
+
+export function clearIconNote(collectionId: string, iconId: string) {
+  return invokeCommand<IconSummary>("clear_icon_note", {
+    collectionId,
+    iconId,
+  }).then(normalizeIconSummary);
+}
+
 export async function setIconThumbnailOverride(
   collectionId: string,
   iconId: string,

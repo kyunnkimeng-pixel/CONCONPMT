@@ -48,39 +48,73 @@ Reimport never overwrites original source files. Mismatched dimensions, missing 
 
 ## 5. GIF Frame Sheet Export
 
-GIF Frame Sheet is designed for the next stage. The manifest schema and page-planning helper are implemented, but frame decoding/export UI and Tauri commands are intentionally not exposed as clickable UI in this MVP.
+GIF Frame Sheet export is implemented for one GIF icon at a time. The user opens a GIF icon context menu and chooses `GIF 프레임 시트로 내보내기`. PMTCONCON Studio analyzes the GIF, shows frame count, total duration, loop mode, estimated pages, and writes a reversible external-editing package.
 
-Target behavior:
+Outputs:
 
-- Decode one GIF icon at a time.
-- Export every frame into one or more PNG frame sheets.
-- Preserve frame order, duration, loop mode, disposal where available, and page mapping.
-- Write `pmtcon-gif-frame-sheet-v1`.
+- `frames_sheet_001.png`, `frames_sheet_002.png`, ...: clean editable PNG frame sheets.
+- `frames_guide_001.png`, `frames_guide_002.png`, ...: reference-only guide PNGs with grid, frame numbers, and duration labels.
+- `frames_manifest.json`: `pmtcon-gif-frame-sheet-v1`.
+
+The clean frame sheet uses fixed cells only. It does not trim, rotate, pack, label, or draw grid lines. Transparent background clean sheets preserve PNG alpha. Large GIFs are split into pages according to max sheet size and frames-per-page settings.
 
 ## 6. GIF Frame Sheet Reimport
 
-Planned behavior:
+GIF Frame Sheet reimport reads `pmtcon-gif-frame-sheet-v1`, locates or accepts edited frame sheet PNG pages, validates page dimensions and cell bounds, crops frame cells back in manifest order, and encodes a new animated GIF processed variant.
 
-- Read `pmtcon-gif-frame-sheet-v1`.
-- Validate edited frame sheet pages, frame count, dimensions, and page mapping.
-- Reassemble a new animated GIF processed variant.
-- Preserve duration and loop metadata.
-- Never overwrite the original GIF.
+Rules:
+
+- Original GIF source files are preserved.
+- Frame order, per-frame durations, and loop mode are preserved from the manifest.
+- Missing pages, wrong dimensions, and frame-count mismatches are reported before reassembly.
+- Edited PNG alpha is preserved where GIF encoding allows; the UI warns when edited pages appear fully opaque.
+- Single GIF icons can optionally apply the created variant as an active export variant when the selected export profile cell size matches the frame sheet cell size.
 
 ## 7. Manual Slice Mode
 
-Manual Slice Mode is designed as future work. Data model fields are documented and a validation model exists, but no visible menu action is exposed in the MVP.
+Manual Slice Mode is implemented as an MVP inside `시트 가져오기` as `직접 Slice 지정`.
 
-Future UX:
+Supported workflow:
 
-- Add, move, resize, duplicate, delete named slices.
-- Type exact X/Y/W/H.
-- Snap to grid.
-- Import/export selected slices.
+- Select a PNG/JPG/JPEG sheet.
+- Choose `직접 Slice 지정`.
+- Drag on the sheet preview to create a rectangular Slice.
+- Use `Slice 추가` to add a default cell-sized rectangle.
+- Select, move, and resize rectangles directly on the overlay.
+- Type exact X/Y/W/H values in the coordinate panel.
+- Name each Slice, duplicate/delete it, and toggle whether it is included.
+- Save Slice metadata JSON under app data for repeatable local work.
+- Import included in-bounds Slices as new icons while preserving the original sheet and PNG alpha.
+
+MVP constraints:
+
+- Rectangular slices only.
+- No polygon/freeform masks.
+- No auto-detection.
+- Snap-to-grid and external metadata import are future refinements.
 
 ## 8. Auto-Detect Mode
 
-Auto-detect remains future/experimental. It may infer separator rows/columns from transparent backgrounds or solid background colors, but must only propose settings. It must never auto-import without user review.
+Auto-detect is implemented as an experimental proposal tool, not as an automated import wizard.
+
+Supported MVP behavior:
+
+- User opens `시트 가져오기` and selects `자동 감지 (실험)`.
+- PMTCONCON Studio analyzes the selected PNG/JPG/JPEG sheet.
+- The backend tries two conservative detection methods:
+  - alpha separator detection: rows/columns that are almost fully transparent.
+  - solid background separator detection: rows/columns that match the edge-estimated background color.
+- The UI shows one or more proposals with method, confidence, rows/columns, cell size, gap, and border.
+- Applying a proposal only fills the normal grid settings and opens the existing grid overlay.
+- The user must inspect the overlay, include/exclude cells, and run the normal review/import flow.
+
+Limits:
+
+- Auto-detect does not import cells.
+- Auto-detect does not replace manual grid/cell-size controls.
+- Low-confidence proposals are allowed but clearly labeled.
+- Irregular sheets still belong to `직접 Slice 지정`.
+- Detection is intentionally conservative and does not attempt trim, rotate, packing, or game-atlas extraction.
 
 ## 9. PNG Transparency Handling
 
@@ -97,13 +131,14 @@ Rules implemented in MVP:
 
 Existing PMTCONCON Studio GIF behavior remains intact: GIF preview animation, GIF crop/resize, and loop settings are handled by the existing pipeline.
 
-Sheet MVP adds static contact-sheet export behavior: animated GIF icons render their first frame into a static PNG work sheet and warnings state that this is not GIF reconstruction.
+There are two sheet workflows:
 
-Full GIF frame sheet export/reimport is future.
+- Static contact sheet: regular work sheet export renders only the first GIF frame and warns that this does not reconstruct animation.
+- GIF Frame Sheet: every frame of one GIF is exported to PNG frame sheets, edited externally, and reimported into a new animated GIF processed variant.
 
 ## 11. Page Splitting
 
-Page splitting is implemented for static edit sheets and GIF frame manifest planning.
+Page splitting is implemented for static edit sheets and GIF frame sheets.
 
 Defaults:
 
@@ -121,8 +156,9 @@ If requested columns exceed max width, the backend caps columns per page and rep
 - `src-tauri/src/sheet/exporter.rs`: static edit sheet export, clean/guide/manifest generation, GIF first-frame contact sheet.
 - `src-tauri/src/sheet/manifest.rs`: `pmtcon-sheet-v1` and `pmtcon-gif-frame-sheet-v1` structs and validation.
 - `src-tauri/src/sheet/reimport.rs`: manifest-based reimport into new icons or processed variant files.
-- `src-tauri/src/sheet/gif_frames.rs`: GIF frame manifest planning, future command DTOs.
-- `src-tauri/src/sheet/slices.rs`: manual slice metadata model and validation.
+- `src-tauri/src/sheet/gif_frames.rs`: GIF frame sheet analysis, export, guide rendering, manifest generation, reimport validation, GIF reassembly, and processed-variant creation.
+- `src-tauri/src/sheet/slices.rs`: manual slice analysis, validation, metadata save/load, alpha-preserving import, and original preservation.
+- `src-tauri/src/sheet/auto_detect.rs`: experimental alpha/solid-background separator proposal generation and confidence scoring.
 - `src-tauri/src/sheet/preview.rs`: preview metadata command.
 
 ## 13. Frontend Components
@@ -136,8 +172,9 @@ If requested columns exceed max width, the backend caps columns per page and rep
 - `SheetExportDialog`: work sheet export settings and action.
 - `SheetExportPreview`: page/count summary.
 - `SheetReimportDialog`: manifest reimport.
-- `GifFrameSheetDialog`: future placeholder component, not wired to a visible action.
-- `ManualSliceCanvas`: future model component, not wired to a visible action.
+- `GifFrameSheetDialog`: GIF-only export/reimport dialog opened from GIF icon context menus.
+- `ManualSliceCanvas`: direct Slice drawing/editing surface inside `SheetImportWizard`.
+- `SheetAutoDetectPanel`: experimental proposal list for alpha/solid-background separator detection.
 
 ## 14. Tests
 
@@ -151,13 +188,20 @@ Rust tests cover:
 - Static edit sheet output size and clean/guide split behavior.
 - Manifest validation.
 - GIF frame manifest duration/loop/page planning.
+- GIF frame sheet export with page splitting.
+- GIF frame sheet reimport validation for missing/wrong-size pages.
+- GIF frame sheet reimport preserving frame count, duration, loop, and originals.
 
 Frontend tests cover:
 
 - Include/exclude selection model.
 - Empty/out-of-bounds exclusion.
 - Edit-sheet page count estimate.
+- GIF frame sheet page count estimate.
+- GIF action gating for GIF icons.
 - Render of export preview summary.
+- Auto-detect transparent separator, solid background separator, and no-proposal cases.
+- Render of auto-detect proposal summary.
 
 ## 15. MVP Scope
 
@@ -171,12 +215,9 @@ Implemented:
 - Manifest-based static reimport into new icons.
 - Page splitting.
 - GIF first-frame static contact sheet warning.
-
-Scoped as future:
-
-- Full GIF frame sheet export/reimport.
-- Manual Slice Mode UI.
-- Auto-detect slicing.
+- GIF frame sheet export/reimport MVP.
+- Manual Slice mode.
+- Auto-detect slicing proposals.
 - Selected/problem/export-included sheet source modes.
 - Text labels beyond numeric guide labels.
 
@@ -184,7 +225,7 @@ Scoped as future:
 
 - Connect collection/export workspace selection to sheet source modes.
 - Add progress events for large sheet operations.
-- Promote processed reimport variants to active export variants after a data-model decision.
-- Implement full GIF frame sheet export/reimport.
-- Add manual slice canvas with snap and exact coordinate editing.
-- Add conservative auto-detect proposals with confidence scoring.
+- Extend GIF frame sheet active-variant support beyond single-piece matching profile cases.
+- Add native click-through QA for GIF frame sheet export/reimport.
+- Add manual slice metadata file import and snap-to-grid presets.
+- Add richer auto-detect options such as user-tunable separator threshold, proposal preview thumbnails, and irregular-region suggestions.

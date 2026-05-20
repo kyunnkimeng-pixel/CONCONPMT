@@ -897,4 +897,68 @@ mod tests {
 
         std::fs::remove_dir_all(paths.root).unwrap();
     }
+
+    #[test]
+    fn edit_sheet_export_selected_icons_only_in_grid_order() {
+        let mut connection = connection();
+        let paths = temp_paths();
+        let collection =
+            create_collection(&mut connection, Some("selected sheet export".to_string())).unwrap();
+        let import_result = import_image_files(
+            &mut connection,
+            &paths,
+            &collection.id,
+            vec![
+                ImportImageFilePayload {
+                    original_filename: "first.png".to_string(),
+                    bytes: png_bytes(),
+                },
+                ImportImageFilePayload {
+                    original_filename: "second.png".to_string(),
+                    bytes: png_bytes(),
+                },
+            ],
+        )
+        .unwrap();
+        let second_id = import_result.imported_icons[1].id.clone();
+
+        let result = export_edit_sheet(
+            &connection,
+            &paths,
+            ExportEditSheetRequest {
+                collection_id: collection.id,
+                selected_icon_ids: vec![second_id],
+                source: "selected_icons".to_string(),
+                cell_width: 20,
+                cell_height: 20,
+                columns: 1,
+                gap_x: 0,
+                gap_y: 0,
+                border_x: 0,
+                border_y: 0,
+                background: "transparent".to_string(),
+                include_clean_sheet: true,
+                include_guide_sheet: false,
+                include_manifest: true,
+                label_options: Some(GuideLabelOptions {
+                    cell_number: true,
+                    icon_name: true,
+                    alt_value: true,
+                    export_number: true,
+                }),
+                max_sheet_width: 2048,
+                max_sheet_height: 2048,
+                output_directory: None,
+                open_output_folder: false,
+            },
+        )
+        .unwrap();
+
+        assert_eq!(result.item_count, 1);
+        let manifest = std::fs::read_to_string(result.manifest_path.as_ref().unwrap()).unwrap();
+        assert!(manifest.contains("second"));
+        assert!(!manifest.contains("first"));
+
+        std::fs::remove_dir_all(paths.root).unwrap();
+    }
 }

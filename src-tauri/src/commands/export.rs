@@ -6,8 +6,8 @@ use crate::error::AppResult;
 use crate::models::{
     ActiveVariantDto, ApplyOptimizationResultDto, ClearOptimizationResultDto,
     ExportAssetAnalysisDto, ExportCollectionResultDto, ExportProfileDto, ExportRequestPayload,
-    ExportValidationResultDto, OptimizationAdvancedSettingsPayload, OptimizationCandidateDto,
-    OptimizationResultDto,
+    ExportValidationResultDto, GifPlaybackPreviewResultDto, OptimizationAdvancedSettingsPayload,
+    OptimizationCandidateDto, OptimizationResultDto,
 };
 
 #[tauri::command]
@@ -175,6 +175,44 @@ pub fn apply_optimization_candidate(
 ) -> AppResult<ApplyOptimizationResultDto> {
     let connection = state.connection()?;
     crate::optimization::apply_optimization_candidate(&connection, &candidate_id)
+}
+
+#[tauri::command]
+pub fn apply_optimization_candidate_to_preview(
+    state: State<'_, AppState>,
+    candidate_id: String,
+) -> AppResult<ApplyOptimizationResultDto> {
+    let connection = state.connection()?;
+    crate::optimization::apply_optimization_candidate_to_preview(&connection, &candidate_id)
+}
+
+#[tauri::command]
+pub fn preview_gif_playback_fps(
+    state: State<'_, AppState>,
+    icon_id: String,
+    playback_fps: i64,
+) -> AppResult<GifPlaybackPreviewResultDto> {
+    let paths = state.paths().clone();
+    let connection = state.connection()?;
+    crate::optimization::preview_gif_playback_fps(&connection, &paths, &icon_id, playback_fps)
+}
+
+#[tauri::command]
+pub fn apply_gif_original_playback_to_preview(
+    state: State<'_, AppState>,
+    icon_id: String,
+    profile_id: String,
+    piece_id: Option<String>,
+) -> AppResult<ApplyOptimizationResultDto> {
+    let paths = state.paths().clone();
+    let connection = state.connection()?;
+    crate::optimization::apply_gif_original_playback_to_preview(
+        &connection,
+        &paths,
+        &icon_id,
+        &profile_id,
+        piece_id.as_deref(),
+    )
 }
 
 #[tauri::command]

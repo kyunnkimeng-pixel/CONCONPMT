@@ -1,8 +1,10 @@
 import { useState } from "react";
+import type { DragEvent } from "react";
 import { RotateCcw } from "lucide-react";
 
 import { reimportEditSheet } from "@/features/sheets/api";
 import { getCommandErrorMessage } from "@/lib/tauri";
+import { cn } from "@/lib/utils";
 
 export function SheetReimportDialog({
   collectionId,
@@ -14,13 +16,46 @@ export function SheetReimportDialog({
   const [manifestFile, setManifestFile] = useState<File | null>(null);
   const [sheetFiles, setSheetFiles] = useState<File[]>([]);
   const [isRunning, setIsRunning] = useState(false);
+  const [isDragging, setIsDragging] = useState(false);
   const [message, setMessage] = useState<string | null>(null);
   const [errorMessage, setErrorMessage] = useState<string | null>(null);
 
   const canRun = Boolean(manifestFile) && sheetFiles.length > 0 && !isRunning;
+  const handleDrop = (event: DragEvent<HTMLElement>) => {
+    event.preventDefault();
+    setIsDragging(false);
+    const droppedFiles = Array.from(event.dataTransfer.files);
+    const manifest = droppedFiles.find(isManifestFile);
+    const sheets = droppedFiles.filter(isPngSheetFile);
+    if (manifest) {
+      setManifestFile(manifest);
+    }
+    if (sheets.length > 0) {
+      setSheetFiles(sheets);
+    }
+  };
 
   return (
-    <section className="flex flex-col gap-3 rounded-md border border-border bg-white p-4">
+    <section
+      className={cn(
+        "flex flex-col gap-3 rounded-md border border-border bg-white p-4",
+        isDragging ? "border-focus bg-selected" : "",
+      )}
+      onDragEnter={(event) => {
+        event.preventDefault();
+        setIsDragging(true);
+      }}
+      onDragLeave={(event) => {
+        if (event.currentTarget === event.target) {
+          setIsDragging(false);
+        }
+      }}
+      onDragOver={(event) => {
+        event.preventDefault();
+        event.dataTransfer.dropEffect = "copy";
+      }}
+      onDrop={handleDrop}
+    >
       <div>
         <h3 className="flex items-center gap-2 text-sm font-semibold">
           <RotateCcw aria-hidden="true" />
@@ -28,6 +63,9 @@ export function SheetReimportDialog({
         </h3>
         <p className="mt-1 text-xs text-muted">
           pmtcon-sheet-v1 매니페스트와 수정한 clean sheet PNG를 선택합니다. 결과는 새 아이콘으로 등록되어 원본을 덮어쓰지 않습니다.
+        </p>
+        <p className="mt-2 rounded-md border border-dashed border-border bg-preview px-3 py-2 text-xs text-muted">
+          Manifest JSON과 수정된 clean sheet PNG를 이 영역으로 드래그해서 놓을 수 있습니다.
         </p>
       </div>
       <label className="flex flex-col gap-1 text-xs font-medium text-muted">
@@ -84,4 +122,12 @@ export function SheetReimportDialog({
       ) : null}
     </section>
   );
+}
+
+function isManifestFile(file: File) {
+  return /\.json$/i.test(file.name) || file.type === "application/json";
+}
+
+function isPngSheetFile(file: File) {
+  return /\.png$/i.test(file.name) || file.type === "image/png";
 }

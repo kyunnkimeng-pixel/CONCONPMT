@@ -176,6 +176,12 @@ export interface ApplyOptimizationResult {
   message: string;
 }
 
+export interface GifPlaybackPreviewResult {
+  previewPath: string;
+  playbackFps: number;
+  generatedAt: string;
+}
+
 export interface ClearOptimizationResult {
   iconId: string;
   profileId: string;

@@ -23,6 +23,7 @@ import type {
 } from "@/features/collections/types";
 import { IconContextMenu } from "@/features/icons/components/IconContextMenu";
 import { IconTile } from "@/features/icons/components/IconTile";
+import { isGifIcon } from "@/features/sheets/sheet-ui-model";
 import {
   type IconSelectionState,
   pruneSelection,
@@ -43,7 +44,12 @@ interface IconGridProps {
   onDeleteIcons: (iconIds: string[]) => Promise<boolean>;
   onDuplicateIcon: (iconId: string) => Promise<void>;
   onEditIcon: (iconId: string) => void;
+  onExportSelectedSheet: (iconIds: string[]) => void;
+  onExportGifFrameSheet: (iconId: string) => void;
+  onUpdateIconNote: (iconId: string, note: string) => Promise<boolean>;
+  onClearIconNote: (iconId: string) => Promise<boolean>;
   onRenameIcon: (iconId: string, displayName: string) => Promise<boolean>;
+  onReimportGifFrameSheet: (iconId: string) => void;
   onReorderIcons: (orderedIconIds: string[]) => Promise<void>;
   onRevealExportResult: (iconId: string) => Promise<void>;
   onRevealOriginal: (iconId: string) => Promise<void>;
@@ -69,7 +75,12 @@ export function IconGrid({
   onDeleteIcons,
   onDuplicateIcon,
   onEditIcon,
+  onExportSelectedSheet,
+  onExportGifFrameSheet,
+  onUpdateIconNote,
+  onClearIconNote,
   onRenameIcon,
+  onReimportGifFrameSheet,
   onReorderIcons,
   onRevealExportResult,
   onRevealOriginal,
@@ -96,6 +107,11 @@ export function IconGrid({
   const [batchAltDialog, setBatchAltDialog] = useState<{
     iconIds: string[];
     pieceCount: number;
+  } | null>(null);
+  const [noteDialog, setNoteDialog] = useState<{
+    iconId: string;
+    displayName: string;
+    note: string;
   } | null>(null);
   const sensors = useSensors(
     useSensor(PointerSensor, {
@@ -261,6 +277,8 @@ export function IconGrid({
         <IconContextMenu
           isCover={collection.coverIconId === targetIcon.id}
           hasExportResult={targetIcon.pieces.some((piece) => piece.lastExportUrl)}
+          hasNote={Boolean(targetIcon.note?.trim())}
+          isGifIcon={isGifIcon(targetIcon)}
           selectionCount={contextSelectionIds.length}
           altSelectionCount={contextAltSelectionCount}
           x={contextMenu.x}
@@ -276,6 +294,18 @@ export function IconGrid({
             void onDuplicateIcon(targetIcon.id);
           }}
           onEdit={() => onEditIcon(targetIcon.id)}
+          onEditNote={() =>
+            setNoteDialog({
+              iconId: targetIcon.id,
+              displayName: targetIcon.displayName,
+              note: targetIcon.note ?? "",
+            })
+          }
+          onClearNote={() => {
+            void onClearIconNote(targetIcon.id);
+          }}
+          onExportSelectedSheet={() => onExportSelectedSheet(contextSelectionIds)}
+          onExportGifFrameSheet={() => onExportGifFrameSheet(targetIcon.id)}
           onRevealExportResult={() => {
             void onRevealExportResult(targetIcon.id);
           }}
@@ -283,6 +313,7 @@ export function IconGrid({
             void onRevealOriginal(targetIcon.id);
           }}
           onReplaceImage={() => onReplaceImage(targetIcon.id)}
+          onReimportGifFrameSheet={() => onReimportGifFrameSheet(targetIcon.id)}
           onRename={() => {
             const nextName = window.prompt("아이콘 이름", targetIcon.displayName);
             if (nextName !== null) {
@@ -307,6 +338,27 @@ export function IconGrid({
             void onBatchAltCommit(batchAltDialog.iconIds, value).then((didCommit) => {
               if (didCommit) {
                 setBatchAltDialog(null);
+              }
+            });
+          }}
+        />
+      ) : null}
+      {noteDialog ? (
+        <IconNoteDialog
+          displayName={noteDialog.displayName}
+          initialNote={noteDialog.note}
+          onClose={() => setNoteDialog(null)}
+          onDelete={() => {
+            void onClearIconNote(noteDialog.iconId).then((didClear) => {
+              if (didClear) {
+                setNoteDialog(null);
+              }
+            });
+          }}
+          onSave={(note) => {
+            void onUpdateIconNote(noteDialog.iconId, note).then((didSave) => {
+              if (didSave) {
+                setNoteDialog(null);
               }
             });
           }}
@@ -457,6 +509,88 @@ function BatchAltDialog({
             >
               적용
             </button>
+          </div>
+        </div>
+      </form>
+    </div>
+  );
+}
+
+function IconNoteDialog({
+  displayName,
+  initialNote,
+  onClose,
+  onDelete,
+  onSave,
+}: {
+  displayName: string;
+  initialNote: string;
+  onClose: () => void;
+  onDelete: () => void;
+  onSave: (note: string) => void;
+}) {
+  const [note, setNote] = useState(initialNote);
+
+  useEffect(() => {
+    const handleKeyDown = (event: KeyboardEvent) => {
+      if (event.key === "Escape") {
+        onClose();
+      }
+    };
+    window.addEventListener("keydown", handleKeyDown);
+    return () => window.removeEventListener("keydown", handleKeyDown);
+  }, [onClose]);
+
+  const submit = (event: FormEvent) => {
+    event.preventDefault();
+    onSave(note);
+  };
+
+  return (
+    <div className="fixed inset-0 z-[60] flex items-center justify-center bg-slate-900/30 p-4">
+      <form
+        className="flex w-[min(460px,calc(100vw-32px))] flex-col rounded-md border border-border bg-white shadow-xl"
+        data-testid="icon-note-dialog"
+        onSubmit={submit}
+      >
+        <header className="border-b border-border bg-canvas px-4 py-3">
+          <h3 className="text-sm font-semibold">메모</h3>
+          <p className="mt-1 truncate text-xs text-muted">{displayName}</p>
+        </header>
+        <div className="grid gap-3 p-4">
+          <textarea
+            autoFocus
+            className="min-h-32 resize-y rounded-md border border-border bg-white px-3 py-2 text-sm text-foreground focus-visible:outline focus-visible:outline-2 focus-visible:outline-focus"
+            placeholder="작업 지시, 외부 편집 메모, 검수 참고사항"
+            value={note}
+            onChange={(event) => setNote(event.currentTarget.value)}
+          />
+          <p className="text-xs text-muted">
+            빈 메모는 저장 시 자동으로 삭제됩니다. alt, 파일명, export 검증에는 영향을 주지 않습니다.
+          </p>
+          <div className="flex justify-between gap-2">
+            <button
+              className="rounded border border-border bg-white px-3 py-2 text-sm font-medium text-danger hover:bg-menu-hover"
+              type="button"
+              onClick={onDelete}
+            >
+              메모 삭제
+            </button>
+            <div className="flex gap-2">
+              <button
+                className="rounded border border-border bg-white px-3 py-2 text-sm font-medium hover:bg-menu-hover"
+                type="button"
+                onClick={onClose}
+              >
+                취소
+              </button>
+              <button
+                className="rounded bg-accent px-3 py-2 text-sm font-semibold text-accent-foreground hover:bg-accent-strong"
+                type="submit"
+              >
+                저장
+              </button>
+            </div>
           </div>
         </div>
       </form>

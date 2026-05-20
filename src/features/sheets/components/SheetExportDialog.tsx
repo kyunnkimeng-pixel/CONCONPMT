@@ -5,26 +5,48 @@ import type { CollectionSummary, IconSummary } from "@/features/collections/type
 import { openExportPath, pickExportDirectory } from "@/features/export/api";
 import { exportEditSheet } from "@/features/sheets/api";
 import { SheetExportPreview } from "@/features/sheets/components/SheetExportPreview";
-import { defaultExportSheetRequest } from "@/features/sheets/sheet-ui-model";
+import { SheetGridPresetSelect } from "@/features/sheets/components/SheetGridPresetSelect";
+import {
+  applyPresetToExportRequest,
+  defaultExportSheetRequest,
+  isGifIcon,
+  presetInputFromExportRequest,
+} from "@/features/sheets/sheet-ui-model";
 import type { ExportEditSheetRequest, ExportEditSheetResult, SheetBackground } from "@/features/sheets/types";
 import { getCommandErrorMessage } from "@/lib/tauri";
 
 export function SheetExportDialog({
   collection,
   icons,
+  selectedIconIds = [],
   onClose,
 }: {
   collection: CollectionSummary;
   icons: IconSummary[];
+  selectedIconIds?: string[];
   onClose: () => void;
 }) {
-  const [request, setRequest] = useState<ExportEditSheetRequest>(() =>
-    defaultExportSheetRequest(collection.id),
-  );
+  const [request, setRequest] = useState<ExportEditSheetRequest>(() => ({
+    ...defaultExportSheetRequest(collection.id),
+    selectedIconIds,
+    source: selectedIconIds.length > 0 ? "selected_icons" : "current_collection",
+  }));
   const [isExporting, setIsExporting] = useState(false);
   const [result, setResult] = useState<ExportEditSheetResult | null>(null);
   const [errorMessage, setErrorMessage] = useState<string | null>(null);
-  const itemCount = icons.reduce((count, icon) => count + Math.max(1, icon.pieces.length), 0);
+  const exportIcons =
+    request.source === "selected_icons" && request.selectedIconIds.length > 0
+      ? icons.filter((icon) => request.selectedIconIds.includes(icon.id))
+      : icons;
+  const itemCount = exportIcons.reduce(
+    (count, icon) => count + Math.max(1, icon.pieces.length),
+    0,
+  );
+  const gifContactSheetCount = exportIcons.filter(isGifIcon).length;
+  const title =
+    request.source === "selected_icons"
+      ? `선택한 ${exportIcons.length}개 아이콘을 작업 시트로 내보내기`
+      : "작업 시트로 내보내기";
 
   const updateNumber = (
     field: keyof Pick<
@@ -55,7 +77,7 @@ export function SheetExportDialog({
           <div>
             <h2 className="flex items-center gap-2 text-base font-semibold">
               <Download aria-hidden="true" />
-              작업 시트로 내보내기
+              {title}
             </h2>
             <p className="mt-1 text-sm text-muted">
               고정 grid clean sheet, guide sheet, pmtcon-sheet-v1 manifest를 생성합니다.
@@ -76,12 +98,31 @@ export function SheetExportDialog({
             <section className="rounded-md border border-border bg-white p-4">
               <h3 className="text-sm font-semibold">대상</h3>
               <div className="mt-3 rounded-md bg-preview p-3 text-sm">
-                현재 모음 전체: {icons.length}개 아이콘, {itemCount}개 셀
+                {request.source === "selected_icons"
+                  ? `선택 항목: ${exportIcons.length}개 아이콘 · ${itemCount}개 셀`
+                  : `현재 모음 전체: ${icons.length}개 아이콘 · ${itemCount}개 셀`}
               </div>
               <p className="mt-2 text-xs text-muted">
-                GIF 아이콘은 정적 contact sheet 기준으로 첫 프레임만 포함됩니다. GIF 재조립은 GIF 프레임 시트 단계에서 처리합니다.
+                GIF는 첫 프레임만 작업 시트에 포함됩니다. 전체 GIF 프레임 편집은 GIF 프레임 작업시트 메뉴를 사용하세요.
               </p>
+              {gifContactSheetCount > 0 ? (
+                <p className="mt-2 rounded-md border border-border bg-canvas px-3 py-2 text-xs text-muted">
+                  선택 범위에 GIF {gifContactSheetCount}개가 포함되어 있어 정적 contact sheet에는 첫 프레임만 렌더링됩니다.
+                </p>
+              ) : null}
             </section>
+
+            <SheetGridPresetSelect
+              collectionId={collection.id}
+              compatibleKinds={["static_export", "static_import_export", "static_import"]}
+              currentSummary={`${request.cellWidth}x${request.cellHeight} · ${request.columns}열 · gap ${request.gapX}/${request.gapY} · border ${request.borderX}/${request.borderY}`}
+              saveKindLabel="가져오기/내보내기 공유"
+              target="export"
+              buildPresetInput={(name) => presetInputFromExportRequest(name, request)}
+              onApplyPreset={(preset) =>
+                setRequest((current) => applyPresetToExportRequest(current, preset))
+              }
+            />
 
             <section className="rounded-md border border-border bg-white p-4">
               <h3 className="text-sm font-semibold">Layout</h3>

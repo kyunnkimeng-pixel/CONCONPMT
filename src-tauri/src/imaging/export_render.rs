@@ -93,6 +93,16 @@ fn render_gif_export(request: ExportRenderRequest<'_>) -> AppResult<Vec<PathBuf>
         return Ok(paths);
     }
 
+    let repeat = output_repeat_for_settings(
+        request.gif_loop_mode,
+        request.gif_loop_count,
+        request.source_gif_loop_mode,
+        request.source_gif_loop_count,
+    )?;
+    if !is_pingpong_loop_mode(request.gif_loop_mode) {
+        return render_gif_export_streaming(request, repeat);
+    }
+
     let file = File::open(request.source_path)?;
     let decoder = GifDecoder::new(BufReader::new(file))?;
     let frames = decoder.into_frames().collect_frames()?;
@@ -107,13 +117,6 @@ fn render_gif_export(request: ExportRenderRequest<'_>) -> AppResult<Vec<PathBuf>
         .iter()
         .map(|_| Vec::with_capacity(frames.len()))
         .collect();
-    let repeat = output_repeat_for_settings(
-        request.gif_loop_mode,
-        request.gif_loop_count,
-        request.source_gif_loop_mode,
-        request.source_gif_loop_count,
-    )?;
-
     for frame in frames {
         let delay = frame.delay();
         let source_frame = DynamicImage::ImageRgba8(frame.into_buffer());
@@ -152,6 +155,67 @@ fn render_gif_export(request: ExportRenderRequest<'_>) -> AppResult<Vec<PathBuf>
             repeat,
         )?;
         paths.push(output_path);
+    }
+
+    Ok(paths)
+}
+
+fn render_gif_export_streaming(
+    request: ExportRenderRequest<'_>,
+    repeat: GifOutputRepeat,
+) -> AppResult<Vec<PathBuf>> {
+    let file = File::open(request.source_path)?;
+    let decoder = GifDecoder::new(BufReader::new(file))?;
+    let frames = decoder.into_frames();
+    let (viewport_width, viewport_height) =
+        viewport_size(request.shape, request.cell_width, request.cell_height)?;
+    let mut paths = Vec::with_capacity(request.pieces.len());
+    let mut encoders = Vec::with_capacity(request.pieces.len());
+
+    for render_piece in request.pieces {
+        let output_path = request.output_dir.join(&render_piece.file_name);
+        let file = File::create(&output_path)?;
+        let mut encoder = GifEncoder::new(file);
+        match repeat {
+            GifOutputRepeat::Infinite => encoder.set_repeat(ImageGifRepeat::Infinite)?,
+            GifOutputRepeat::Finite(count) => encoder.set_repeat(ImageGifRepeat::Finite(count))?,
+            GifOutputRepeat::Once => {}
+        }
+        paths.push(output_path);
+        encoders.push(encoder);
+    }
+
+    let mut wrote_any = false;
+    for frame in frames {
+        let frame = frame?;
+        let delay = frame.delay();
+        let source_frame = DynamicImage::ImageRgba8(frame.into_buffer());
+        let source_frame = image_with_text_overlay(source_frame, request.text_overlay.as_ref())?;
+        let viewport = crop_and_resize(
+            &source_frame,
+            request.crop,
+            viewport_width,
+            viewport_height,
+            request.resize_filter,
+        )?;
+        let split_pieces = split_viewport(
+            &viewport,
+            request.shape,
+            request.cell_width,
+            request.cell_height,
+        )?;
+
+        for (target_index, render_piece) in request.pieces.iter().enumerate() {
+            let piece = split_pieces.get(render_piece.piece_index).ok_or_else(|| {
+                AppError::new("validation", "?대낫??議곌컖 ?쒖꽌媛 ?섎せ?섏뿀?듬땲??")
+            })?;
+            encoders[target_index].encode_frame(Frame::from_parts(piece.clone(), 0, 0, delay))?;
+        }
+        wrote_any = true;
+    }
+
+    if !wrote_any {
+        return Err(AppError::new("gif", "GIF ?꾨젅?꾩쓣 李얠쓣 ???놁뒿?덈떎."));
     }
 
     Ok(paths)
