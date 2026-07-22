@@ -6,7 +6,7 @@ PMTCONCON Studio는 DCInside 스타일 디시콘과 커스텀 이모티콘 모�
 
 상세 사용 설명서는 [PMTCONCON Studio 사용 설명서](https://kyunnkimeng-pixel.github.io/CONCONPMT/)에서 볼 수 있습니다.
 릴리스 전 확인 범위는 [Release Readiness](docs/RELEASE_READINESS.md)에 정리되어 있습니다.
-이번 버전의 주요 변경 사항은 [Release Notes 0.1.1](docs/RELEASE_NOTES_0.1.1.md)에서 볼 수 있습니다.
+이번 버전의 주요 변경 사항은 [Release Notes 0.1.2](docs/RELEASE_NOTES_0.1.2.md)에서 볼 수 있습니다.
 
 ## 화면
 
@@ -136,7 +136,7 @@ npm.cmd run tauri:build
 - [아키텍처](docs/ARCHITECTURE.md)
 - [기술 결정 기록](docs/DECISIONS.md)
 - [Release Readiness](docs/RELEASE_READINESS.md)
-- [Release Notes 0.1.1](docs/RELEASE_NOTES_0.1.1.md)
+- [Release Notes 0.1.2](docs/RELEASE_NOTES_0.1.2.md)
 - [Installer Distribution QA](docs/INSTALLER_DISTRIBUTION_QA.md)
 - [라이선스 정책](docs/LICENSE_POLICY.md)
 - [서드파티 라이선스 고지 안내](docs/THIRD_PARTY_LICENSES_GUIDE.md)
