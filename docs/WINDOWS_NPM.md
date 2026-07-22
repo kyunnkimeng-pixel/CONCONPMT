@@ -18,4 +18,4 @@ cmd /c "npm run tauri -- dev"
 
 `pnpm-workspace.yaml` was removed because this is not a pnpm workspace and the file only carried pnpm-specific build approvals.
 
-`pnpm-lock.yaml` is preserved for now. Do not delete it until a clean npm install has produced and verified `package-lock.json`.
+`package-lock.json` is the only JavaScript dependency lockfile. It was generated with npm 11 and verified with a clean `npm.cmd ci --ignore-scripts --workspaces=false` install. Use `npm.cmd ci` for reproducible setup; do not add a pnpm lockfile unless the project explicitly changes package managers.

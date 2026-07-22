@@ -6,6 +6,7 @@ import type {
   LibraryCleanupResult,
 } from "@/features/collections/types";
 import { filePathToAssetUrl } from "@/lib/asset-url";
+import { fileToImportPayload } from "@/lib/import-file";
 
 export function listCollections() {
   return invokeCommand<CollectionSummary[]>("list_collections").then((collections) =>
@@ -79,14 +80,5 @@ export function normalizeCollectionSummary(collection: CollectionSummary): Colle
   return {
     ...collection,
     coverImageUrl: filePathToAssetUrl(collection.coverImageUrl, collection.updatedAt),
-  };
-}
-
-async function fileToImportPayload(file: File) {
-  const bytes = Array.from(new Uint8Array(await file.arrayBuffer()));
-
-  return {
-    originalFilename: file.name,
-    bytes,
   };
 }

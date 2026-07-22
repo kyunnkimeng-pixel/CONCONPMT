@@ -206,16 +206,16 @@ fn render_gif_export_streaming(
         )?;
 
         for (target_index, render_piece) in request.pieces.iter().enumerate() {
-            let piece = split_pieces.get(render_piece.piece_index).ok_or_else(|| {
-                AppError::new("validation", "?대낫??議곌컖 ?쒖꽌媛 ?섎せ?섏뿀?듬땲??")
-            })?;
+            let piece = split_pieces
+                .get(render_piece.piece_index)
+                .ok_or_else(|| AppError::new("validation", "내보낼 조각 순서가 잘못되었습니다."))?;
             encoders[target_index].encode_frame(Frame::from_parts(piece.clone(), 0, 0, delay))?;
         }
         wrote_any = true;
     }
 
     if !wrote_any {
-        return Err(AppError::new("gif", "GIF ?꾨젅?꾩쓣 李얠쓣 ???놁뒿?덈떎."));
+        return Err(AppError::new("gif", "GIF 프레임을 찾을 수 없습니다."));
     }
 
     Ok(paths)

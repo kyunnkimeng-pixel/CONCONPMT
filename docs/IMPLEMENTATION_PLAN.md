@@ -237,3 +237,14 @@ Done when: users can manually define rectangular slices from a source sheet and 
 5. Let users apply a proposal into the existing grid overlay/review workflow.
 
 Done when: auto-detect never auto-imports cells, proposal application still requires grid overlay and cell review, transparent separator / solid background / no-proposal cases have Rust tests, and frontend proposal rendering has test coverage.
+
+## Stage REVIEW_REMEDIATION_2026_07 - Reliability and usability repair
+1. Keep ordinary export warnings advisory and non-blocking; do not change warning policy in this repair stage.
+2. Bound untrusted image, sheet, and GIF inputs in both frontend payload creation and Rust decoding; process normal folder imports one file at a time.
+3. Expose collection soft-delete through toolbar, context menu, and Delete key, then invalidate the sidebar collection list after collection mutations.
+4. Make the collection command bar wrap below the title at the default window width.
+5. Guard editor state loading against stale async responses and remount the editor when its icon changes.
+6. Repair corrupted Korean GIF errors and add dialog semantics, focus trapping, Escape handling, and focus restoration to custom modal surfaces.
+7. Commit an npm lockfile, remove the pnpm lock, remove unused vulnerable CLI dependencies, and verify a clean npm install.
+
+Done when: frontend lint/tests/build and Rust tests pass, clean `npm ci` reports no vulnerabilities, license guardrails pass, and no reviewed P1/P2 item outside the explicitly excluded strict-warning behavior remains.

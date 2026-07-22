@@ -10,6 +10,7 @@ use crate::db::repositories::{collections as collection_repository, icons as ico
 use crate::error::{AppError, AppResult};
 use crate::ids::create_id;
 use crate::imaging::gif_pipeline::inspect_gif_bytes;
+use crate::imaging::import_limits::decode_import_image;
 use crate::models::{ImportImageFilePayload, ImportImagesResultDto, RejectedImportFileDto};
 use crate::paths::AppPaths;
 
@@ -163,8 +164,7 @@ fn inspect_import_file(file: &ImportImageFilePayload) -> Result<ImageMetadata, S
         .ok_or_else(|| "jpg, jpeg, png, gif 파일만 가져올 수 있습니다.".to_string())?;
     let image_format = image_format_for_extension(&extension)
         .ok_or_else(|| "jpg, jpeg, png, gif 파일만 가져올 수 있습니다.".to_string())?;
-    let image = image::load_from_memory_with_format(&file.bytes, image_format)
-        .map_err(|_| "이미지 파일을 해석할 수 없습니다.".to_string())?;
+    let image = decode_import_image(&file.bytes, image_format).map_err(|error| error.message)?;
     let (width, height) = image.dimensions();
 
     if width == 0 || height == 0 {

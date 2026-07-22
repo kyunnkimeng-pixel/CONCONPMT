@@ -1,4 +1,4 @@
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import type { DragEvent, ReactNode } from "react";
 
 import type { CollectionSummary, IconSummary } from "@/features/collections/types";
@@ -26,6 +26,7 @@ import type {
   SheetBackground,
 } from "@/features/sheets/types";
 import { getCommandErrorMessage } from "@/lib/tauri";
+import { useModalFocus } from "@/lib/use-modal-focus";
 
 type GifFrameSheetMode = "export" | "reimport";
 
@@ -44,6 +45,8 @@ export function GifFrameSheetDialog({
   onClose,
   onVariantCreated,
 }: GifFrameSheetDialogProps) {
+  const dialogRef = useRef<HTMLElement>(null);
+  useModalFocus(dialogRef, onClose);
   const defaultCellWidth = icon.cellWidthOverride ?? collection.defaultCellWidth;
   const defaultCellHeight = icon.cellHeightOverride ?? collection.defaultCellHeight;
   const [activeMode, setActiveMode] = useState<GifFrameSheetMode>(mode);
@@ -54,14 +57,20 @@ export function GifFrameSheetDialog({
   return (
     <div className="fixed inset-0 z-50 flex items-center justify-center bg-slate-900/35 px-4 py-5">
       <section
+        ref={dialogRef}
+        aria-labelledby="gif-frame-sheet-dialog-title"
         aria-modal="true"
         className="flex max-h-[calc(100vh-40px)] w-[min(1040px,100%)] flex-col overflow-hidden rounded-lg border border-border bg-surface shadow-xl"
         data-testid="gif-frame-sheet-dialog"
         role="dialog"
+        tabIndex={-1}
       >
         <header className="flex items-start justify-between gap-4 border-b border-border px-5 py-4">
           <div className="min-w-0">
-            <h2 className="text-lg font-semibold tracking-normal">
+            <h2
+              className="text-lg font-semibold tracking-normal"
+              id="gif-frame-sheet-dialog-title"
+            >
               {activeMode === "export" ? "GIF 프레임 시트로 내보내기" : "GIF 프레임 시트 다시 가져오기"}
             </h2>
             <p className="mt-1 truncate text-sm text-muted">

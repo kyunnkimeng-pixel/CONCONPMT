@@ -136,6 +136,7 @@ export function EditorPanel({
   const [errorMessage, setErrorMessage] = useState<string | null>(null);
   const [isAdvancedOpen, setIsAdvancedOpen] = useState(false);
   const resizeStartRef = useRef<{ pointerX: number; width: number } | null>(null);
+  const loadRequestIdRef = useRef(0);
   const [panelWidth, setPanelWidth] = useState(() => {
     const savedWidth = window.localStorage.getItem(EDITOR_PANEL_WIDTH_STORAGE_KEY);
     const parsedWidth = savedWidth ? Number.parseInt(savedWidth, 10) : NaN;
@@ -145,25 +146,38 @@ export function EditorPanel({
   });
 
   const loadEditorState = useCallback(async () => {
+    const requestId = loadRequestIdRef.current + 1;
+    loadRequestIdRef.current = requestId;
     setIsLoading(true);
     setErrorMessage(null);
     setStatusMessage(null);
 
     try {
       const state = await getIconEditorState(collection.id, iconId);
+      if (loadRequestIdRef.current !== requestId) {
+        return;
+      }
       setEditorState(state);
       setDraft(draftFromState(state, collection));
     } catch (error) {
+      if (loadRequestIdRef.current !== requestId) {
+        return;
+      }
       setErrorMessage(getCommandErrorMessage(error));
       setEditorState(null);
       setDraft(null);
     } finally {
-      setIsLoading(false);
+      if (loadRequestIdRef.current === requestId) {
+        setIsLoading(false);
+      }
     }
   }, [collection, iconId]);
 
   useEffect(() => {
     void loadEditorState();
+    return () => {
+      loadRequestIdRef.current += 1;
+    };
   }, [loadEditorState]);
 
   useEffect(() => {

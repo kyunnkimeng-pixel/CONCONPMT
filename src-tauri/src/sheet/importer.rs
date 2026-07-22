@@ -16,6 +16,7 @@ use crate::db::repositories::source_files::{
 };
 use crate::error::{AppError, AppResult};
 use crate::ids::create_id;
+use crate::imaging::import_limits::decode_import_image;
 use crate::models::{IconDto, ImportImageFilePayload};
 use crate::paths::AppPaths;
 
@@ -85,7 +86,7 @@ pub fn import_sheet_cells(
         false,
     )?;
     let format = image_format_for_extension(&source.extension)?;
-    let image = image::load_from_memory_with_format(&source.bytes, format)?;
+    let image = decode_import_image(&source.bytes, format)?;
     let rgba = image.to_rgba8();
     let (sheet_width, sheet_height) = (i64::from(rgba.width()), i64::from(rgba.height()));
     let analysis = analyze_rgba_grid(&rgba, &request.grid_settings, sheet_width, sheet_height)?;

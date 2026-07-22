@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import type { MouseEvent, ReactNode } from "react";
 import {
   AlertTriangle,
@@ -60,6 +60,7 @@ import {
   megabytesInputToBytes,
 } from "@/lib/byte-size";
 import { getCommandErrorMessage } from "@/lib/tauri";
+import { useModalFocus } from "@/lib/use-modal-focus";
 import { cn } from "@/lib/utils";
 
 interface ExportDialogProps {
@@ -148,6 +149,7 @@ export function ExportDialog({
   const [optimizationError, setOptimizationError] = useState<string | null>(null);
   const [isOptimizing, setIsOptimizing] = useState(false);
   const [editingIconId, setEditingIconId] = useState<string | null>(null);
+  const dialogRef = useRef<HTMLDivElement>(null);
 
   useEffect(() => {
     let isActive = true;
@@ -208,6 +210,11 @@ export function ExportDialog({
   }, [draft, profiles]);
 
   const isBusy = isLoading || isSaving || isValidating || isExporting || isOptimizing;
+  useModalFocus(dialogRef, () => {
+    if (!isBusy) {
+      onClose();
+    }
+  });
   const payload = draft ? payloadFromDraft(draft, excludedPieceIds) : null;
   const summary = useMemo(() => summarizeExportWorkspace(validation), [validation]);
   const filteredItems = useMemo(
@@ -691,15 +698,21 @@ export function ExportDialog({
 
   return (
     <div
+      ref={dialogRef}
+      aria-labelledby="export-dialog-title"
       aria-modal="true"
       className="fixed inset-0 z-50 flex bg-surface text-foreground"
       role="dialog"
+      tabIndex={-1}
     >
       <div className="flex min-h-0 w-full flex-col">
         <header className="flex shrink-0 flex-col gap-3 border-b border-border bg-surface px-5 py-4">
           <div className="flex items-center justify-between gap-4">
             <div className="min-w-0">
-              <h2 className="truncate text-lg font-semibold tracking-normal">
+              <h2
+                className="truncate text-lg font-semibold tracking-normal"
+                id="export-dialog-title"
+              >
                 내보내기 작업공간
               </h2>
               <p className="mt-1 truncate text-xs text-muted">
@@ -876,9 +889,12 @@ export function ExportDialog({
               />
               <CheckboxField
                 checked={draft.strictWarnings}
-                label="경고 시 내보내기 차단"
+                label="엄격 검사(경고도 차단)"
                 onChange={(strictWarnings) => updateDraft({ strictWarnings })}
               />
+              <span className="text-xs text-muted">
+                꺼짐(기본): 경고는 안내만 하고 내보내기를 허용합니다.
+              </span>
               <CheckboxField
                 checked={draft.openFolderAfterExport}
                 label="완료 후 폴더 열기"
@@ -1090,6 +1106,7 @@ export function ExportDialog({
           <EditorPanel
             collection={collection}
             iconId={editingIconId}
+            key={editingIconId}
             onClose={() => setEditingIconId(null)}
             onIconUpdated={handleEditedIcon}
           />

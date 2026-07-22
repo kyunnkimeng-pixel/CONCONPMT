@@ -1,13 +1,14 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import type { InputHTMLAttributes } from "react";
 import { useNavigate } from "@tanstack/react-router";
-import { Copy, FileImage, FolderPlus, Plus, Trash2, Upload } from "lucide-react";
+import { Copy, FileImage, FolderPlus, FolderX, Plus, Trash2, Upload } from "lucide-react";
 
 import { CollectionGrid } from "@/features/collections/components/CollectionGrid";
 import { DropImportZone } from "@/features/collections/components/DropImportZone";
 import {
   cleanupLibrary,
   createCollection,
+  deleteCollection,
   duplicateCollection,
   getAppSettings,
   listCollections,
@@ -15,12 +16,17 @@ import {
   renameCollection,
 } from "@/features/collections/api";
 import type { CollectionSummary } from "@/features/collections/types";
+import { notifyCollectionListChanged } from "@/features/collections/events";
 import { importImagesIntoCollection } from "@/features/icons/api";
 import {
   IMPORTABLE_IMAGE_ACCEPT,
   partitionImportableImageFiles,
   sortFilesForImport,
 } from "@/lib/file-types";
+import {
+  formatImportResultMessage,
+  partitionFilesByImportSize,
+} from "@/lib/import-file";
 import { getCommandErrorMessage } from "@/lib/tauri";
 
 const folderInputProps = {
@@ -95,6 +101,7 @@ export function HomeRoute() {
       setCollections((currentCollections) => [...currentCollections, collection]);
       setSelectedCollectionId(collection.id);
       setIsActionPanelOpen(false);
+      notifyCollectionListChanged();
     } catch (error) {
       setErrorMessage(getCommandErrorMessage(error));
     }
@@ -119,6 +126,7 @@ export function HomeRoute() {
           collection.id === collectionId ? updatedCollection : collection,
         ),
       );
+      notifyCollectionListChanged();
     } catch (error) {
       setCollections(previousCollections);
       setErrorMessage(getCommandErrorMessage(error));
@@ -138,10 +146,68 @@ export function HomeRoute() {
       setCollections((currentCollections) => [...currentCollections, duplicated]);
       setSelectedCollectionId(duplicated.id);
       setImportStatus("모음을 복제했습니다.");
+      notifyCollectionListChanged();
     } catch (error) {
       setErrorMessage(getCommandErrorMessage(error));
     }
   };
+
+  const handleDeleteCollection = useCallback(
+    async (collectionId = selectedCollectionId) => {
+      if (!collectionId || isImporting) {
+        return;
+      }
+
+      const collection = collections.find((candidate) => candidate.id === collectionId);
+      if (!collection) {
+        return;
+      }
+      if (
+        !window.confirm(
+          `“${collection.name}” 모음을 삭제할까요?\n원본 파일은 라이브러리 정리 전까지 보존됩니다.`,
+        )
+      ) {
+        return;
+      }
+
+      const previousCollections = collections;
+      setCollections((current) => current.filter((candidate) => candidate.id !== collectionId));
+      setSelectedCollectionId((current) => (current === collectionId ? null : current));
+      setErrorMessage(null);
+      setImportStatus(null);
+
+      try {
+        await deleteCollection(collectionId);
+        setImportStatus(`“${collection.name}” 모음을 삭제했습니다.`);
+        notifyCollectionListChanged();
+      } catch (error) {
+        setCollections(previousCollections);
+        setSelectedCollectionId(collectionId);
+        setErrorMessage(getCommandErrorMessage(error));
+      }
+    },
+    [collections, isImporting, selectedCollectionId],
+  );
+
+  useEffect(() => {
+    const handleKeyDown = (event: KeyboardEvent) => {
+      const target = event.target;
+      if (
+        event.key !== "Delete" ||
+        !selectedCollectionId ||
+        isImporting ||
+        (target instanceof HTMLElement && target.closest("input,textarea,select,[contenteditable]"))
+      ) {
+        return;
+      }
+
+      event.preventDefault();
+      void handleDeleteCollection();
+    };
+
+    window.addEventListener("keydown", handleKeyDown);
+    return () => window.removeEventListener("keydown", handleKeyDown);
+  }, [handleDeleteCollection, isImporting, selectedCollectionId]);
 
   const handleCleanupLibrary = async () => {
     setErrorMessage(null);
@@ -172,13 +238,18 @@ export function HomeRoute() {
 
   const handleImportFiles = useCallback(
     async (files: File[]) => {
-      const { accepted, rejected } = partitionImportableImageFiles(sortFilesForImport(files));
+      const { accepted: formatAccepted, rejected: unsupportedFiles } =
+        partitionImportableImageFiles(sortFilesForImport(files));
+      const { accepted, rejected: oversizedFiles } =
+        partitionFilesByImportSize(formatAccepted);
       setErrorMessage(null);
       setImportStatus(null);
       setIsActionPanelOpen(false);
 
       if (accepted.length === 0) {
-        setImportStatus("가져올 수 있는 jpg, jpeg, png, gif 파일이 없습니다.");
+        setImportStatus(
+          formatImportResultMessage(0, unsupportedFiles, oversizedFiles),
+        );
         return;
       }
 
@@ -189,17 +260,29 @@ export function HomeRoute() {
           collections.find((collection) => collection.id === selectedCollectionId) ?? null;
 
         if (!targetCollection) {
-          targetCollection = await createCollection();
+          const createdCollection = await createCollection();
+          targetCollection = createdCollection;
+          setCollections((currentCollections) =>
+            upsertCollection(currentCollections, createdCollection),
+          );
+          notifyCollectionListChanged();
         }
 
         const result = await importImagesIntoCollection(targetCollection.id, accepted);
-        const skippedCount = rejected.length + result.rejectedFiles.length;
+        const rejectedFiles = [...oversizedFiles, ...result.rejectedFiles];
 
         setCollections((currentCollections) =>
           upsertCollection(currentCollections, result.collection),
         );
         setSelectedCollectionId(result.collection.id);
-        setImportStatus(importStatusMessage(result.importedIcons.length, skippedCount));
+        setImportStatus(
+          formatImportResultMessage(
+            result.importedIcons.length,
+            unsupportedFiles,
+            rejectedFiles,
+          ),
+        );
+        notifyCollectionListChanged();
       } catch (error) {
         setErrorMessage(getCommandErrorMessage(error));
       } finally {
@@ -229,6 +312,22 @@ export function HomeRoute() {
           </div>
 
           <div className="flex items-center gap-2">
+            <button
+              className="inline-flex items-center gap-2 rounded-md border border-border bg-white px-3 py-2 text-sm font-medium hover:bg-menu-hover focus-visible:outline focus-visible:outline-2 focus-visible:outline-focus disabled:cursor-not-allowed disabled:text-muted"
+              disabled={!selectedCollectionId || isImporting}
+              title={
+                isImporting
+                  ? "이미지를 가져오는 동안에는 모음을 삭제할 수 없습니다."
+                  : !selectedCollectionId
+                    ? "삭제할 모음을 선택하세요."
+                    : undefined
+              }
+              type="button"
+              onClick={() => void handleDeleteCollection()}
+            >
+              <FolderX aria-hidden="true" />
+              선택 삭제
+            </button>
             <button
               className="inline-flex items-center gap-2 rounded-md border border-border bg-white px-3 py-2 text-sm font-medium hover:bg-menu-hover focus-visible:outline focus-visible:outline-2 focus-visible:outline-focus disabled:cursor-not-allowed disabled:text-muted"
               disabled={!selectedCollectionId}
@@ -338,10 +437,14 @@ export function HomeRoute() {
           ) : collections.length > 0 ? (
             <CollectionGrid
               collections={collections}
+              isDeleteDisabled={isImporting}
               selectedCollectionId={selectedCollectionId}
               onOpenCollection={openCollection}
               onDuplicateCollection={(collectionId) => {
                 void handleDuplicateCollection(collectionId);
+              }}
+              onDeleteCollection={(collectionId) => {
+                void handleDeleteCollection(collectionId);
               }}
               onRenameCollection={(collectionId, name) => {
                 void handleRenameCollection(collectionId, name);
@@ -406,18 +509,6 @@ function upsertCollection(collections: CollectionSummary[], collection: Collecti
   }
 
   return [...collections, collection];
-}
-
-function importStatusMessage(importedCount: number, skippedCount: number) {
-  if (importedCount === 0) {
-    return skippedCount > 0
-      ? `가져온 이미지가 없습니다. ${skippedCount}개 파일은 건너뛰었습니다.`
-      : "가져온 이미지가 없습니다.";
-  }
-
-  return skippedCount > 0
-    ? `${importedCount}개 이미지를 가져왔습니다. ${skippedCount}개 파일은 건너뛰었습니다.`
-    : `${importedCount}개 이미지를 가져왔습니다.`;
 }
 
 function cleanupConfirmMessage(result: {

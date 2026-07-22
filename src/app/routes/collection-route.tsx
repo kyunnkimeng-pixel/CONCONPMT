@@ -24,6 +24,7 @@ import {
   updateCollectionSettings,
 } from "@/features/collections/api";
 import { DropImportZone } from "@/features/collections/components/DropImportZone";
+import { notifyCollectionListChanged } from "@/features/collections/events";
 import type {
   CollectionSettingsPayload,
   CollectionSummary,
@@ -66,6 +67,10 @@ import {
   partitionImportableImageFiles,
   sortFilesForImport,
 } from "@/lib/file-types";
+import {
+  formatImportResultMessage,
+  partitionFilesByImportSize,
+} from "@/lib/import-file";
 import { getCommandErrorMessage } from "@/lib/tauri";
 import { cn } from "@/lib/utils";
 import {
@@ -183,12 +188,17 @@ export function CollectionRoute() {
 
   const handleImportFiles = useCallback(
     async (files: File[]) => {
-      const { accepted, rejected } = partitionImportableImageFiles(sortFilesForImport(files));
+      const { accepted: formatAccepted, rejected: unsupportedFiles } =
+        partitionImportableImageFiles(sortFilesForImport(files));
+      const { accepted, rejected: oversizedFiles } =
+        partitionFilesByImportSize(formatAccepted);
       setErrorMessage(null);
       setImportStatus(null);
 
       if (accepted.length === 0) {
-        setImportStatus("가져올 수 있는 jpg, jpeg, png, gif 파일이 없습니다.");
+        setImportStatus(
+          formatImportResultMessage(0, unsupportedFiles, oversizedFiles),
+        );
         return;
       }
 
@@ -215,10 +225,17 @@ export function CollectionRoute() {
           current: accepted.length,
           total: accepted.length + 1,
         });
-        const skippedCount = rejected.length + result.rejectedFiles.length;
+        const rejectedFiles = [...oversizedFiles, ...result.rejectedFiles];
         setCollection(result.collection);
         setIcons(await listIcons(collectionId));
-        setImportStatus(importStatusMessage(result.importedIcons.length, skippedCount));
+        setImportStatus(
+          formatImportResultMessage(
+            result.importedIcons.length,
+            unsupportedFiles,
+            rejectedFiles,
+          ),
+        );
+        notifyCollectionListChanged();
       } catch (error) {
         setErrorMessage(getCommandErrorMessage(error));
       } finally {
@@ -320,6 +337,7 @@ export function CollectionRoute() {
           setEditingIconId(null);
         }
         setImportStatus(`${iconIds.length}개 아이콘을 삭제했습니다.`);
+        notifyCollectionListChanged();
         return true;
       } catch (error) {
         setErrorMessage(getCommandErrorMessage(error));
@@ -338,6 +356,7 @@ export function CollectionRoute() {
         await duplicateIcon(collectionId, iconId);
         await refreshCollectionAndIcons();
         setImportStatus("아이콘을 복제했습니다.");
+        notifyCollectionListChanged();
       } catch (error) {
         setErrorMessage(getCommandErrorMessage(error));
       }
@@ -418,6 +437,7 @@ export function CollectionRoute() {
       currentIcons.map((icon) => (icon.id === updatedIcon.id ? updatedIcon : icon)),
     );
     setImportStatus("아이콘 편집값을 저장했습니다.");
+    notifyCollectionListChanged();
   }, []);
 
   const handleReorderIcons = useCallback(
@@ -449,6 +469,7 @@ export function CollectionRoute() {
     try {
       setCollection(await setCollectionCoverIcon(collectionId, iconId));
       setImportStatus("대표 이미지를 변경했습니다.");
+      notifyCollectionListChanged();
     } catch (error) {
       setErrorMessage(getCommandErrorMessage(error));
     }
@@ -470,6 +491,7 @@ export function CollectionRoute() {
     try {
       setCollection(await importCollectionCoverImage(collectionId, file));
       setImportStatus("모음 대표 이미지를 가져왔습니다.");
+      notifyCollectionListChanged();
     } catch (error) {
       setErrorMessage(getCommandErrorMessage(error));
     }
@@ -514,6 +536,7 @@ export function CollectionRoute() {
         currentIcons.map((icon) => (icon.id === updatedIcon.id ? updatedIcon : icon)),
       );
       setImportStatus("아이콘 썸네일을 바꿨습니다.");
+      notifyCollectionListChanged();
     } catch (error) {
       setErrorMessage(getCommandErrorMessage(error));
     }
@@ -541,6 +564,7 @@ export function CollectionRoute() {
         currentIcons.map((icon) => (icon.id === updatedIcon.id ? updatedIcon : icon)),
       );
       setImportStatus("아이콘 이미지를 대체했습니다.");
+      notifyCollectionListChanged();
     } catch (error) {
       setErrorMessage(getCommandErrorMessage(error));
     }
@@ -648,6 +672,7 @@ export function CollectionRoute() {
   const handleExported = useCallback(async () => {
     await refreshCollectionAndIcons();
     setImportStatus("내보내기 결과를 저장했습니다.");
+    notifyCollectionListChanged();
   }, [refreshCollectionAndIcons]);
 
   const changeViewMode = (nextMode: "explorer" | "usagePreview") => {
@@ -697,14 +722,17 @@ export function CollectionRoute() {
           <span aria-hidden="true">/</span>
           <span className="truncate text-foreground">{collection.name}</span>
         </div>
-        <div className="flex items-end justify-between gap-4">
+        <div className="flex flex-col gap-4 2xl:flex-row 2xl:items-end 2xl:justify-between">
           <div className="min-w-0">
             <h1 className="truncate text-2xl font-semibold tracking-normal">
               {collection.name}
             </h1>
             <p className="mt-1 text-sm text-muted">{icons.length}개 항목</p>
           </div>
-          <div className="flex items-center gap-2">
+          <div
+            aria-label="모음 작업"
+            className="flex min-w-0 flex-wrap items-center gap-2 2xl:justify-end"
+          >
             <div
               aria-label="보기 모드"
               className="flex items-center gap-1 rounded-md border border-border bg-white p-1"
@@ -834,6 +862,7 @@ export function CollectionRoute() {
               const updatedCollection = await updateCollectionSettings(collection.id, payload);
               setCollection(updatedCollection);
               setImportStatus("모음 기준 크기 설정을 저장했습니다.");
+              notifyCollectionListChanged();
             }}
           />
         ) : null}
@@ -989,6 +1018,7 @@ export function CollectionRoute() {
           <EditorPanel
             collection={collection}
             iconId={editingIconId}
+            key={editingIconId}
             onClose={() => setEditingIconId(null)}
             onIconUpdated={handleIconUpdated}
           />
@@ -1009,6 +1039,7 @@ export function CollectionRoute() {
           onClose={() => setIsSheetImportOpen(false)}
           onImported={async () => {
             await refreshCollectionAndIcons();
+            notifyCollectionListChanged();
           }}
         />
       ) : null}
@@ -1028,6 +1059,7 @@ export function CollectionRoute() {
           onClose={() => setGifFrameSheetRequest(null)}
           onVariantCreated={async () => {
             await refreshCollectionAndIcons();
+            notifyCollectionListChanged();
           }}
         />
       ) : null}
@@ -1348,16 +1380,4 @@ function BackLink({ label = "홈" }: { label?: string }) {
       {label}
     </Link>
   );
-}
-
-function importStatusMessage(importedCount: number, skippedCount: number) {
-  if (importedCount === 0) {
-    return skippedCount > 0
-      ? `가져온 이미지가 없습니다. ${skippedCount}개 파일은 건너뛰었습니다.`
-      : "가져온 이미지가 없습니다.";
-  }
-
-  return skippedCount > 0
-    ? `${importedCount}개 이미지를 가져왔습니다. ${skippedCount}개 파일은 건너뛰었습니다.`
-    : `${importedCount}개 이미지를 가져왔습니다.`;
 }

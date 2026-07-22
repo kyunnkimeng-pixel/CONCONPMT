@@ -5,7 +5,8 @@ import type {
   ImportImagesResult,
 } from "@/features/collections/types";
 import { filePathToAssetUrl } from "@/lib/asset-url";
-import { invokeCommand } from "@/lib/tauri";
+import { fileToImportPayload, importFileSizeError } from "@/lib/import-file";
+import { getCommandErrorMessage, invokeCommand } from "@/lib/tauri";
 
 export function listIcons(collectionId: string) {
   return invokeCommand<IconSummary[]>("list_icons", { collectionId }).then((icons) =>
@@ -24,25 +25,56 @@ export async function importImagesIntoCollection(
   files: File[],
   onProgress?: (event: ImportProgressEvent) => void,
 ) {
-  const payload: Awaited<ReturnType<typeof fileToImportPayload>>[] = [];
+  const importedIcons: IconSummary[] = [];
+  const rejectedFiles: ImportImagesResult["rejectedFiles"] = [];
+  let latestResult: ImportImagesResult | null = null;
+  const total = files.length + 1;
+
   for (const [index, file] of files.entries()) {
-    onProgress?.({ current: index + 1, total: files.length, fileName: file.name });
-    payload.push(await fileToImportPayload(file));
+    onProgress?.({ current: index + 1, total, fileName: file.name });
+    const sizeError = importFileSizeError(file);
+    if (sizeError) {
+      rejectedFiles.push({ originalFilename: file.name, reason: sizeError });
+      continue;
+    }
+
+    try {
+      const result = await invokeCommand<ImportImagesResult>("import_image_files", {
+        collectionId,
+        files: [await fileToImportPayload(file)],
+      });
+      latestResult = result;
+      importedIcons.push(...result.importedIcons.map(normalizeIconSummary));
+      rejectedFiles.push(...result.rejectedFiles);
+    } catch (error) {
+      const reason = getCommandErrorMessage(error);
+      rejectedFiles.push({ originalFilename: file.name, reason });
+      for (const remainingFile of files.slice(index + 1)) {
+        rejectedFiles.push({
+          originalFilename: remainingFile.name,
+          reason: `앞선 파일 처리 오류로 가져오기를 중단했습니다: ${reason}`,
+        });
+      }
+      break;
+    }
   }
   onProgress?.({
-    current: files.length + 1,
-    total: files.length + 1,
-    fileName: "앱 라이브러리 등록",
+    current: total,
+    total,
+    fileName: "앱 라이브러리 등록 완료",
   });
 
-  return invokeCommand<ImportImagesResult>("import_image_files", {
+  latestResult ??= await invokeCommand<ImportImagesResult>("import_image_files", {
     collectionId,
-    files: payload,
-  }).then((result) => ({
-    ...result,
-    collection: normalizeCollectionSummary(result.collection),
-    importedIcons: result.importedIcons.map(normalizeIconSummary),
-  }));
+    files: [],
+  });
+
+  return {
+    ...latestResult,
+    collection: normalizeCollectionSummary(latestResult.collection),
+    importedIcons,
+    rejectedFiles,
+  };
 }
 
 export function updateIconPieceAlt(
@@ -177,14 +209,5 @@ export function normalizeIconSummary(icon: IconSummary): IconSummary {
       ),
       lastExportUrl: filePathToAssetUrl(piece.lastExportUrl, piece.updatedAt),
     })),
-  };
-}
-
-async function fileToImportPayload(file: File) {
-  const bytes = Array.from(new Uint8Array(await file.arrayBuffer()));
-
-  return {
-    originalFilename: file.name,
-    bytes,
   };
 }

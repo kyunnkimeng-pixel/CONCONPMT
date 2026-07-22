@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import { Grid3X3, X } from "lucide-react";
 
 import type { CollectionSummary } from "@/features/collections/types";
@@ -25,6 +25,7 @@ import type {
   SheetGridSettings,
 } from "@/features/sheets/types";
 import { getCommandErrorMessage } from "@/lib/tauri";
+import { useModalFocus } from "@/lib/use-modal-focus";
 import { cn } from "@/lib/utils";
 
 type Step = "source" | "mode" | "auto" | "grid" | "review" | "manual" | "manifest";
@@ -38,6 +39,8 @@ export function SheetImportWizard({
   onClose: () => void;
   onImported: () => Promise<void>;
 }) {
+  const dialogRef = useRef<HTMLDivElement>(null);
+  useModalFocus(dialogRef, onClose);
   const [step, setStep] = useState<Step>("source");
   const [file, setFile] = useState<File | null>(null);
   const [settings, setSettings] = useState<SheetGridSettings>(() => defaultSheetGridSettings());
@@ -139,10 +142,20 @@ export function SheetImportWizard({
 
   return (
     <div className="fixed inset-0 z-50 flex items-center justify-center bg-slate-900/35 p-3 sm:p-6">
-      <div className="flex max-h-[92vh] w-full max-w-7xl flex-col overflow-hidden rounded-lg border border-border bg-surface shadow-xl">
+      <div
+        ref={dialogRef}
+        aria-labelledby="sheet-import-dialog-title"
+        aria-modal="true"
+        className="flex max-h-[92vh] w-full max-w-7xl flex-col overflow-hidden rounded-lg border border-border bg-surface shadow-xl"
+        role="dialog"
+        tabIndex={-1}
+      >
         <header className="flex items-center justify-between gap-3 border-b border-border px-5 py-4">
           <div>
-            <h2 className="flex items-center gap-2 text-base font-semibold">
+            <h2
+              className="flex items-center gap-2 text-base font-semibold"
+              id="sheet-import-dialog-title"
+            >
               <Grid3X3 aria-hidden="true" />
               시트 가져오기
             </h2>

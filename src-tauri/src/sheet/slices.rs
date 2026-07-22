@@ -12,6 +12,7 @@ use sha2::{Digest, Sha256};
 use crate::db::repositories::icons as icon_repository;
 use crate::error::{AppError, AppResult};
 use crate::ids::create_id;
+use crate::imaging::import_limits::decode_import_image;
 use crate::models::{IconDto, ImportImageFilePayload};
 use crate::paths::AppPaths;
 
@@ -133,7 +134,7 @@ pub fn analyze_manual_slices(
         false,
     )?;
     let format = image_format_for_extension(&source.extension)?;
-    let image = image::load_from_memory_with_format(&source.bytes, format)?;
+    let image = decode_import_image(&source.bytes, format)?;
     let rgba = image.to_rgba8();
     Ok(analyze_manual_slices_for_dimensions(
         i64::from(rgba.width()),
@@ -153,7 +154,7 @@ pub fn import_manual_slices(
         false,
     )?;
     let format = image_format_for_extension(&source.extension)?;
-    let image = image::load_from_memory_with_format(&source.bytes, format)?;
+    let image = decode_import_image(&source.bytes, format)?;
     let rgba = image.to_rgba8();
     let analysis = analyze_manual_slices_for_dimensions(
         i64::from(rgba.width()),

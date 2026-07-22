@@ -30,6 +30,7 @@ import {
   selectIcon,
   selectIconForContextMenu,
 } from "@/features/icons/selection/selection-model";
+import { useModalFocus } from "@/lib/use-modal-focus";
 
 interface IconGridProps {
   collection: CollectionSummary;
@@ -450,8 +451,10 @@ function BatchAltDialog({
   return (
     <div className="fixed inset-0 z-[60] pointer-events-none">
       <form
+        aria-labelledby="batch-alt-dialog-title"
         className="pointer-events-auto fixed flex w-[min(420px,calc(100vw-32px))] flex-col rounded-md border border-border bg-white shadow-xl"
         data-testid="batch-alt-dialog"
+        role="dialog"
         style={{
           left: position.x,
           top: position.y,
@@ -466,7 +469,12 @@ function BatchAltDialog({
           onPointerUp={stopDrag}
         >
           <div className="min-w-0">
-            <h3 className="text-sm font-semibold tracking-normal">alt 값 일괄 변경</h3>
+            <h3
+              className="text-sm font-semibold tracking-normal"
+              id="batch-alt-dialog-title"
+            >
+              alt 값 일괄 변경
+            </h3>
             <p className="mt-1 text-xs text-muted">
               선택 아이콘 {iconCount}개 · 실제 alt {pieceCount}개 변경
             </p>
@@ -530,16 +538,8 @@ function IconNoteDialog({
   onSave: (note: string) => void;
 }) {
   const [note, setNote] = useState(initialNote);
-
-  useEffect(() => {
-    const handleKeyDown = (event: KeyboardEvent) => {
-      if (event.key === "Escape") {
-        onClose();
-      }
-    };
-    window.addEventListener("keydown", handleKeyDown);
-    return () => window.removeEventListener("keydown", handleKeyDown);
-  }, [onClose]);
+  const dialogRef = useRef<HTMLFormElement>(null);
+  useModalFocus(dialogRef, onClose);
 
   const submit = (event: FormEvent) => {
     event.preventDefault();
@@ -549,12 +549,17 @@ function IconNoteDialog({
   return (
     <div className="fixed inset-0 z-[60] flex items-center justify-center bg-slate-900/30 p-4">
       <form
+        ref={dialogRef}
+        aria-labelledby="icon-note-dialog-title"
+        aria-modal="true"
         className="flex w-[min(460px,calc(100vw-32px))] flex-col rounded-md border border-border bg-white shadow-xl"
         data-testid="icon-note-dialog"
+        role="dialog"
+        tabIndex={-1}
         onSubmit={submit}
       >
         <header className="border-b border-border bg-canvas px-4 py-3">
-          <h3 className="text-sm font-semibold">메모</h3>
+          <h3 className="text-sm font-semibold" id="icon-note-dialog-title">메모</h3>
           <p className="mt-1 truncate text-xs text-muted">{displayName}</p>
         </header>
         <div className="grid gap-3 p-4">
