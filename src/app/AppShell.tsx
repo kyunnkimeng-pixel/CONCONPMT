@@ -4,6 +4,7 @@ import { FolderOpen, Home, Images } from "lucide-react";
 
 import { useAppStore } from "@/app/app-store";
 import { listCollections } from "@/features/collections/api";
+import { subscribeCollectionListChanged } from "@/features/collections/events";
 import type { CollectionSummary } from "@/features/collections/types";
 
 export function AppShell() {
@@ -18,21 +19,26 @@ export function AppShell() {
 
   useEffect(() => {
     let isActive = true;
+    let requestId = 0;
 
-    void listCollections()
-      .then((nextCollections) => {
-        if (isActive) {
-          setCollections(nextCollections);
-        }
-      })
-      .catch(() => {
-        if (isActive) {
-          setCollections([]);
-        }
-      });
+    const reloadCollections = () => {
+      const currentRequestId = requestId + 1;
+      requestId = currentRequestId;
+      void listCollections()
+        .then((nextCollections) => {
+          if (isActive && requestId === currentRequestId) {
+            setCollections(nextCollections);
+          }
+        })
+        .catch(() => undefined);
+    };
+
+    reloadCollections();
+    const unsubscribe = subscribeCollectionListChanged(reloadCollections);
 
     return () => {
       isActive = false;
+      unsubscribe();
     };
   }, [pathname]);
 
@@ -52,7 +58,12 @@ export function AppShell() {
 
           <nav aria-label="주요 위치" className="flex flex-col gap-1">
             <Link
-              className="flex items-center gap-2 rounded-md bg-sidebar-active px-3 py-2 text-sm font-medium text-foreground"
+              aria-current={pathname === "/" ? "page" : undefined}
+              className={
+                pathname === "/"
+                  ? "flex items-center gap-2 rounded-md bg-sidebar-active px-3 py-2 text-sm font-medium text-foreground"
+                  : "flex items-center gap-2 rounded-md px-3 py-2 text-sm text-muted hover:bg-sidebar-active hover:text-foreground"
+              }
               to="/"
             >
               <Home aria-hidden="true" />홈

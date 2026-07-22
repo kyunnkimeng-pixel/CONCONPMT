@@ -18,6 +18,7 @@ use crate::ids::create_id;
 use crate::imaging::gif_pipeline::{
     is_pingpong_loop_mode, output_repeat_for_settings, GifOutputRepeat,
 };
+use crate::imaging::import_limits::{decode_import_image, decode_import_image_file};
 use crate::models::ImportImageFilePayload;
 use crate::optimization::analyzer::{analyze_file, load_target, move_temp_file};
 use crate::optimization::cache::hash_text;
@@ -1038,9 +1039,11 @@ fn crop_reimport_frames(
 
 fn load_page_image_source(source: &PageImageSource) -> AppResult<RgbaImage> {
     match source {
-        PageImageSource::Path(path) => Ok(image::open(path)?.to_rgba8()),
+        PageImageSource::Path(path) => {
+            Ok(decode_import_image_file(path, ImageFormat::Png)?.to_rgba8())
+        }
         PageImageSource::Bytes(bytes) => {
-            Ok(image::load_from_memory_with_format(bytes, ImageFormat::Png)?.to_rgba8())
+            Ok(decode_import_image(bytes, ImageFormat::Png)?.to_rgba8())
         }
     }
 }

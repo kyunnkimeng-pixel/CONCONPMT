@@ -1,6 +1,6 @@
 # PMTCONCON Studio Release Readiness
 
-Last updated: 2026-05-14
+Last updated: 2026-07-23
 
 This page is the public release-readiness checklist for PMTCONCON Studio. Internal native QA logs remain under ignored `docs/QA_*.md` files, while this page summarizes the user-visible readiness state that can be published with the repository.
 
@@ -12,6 +12,8 @@ The current build covers the full local production workflow:
 - JPG, PNG, animated GIF, folder, drag-and-drop, and replacement import flows.
 - Icon grid selection, Ctrl/Shift multi-select, drag ordering, delete, duplicate, context menus, memo notes, and alt editing.
 - Single, horizontal double, and vertical double icon crop/export semantics.
+- Compact sticky editor output preview with live GIF, text-overlay, piece-count, display-size, and output-size feedback.
+- Bounded sequential imports with shared file, dimension, pixel, GIF-frame, and workload limits.
 - GIF preview, crop/resize, loop mode, ping-pong, text overlay, file-size candidates, and playback FPS variant application.
 - Usage preview in a DCInside-like comment layout.
 - Export workspace validation, selected-item rerun, optimization candidates, and `alts.txt` generation.
@@ -57,36 +59,37 @@ Expected notes:
 
 ## Current Verification Result
 
-The latest release-readiness pass completed successfully:
+The latest release-readiness pass completed with required packaging checks passed and one environment-blocked native WebDriver run:
 
 | Command | Result | Notes |
 | --- | --- | --- |
-| `node <docs-link-check>` | passed | `docs/index.html`, `README.md`, and this page resolve local links and manual image assets. |
+| Markdown local-link check | passed | `README.md`, release notes, release readiness, and installer QA local links resolve. |
 | `npm.cmd run lint` | passed | TypeScript compile check completed. |
-| `npm.cmd run test` | passed | 9 frontend test files, 46 tests. |
-| `cargo test --manifest-path src-tauri\Cargo.toml` | passed | 84 Rust tests, including sheet, GIF, presets, manual slice, auto-detect, export, and optimization coverage. |
+| `npm.cmd run test` | passed | 11 frontend test files, 53 tests. |
+| `cargo test --manifest-path src-tauri\Cargo.toml` | passed | 86 Rust tests, including import limits, sheet, GIF, presets, manual slice, auto-detect, export, and optimization coverage. |
 | `npm.cmd run build` | passed | Vite emitted the known large-chunk warning. |
 | `npm.cmd run license:forbidden` | passed | No forbidden optimizer dependency names found. |
 | `npm.cmd run license:check` | passed | Optional `cargo-deny` and `cargo-about` were not installed and were marked skipped by the script. |
 | `npm.cmd run tauri -- build` | passed | Built the release exe plus MSI and NSIS installers. |
 | `npm.cmd run release:checksums` | passed | Regenerated `SHA256SUMS.txt` from the current NSIS installer only. |
 | checksum verification | passed | NSIS SHA-256 hash matches `SHA256SUMS.txt`. |
-| NSIS silent install | passed | The setup installed to `%LOCALAPPDATA%\PMTCONCON Studio` and exited with code 0. |
-| installed app launch | passed | The installed app launched through Tauri driver with window title `PMTCONCON Studio`. |
-| MSI metadata validation | passed | Windows Installer database opens and reports product name `PMTCONCON Studio`, version `0.1.1`, and upgrade metadata. |
-| Authenticode signature check | noted | The MSI, NSIS setup, and installed exe are not signed. |
-| `node <native-smoke-harness>` | passed | Native Tauri E2E smoke covered startup, collection operations, import, alt validation, context menus, selection/reorder, editor apply, GIF loop, usage preview, and export validation. |
+| Editor output preview manual check | passed | The user confirmed the crop-adjacent compact sticky preview in the running desktop app before release packaging. |
+| NSIS silent install | not rerun | An existing local installation was intentionally preserved; the same Tauri NSIS installer family passed silent install QA for v0.1.1. |
+| release app launch | passed | The v0.1.2 release executable launched with isolated app data and window title `PMTCONCON Studio`. |
+| MSI metadata validation | passed | Windows Installer database opens and reports product name `PMTCONCON Studio`, version `0.1.2`, and stable upgrade metadata. |
+| Authenticode signature check | noted | The release exe, MSI, and NSIS setup are not signed. |
+| native Tauri WebDriver smoke | environment-blocked | The tracked EdgeDriver supports Edge 147 while local WebView2 is 150, so no app session was created. Unit, Rust, packaging, checksum, MSI metadata, and isolated release startup checks passed independently. |
 
 Generated installer paths from the latest pass:
 
-- `src-tauri/target/release/bundle/nsis/PMTCONCON Studio_0.1.1_x64-setup.exe`
+- `src-tauri/target/release/bundle/nsis/PMTCONCON Studio_0.1.2_x64-setup.exe`
 - `src-tauri/target/release/bundle/SHA256SUMS.txt`
 
 The MSI artifact is built but withheld from the selected release assets until a clean Windows VM MSI install/uninstall pass is completed.
 
 Remote publication status:
 
-- GitHub release `v0.1.1` should be published as the latest release.
+- GitHub release `v0.1.2` should be published as the latest release.
 - Publish only the current NSIS setup plus NSIS-only `SHA256SUMS.txt`.
 
 ## Manual QA Coverage
@@ -115,6 +118,6 @@ Recent native/manual QA covered:
 - [ ] Confirm `THIRD_PARTY_LICENSES.md` is current when dependencies change.
 - [ ] Confirm the installer artifacts are generated by `npm.cmd run tauri -- build`.
 - [ ] Run `npm.cmd run release:checksums` after the final package build.
-- [ ] Publish [Release Notes 0.1.1](RELEASE_NOTES_0.1.1.md) with the installer.
+- [ ] Publish [Release Notes 0.1.2](RELEASE_NOTES_0.1.2.md) with the installer.
 - [ ] Review [Installer Distribution QA](INSTALLER_DISTRIBUTION_QA.md) before publishing MSI artifacts.
 - [ ] Review the diff and include only public repository files. Keep ignored native QA artifacts and local-only workflow files untracked.

@@ -1,4 +1,4 @@
-import { useState } from "react";
+import { useRef, useState } from "react";
 import { Download, FolderOpen, X } from "lucide-react";
 
 import type { CollectionSummary, IconSummary } from "@/features/collections/types";
@@ -14,6 +14,7 @@ import {
 } from "@/features/sheets/sheet-ui-model";
 import type { ExportEditSheetRequest, ExportEditSheetResult, SheetBackground } from "@/features/sheets/types";
 import { getCommandErrorMessage } from "@/lib/tauri";
+import { useModalFocus } from "@/lib/use-modal-focus";
 
 export function SheetExportDialog({
   collection,
@@ -26,6 +27,8 @@ export function SheetExportDialog({
   selectedIconIds?: string[];
   onClose: () => void;
 }) {
+  const dialogRef = useRef<HTMLDivElement>(null);
+  useModalFocus(dialogRef, onClose);
   const [request, setRequest] = useState<ExportEditSheetRequest>(() => ({
     ...defaultExportSheetRequest(collection.id),
     selectedIconIds,
@@ -72,10 +75,20 @@ export function SheetExportDialog({
 
   return (
     <div className="fixed inset-0 z-50 flex items-center justify-center bg-slate-900/35 p-6">
-      <div className="flex max-h-[92vh] w-full max-w-5xl flex-col overflow-hidden rounded-lg border border-border bg-surface shadow-xl">
+      <div
+        ref={dialogRef}
+        aria-labelledby="sheet-export-dialog-title"
+        aria-modal="true"
+        className="flex max-h-[92vh] w-full max-w-5xl flex-col overflow-hidden rounded-lg border border-border bg-surface shadow-xl"
+        role="dialog"
+        tabIndex={-1}
+      >
         <header className="flex items-center justify-between gap-3 border-b border-border px-5 py-4">
           <div>
-            <h2 className="flex items-center gap-2 text-base font-semibold">
+            <h2
+              className="flex items-center gap-2 text-base font-semibold"
+              id="sheet-export-dialog-title"
+            >
               <Download aria-hidden="true" />
               {title}
             </h2>

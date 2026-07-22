@@ -2,6 +2,7 @@ use image::RgbaImage;
 use serde::{Deserialize, Serialize};
 
 use crate::error::{AppError, AppResult};
+use crate::imaging::import_limits::decode_import_image;
 
 use super::{image_format_for_extension, read_sheet_image_input};
 use crate::models::ImportImageFilePayload;
@@ -159,7 +160,7 @@ pub fn analyze_sheet_grid(request: SheetGridAnalyzeRequest) -> AppResult<SheetGr
         false,
     )?;
     let format = image_format_for_extension(&source.extension)?;
-    let image = image::load_from_memory_with_format(&source.bytes, format)?.to_rgba8();
+    let image = decode_import_image(&source.bytes, format)?.to_rgba8();
     let (sheet_width, sheet_height) = (i64::from(image.width()), i64::from(image.height()));
     let settings = SheetGridSettings {
         mode: request.mode,

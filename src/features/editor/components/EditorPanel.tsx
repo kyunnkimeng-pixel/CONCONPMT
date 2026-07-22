@@ -31,6 +31,7 @@ import {
   fixedCropForPreset,
 } from "@/features/editor/crop-math";
 import { CropCanvas } from "@/features/editor/components/CropCanvas";
+import { EditorOutputPreview } from "@/features/editor/components/EditorOutputPreview";
 import {
   applyGifOriginalPlaybackToPreview,
   applyOptimizationCandidate,
@@ -136,6 +137,7 @@ export function EditorPanel({
   const [errorMessage, setErrorMessage] = useState<string | null>(null);
   const [isAdvancedOpen, setIsAdvancedOpen] = useState(false);
   const resizeStartRef = useRef<{ pointerX: number; width: number } | null>(null);
+  const loadRequestIdRef = useRef(0);
   const [panelWidth, setPanelWidth] = useState(() => {
     const savedWidth = window.localStorage.getItem(EDITOR_PANEL_WIDTH_STORAGE_KEY);
     const parsedWidth = savedWidth ? Number.parseInt(savedWidth, 10) : NaN;
@@ -145,25 +147,38 @@ export function EditorPanel({
   });
 
   const loadEditorState = useCallback(async () => {
+    const requestId = loadRequestIdRef.current + 1;
+    loadRequestIdRef.current = requestId;
     setIsLoading(true);
     setErrorMessage(null);
     setStatusMessage(null);
 
     try {
       const state = await getIconEditorState(collection.id, iconId);
+      if (loadRequestIdRef.current !== requestId) {
+        return;
+      }
       setEditorState(state);
       setDraft(draftFromState(state, collection));
     } catch (error) {
+      if (loadRequestIdRef.current !== requestId) {
+        return;
+      }
       setErrorMessage(getCommandErrorMessage(error));
       setEditorState(null);
       setDraft(null);
     } finally {
-      setIsLoading(false);
+      if (loadRequestIdRef.current === requestId) {
+        setIsLoading(false);
+      }
     }
   }, [collection, iconId]);
 
   useEffect(() => {
     void loadEditorState();
+    return () => {
+      loadRequestIdRef.current += 1;
+    };
   }, [loadEditorState]);
 
   useEffect(() => {
@@ -487,7 +502,7 @@ export function EditorPanel({
         </button>
       </header>
 
-      <div className="flex-1 overflow-auto px-5 py-4">
+      <div className="min-h-0 flex-1 overflow-y-auto overflow-x-hidden px-5 py-4">
         {isLoading ? (
           <p className="text-sm text-muted">편집 정보를 불러오는 중입니다.</p>
         ) : null}
@@ -534,6 +549,27 @@ export function EditorPanel({
                 onCropChange={handleCropChange}
               />
             </section>
+
+            <EditorOutputPreview
+              cellHeight={draft.cellHeight}
+              cellWidth={draft.cellWidth}
+              previewHeight={collection.previewHeight}
+              previewWidth={collection.previewWidth}
+              shape={draft.shape}
+            >
+              <LiveCropPreview
+                cellHeight={draft.cellHeight}
+                cellWidth={draft.cellWidth}
+                crop={draft.crop}
+                previewHeight={collection.previewHeight}
+                previewWidth={collection.previewWidth}
+                shape={draft.shape}
+                sourceHeight={editorState.source.height}
+                sourceUrl={editorState.source.originalImageUrl}
+                sourceWidth={editorState.source.width}
+                textOverlay={editorState.textOverlay}
+              />
+            </EditorOutputPreview>
 
             <section className="flex flex-col gap-3 border-t border-border pt-4">
               <h3 className="text-sm font-semibold tracking-normal">모양</h3>
@@ -672,29 +708,6 @@ export function EditorPanel({
                 ) : null}
               </section>
             ) : null}
-
-            <section className="flex flex-col gap-3 border-t border-border pt-4">
-              <h3 className="text-sm font-semibold tracking-normal">처리 미리보기</h3>
-              <div
-                className="flex items-center justify-center rounded-md border border-border bg-preview"
-                style={{
-                  minHeight: collection.previewHeight + 24,
-                }}
-              >
-                <LiveCropPreview
-                  cellHeight={draft.cellHeight}
-                  cellWidth={draft.cellWidth}
-                  crop={draft.crop}
-                  previewHeight={collection.previewHeight}
-                  previewWidth={collection.previewWidth}
-                  shape={draft.shape}
-                  sourceHeight={editorState.source.height}
-                  sourceUrl={editorState.source.originalImageUrl}
-                  sourceWidth={editorState.source.width}
-                  textOverlay={editorState.textOverlay}
-                />
-              </div>
-            </section>
 
             {statusMessage ? (
               <p className="text-sm text-muted" role="status">

@@ -392,7 +392,7 @@ fn analyze_gif_file_streaming(path: &Path) -> AppResult<FileAnalysis> {
     }
 
     if frame_count == 0 {
-        return Err(AppError::new("gif", "GIF ?꾨젅?꾩쓣 李얠쓣 ???놁뒿?덈떎."));
+        return Err(AppError::new("gif", "GIF 프레임을 찾을 수 없습니다."));
     }
 
     let average_fps = if duration_ms > 0 {

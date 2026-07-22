@@ -18,6 +18,7 @@ use std::path::{Path, PathBuf};
 use image::ImageFormat;
 
 use crate::error::{AppError, AppResult};
+use crate::imaging::import_limits::validate_import_file_size;
 use crate::models::ImportImageFilePayload;
 
 #[derive(Debug, Clone)]
@@ -35,6 +36,7 @@ pub(crate) fn read_sheet_image_input(
     match (sheet_path, sheet_file) {
         (_, Some(file)) => {
             let extension = normalized_extension(&file.original_filename, allow_gif)?;
+            validate_import_file_size(file.bytes.len())?;
             Ok(SheetImageInput {
                 original_filename: file.original_filename.clone(),
                 bytes: file.bytes.clone(),
@@ -49,6 +51,10 @@ pub(crate) fn read_sheet_image_input(
                 .ok_or_else(|| AppError::new("validation", "시트 파일 이름을 확인할 수 없습니다."))?
                 .to_string();
             let extension = normalized_extension(&filename, allow_gif)?;
+            let metadata = fs::metadata(&source_path)?;
+            let byte_size = usize::try_from(metadata.len())
+                .map_err(|_| AppError::new("validation", "시트 파일 크기를 확인할 수 없습니다."))?;
+            validate_import_file_size(byte_size)?;
             let bytes = fs::read(&source_path)?;
             Ok(SheetImageInput {
                 original_filename: filename,

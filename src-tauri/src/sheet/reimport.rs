@@ -8,6 +8,7 @@ use rusqlite::Connection;
 use serde::{Deserialize, Serialize};
 
 use crate::error::{AppError, AppResult};
+use crate::imaging::import_limits::{decode_import_image, decode_import_image_file};
 use crate::paths::AppPaths;
 
 use super::importer::{create_icons_from_png_cells, png_bytes_from_rgba, CellImportInput};
@@ -80,7 +81,7 @@ pub fn reimport_edit_sheet(
 
     for page in &manifest.pages {
         let image = if let Some(bytes) = sheet_files.get(&page.clean_sheet_file) {
-            match image::load_from_memory_with_format(bytes, ImageFormat::Png) {
+            match decode_import_image(bytes, ImageFormat::Png) {
                 Ok(image) => image.to_rgba8(),
                 Err(error) => {
                     errors.push(format!("{}: {}", page.clean_sheet_file, error));
@@ -95,7 +96,7 @@ pub fn reimport_edit_sheet(
                 ));
                 continue;
             };
-            match image::open(path) {
+            match decode_import_image_file(path, ImageFormat::Png) {
                 Ok(image) => image.to_rgba8(),
                 Err(error) => {
                     errors.push(format!("{}: {}", path.display(), error));
@@ -292,7 +293,7 @@ fn write_reimport_variant(
     }
     fs::write(&path, bytes)?;
 
-    if image::load_from_memory_with_format(bytes, ImageFormat::Png).is_err() {
+    if decode_import_image(bytes, ImageFormat::Png).is_err() {
         return Err(AppError::new(
             "image",
             "다시 가져온 셀 PNG를 검증할 수 없습니다.",

@@ -360,10 +360,7 @@ pub(crate) fn write_gif_playback_fps_candidate_streaming(
     }
 
     if !wrote_any {
-        return Err(AppError::new(
-            "gif",
-            "GIF ?꾨낫 ?꾨젅?꾩쓣 留뚮뱾 ???놁뒿?덈떎.",
-        ));
+        return Err(AppError::new("gif", "GIF 후보 프레임을 만들 수 없습니다."));
     }
 
     Ok(())

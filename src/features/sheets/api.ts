@@ -1,4 +1,8 @@
 import { normalizeIconSummary } from "@/features/icons/api";
+import {
+  fileToImportPayload,
+  filesToImportPayloads,
+} from "@/lib/import-file";
 import { invokeCommand } from "@/lib/tauri";
 import type {
   ExportEditSheetRequest,
@@ -117,11 +121,15 @@ export async function reimportEditSheet(
   editedSheetFiles: File[],
   reimportMode: "create_new_icons" | "create_processed_variants" = "create_new_icons",
 ) {
+  const [manifestPayload, ...editedSheetPayloads] = await filesToImportPayloads([
+    manifestFile,
+    ...editedSheetFiles,
+  ]);
   return invokeCommand<ReimportEditSheetResult>("reimport_edit_sheet", {
     request: {
       manifestPath: "",
-      manifestFile: await fileToSheetPayload(manifestFile),
-      editedSheetFiles: await Promise.all(editedSheetFiles.map(fileToSheetPayload)),
+      manifestFile: manifestPayload,
+      editedSheetFiles: editedSheetPayloads,
       editedSheetPaths: [],
       targetCollectionId: collectionId,
       reimportMode,
@@ -151,11 +159,15 @@ export async function validateGifFrameSheetReimport(
   manifestFile: File,
   editedFrameSheetFiles: File[],
 ) {
+  const [manifestPayload, ...editedFrameSheetPayloads] = await filesToImportPayloads([
+    manifestFile,
+    ...editedFrameSheetFiles,
+  ]);
   return invokeCommand<GifFrameSheetReimportValidation>("validate_gif_frame_sheet_reimport", {
     request: {
       manifestPath: "",
-      manifestFile: await fileToSheetPayload(manifestFile),
-      editedFrameSheetFiles: await Promise.all(editedFrameSheetFiles.map(fileToSheetPayload)),
+      manifestFile: manifestPayload,
+      editedFrameSheetFiles: editedFrameSheetPayloads,
       editedFrameSheetPaths: [],
     },
   });
@@ -168,11 +180,15 @@ export async function reimportGifFrameSheet(
   setActiveVariant: boolean,
   targetProfileId: string | null,
 ) {
+  const [manifestPayload, ...editedFrameSheetPayloads] = await filesToImportPayloads([
+    manifestFile,
+    ...editedFrameSheetFiles,
+  ]);
   return invokeCommand<GifFrameSheetReimportResult>("reimport_gif_frame_sheet", {
     request: {
       manifestPath: "",
-      manifestFile: await fileToSheetPayload(manifestFile),
-      editedFrameSheetFiles: await Promise.all(editedFrameSheetFiles.map(fileToSheetPayload)),
+      manifestFile: manifestPayload,
+      editedFrameSheetFiles: editedFrameSheetPayloads,
       editedFrameSheetPaths: [],
       targetIconId,
       createVariant: true,
@@ -227,8 +243,5 @@ export function getDefaultSheetGridPreset(
 }
 
 export async function fileToSheetPayload(file: File): Promise<SheetFilePayload> {
-  return {
-    originalFilename: file.name,
-    bytes: Array.from(new Uint8Array(await file.arrayBuffer())),
-  };
+  return fileToImportPayload(file);
 }

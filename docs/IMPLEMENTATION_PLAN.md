@@ -237,3 +237,34 @@ Done when: users can manually define rectangular slices from a source sheet and 
 5. Let users apply a proposal into the existing grid overlay/review workflow.
 
 Done when: auto-detect never auto-imports cells, proposal application still requires grid overlay and cell review, transparent separator / solid background / no-proposal cases have Rust tests, and frontend proposal rendering has test coverage.
+
+## Stage REVIEW_REMEDIATION_2026_07 - Reliability and usability repair
+1. Keep ordinary export warnings advisory and non-blocking; do not change warning policy in this repair stage.
+2. Bound untrusted image, sheet, and GIF inputs in both frontend payload creation and Rust decoding; process normal folder imports one file at a time.
+3. Expose collection soft-delete through toolbar, context menu, and Delete key, then invalidate the sidebar collection list after collection mutations.
+4. Make the collection command bar wrap below the title at the default window width.
+5. Guard editor state loading against stale async responses and remount the editor when its icon changes.
+6. Repair corrupted Korean GIF errors and add dialog semantics, focus trapping, Escape handling, and focus restoration to custom modal surfaces.
+7. Commit an npm lockfile, remove the pnpm lock, remove unused vulnerable CLI dependencies, and verify a clean npm install.
+
+Done when: frontend lint/tests/build and Rust tests pass, clean `npm ci` reports no vulnerabilities, license guardrails pass, and no reviewed P1/P2 item outside the explicitly excluded strict-warning behavior remains.
+
+## Stage EDITOR_OUTPUT_PREVIEW_PLACEMENT - Editor feedback visibility
+1. Move the live output preview directly below the source crop canvas.
+2. Keep the preview visible at the top of the editor scroll area while the user changes shape, size, crop mode, position, and GIF settings.
+3. Rename the user-facing label from `처리 미리보기` to `출력 미리보기` and show draft/display/output-size context.
+4. Preserve existing GIF playback, text overlay, and single/horizontal-double/vertical-double rendering behavior.
+5. Add a focused frontend render test and rerun lint, tests, and the production build.
+
+Done when: crop changes and their output can be compared without scrolling to the end of the settings, the preview remains compact at custom sizes, and the frontend verification commands pass.
+
+Status: implemented. The output preview now follows the crop canvas, remains sticky while settings scroll, reports draft/display/output-piece context, and fits large or vertical previews into a bounded 220×128 visual area. Focused and full frontend tests, lint, and the production build pass.
+
+## Stage RELEASE_0_1_2 - Windows patch release
+1. Bump all package, Tauri, Cargo, lockfile, notice, and public-document version surfaces from 0.1.1 to 0.1.2.
+2. Publish release notes covering bounded imports, Explorer usability repairs, accessibility/reliability fixes, and the compact sticky editor output preview.
+3. Run frontend, Rust, license, and production packaging checks.
+4. Build the Windows release executable, MSI, and NSIS setup, then generate and verify an NSIS-only SHA-256 checksum file.
+5. Push the reviewed branch, merge the existing pull request, tag merged `main` as `v0.1.2`, and publish the NSIS setup plus checksum through GitHub Releases.
+
+Done when: the public `v0.1.2` release points to merged `main`, exposes the matching unsigned NSIS installer and checksum, and retains the MSI locally pending clean-machine QA.

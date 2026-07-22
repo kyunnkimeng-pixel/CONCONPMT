@@ -1,6 +1,7 @@
 use std::io::Cursor;
 
 use crate::error::{AppError, AppResult};
+use crate::imaging::import_limits::validate_gif_workload;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum GifOutputRepeat {
@@ -24,6 +25,8 @@ pub fn inspect_gif_bytes(bytes: &[u8]) -> Result<GifInspection, String> {
         .map_err(|_| "GIF 파일을 읽을 수 없습니다.".to_string())?;
     let repeat = reader.repeat();
     let has_loop_extension = has_netscape_loop_extension(bytes);
+    let width = u32::from(reader.width());
+    let height = u32::from(reader.height());
     let mut frame_count = 0_i64;
 
     while reader
@@ -32,6 +35,7 @@ pub fn inspect_gif_bytes(bytes: &[u8]) -> Result<GifInspection, String> {
         .is_some()
     {
         frame_count += 1;
+        validate_gif_workload(width, height, frame_count)?;
     }
 
     if frame_count == 0 {

@@ -1,6 +1,6 @@
 ﻿# Third-Party Licenses
 
-Generated: 2026-05-11T13:20:10Z
+Generated: 2026-07-22T17:55:49Z
 
 This file is a best-effort notice index for PMTCONCON Studio. It does not replace legal review. Preserve upstream copyright and license notices when distributing binaries.
 
@@ -35,7 +35,6 @@ PMTCONCON Studio is MIT licensed. Built-in optimization must not bundle or link 
 - react 19.2.6 (dependency, declared ^19.1.0): MIT; from node_modules package.json.
 - react-dom 19.2.6 (dependency, declared ^19.1.0): MIT; from node_modules package.json.
 - react-konva 19.2.4 (dependency, declared ^19.2.4): MIT; from node_modules package.json.
-- shadcn 4.7.0 (devDependency, declared ^4.7.0): MIT; from node_modules package.json.
 - tailwindcss 4.2.4 (dependency, declared ^4.2.4): MIT; from node_modules package.json.
 - tailwind-merge 3.5.0 (dependency, declared ^3.5.0): MIT; from node_modules package.json.
 - tw-animate-css 1.4.0 (dependency, declared ^1.4.0): MIT; from node_modules package.json.
@@ -224,7 +223,7 @@ PMTCONCON Studio is MIT licensed. Built-in optimization must not bundle or link 
 - phf_shared 0.13.1: MIT; from local cargo registry Cargo.toml.
 - pin-project-lite 0.2.17: Apache-2.0 OR MIT; from local cargo registry Cargo.toml.
 - plist 1.9.0: MIT; from local cargo registry Cargo.toml.
-- pmtconcon-studio 0.1.0: MIT; from workspace Cargo.toml.
+- pmtconcon-studio 0.1.2: MIT; from workspace Cargo.toml.
 - png 0.17.16: MIT OR Apache-2.0; from local cargo registry Cargo.toml.
 - png 0.18.1: MIT OR Apache-2.0; from local cargo registry Cargo.toml.
 - potential_utf 0.1.5: Unicode-3.0; from local cargo registry Cargo.toml.
