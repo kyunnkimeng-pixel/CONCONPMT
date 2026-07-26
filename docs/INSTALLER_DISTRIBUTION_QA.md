@@ -27,7 +27,7 @@ local installation.
 | `npm.cmd run release:checksums` | passed | Generated the checksum file from the current 0.2.0 NSIS artifact only. |
 | NSIS size | passed | 5,374,624 bytes. |
 | NSIS SHA-256 | passed | `81ad31a91f38309d0ac3327eb6b58252fa86e9b470fc9c5b9939a5246fbd8800`. |
-| Checksum comparison | passed | Actual NSIS hash matches `SHA256SUMS.txt`, whose filename entry is the root-level GitHub asset basename. |
+| Checksum comparison | passed | Actual NSIS hash matches `SHA256SUMS.txt`, whose filename entry uses GitHub's dot-normalized root-level asset basename. |
 | Release executable metadata | passed | Product name `PMTCONCON Studio`, file/product version `0.2.0`. |
 | Release app launch | passed | Packaged executable opened with isolated app data and window title `PMTCONCON Studio`. |
 | Startup database | passed | SQLite integrity `ok`; 11 migrations applied through `011_icon_motion_recipes`. |
@@ -54,5 +54,5 @@ SHA-256 checksum.
 - Repository: `kyunnkimeng-pixel/CONCONPMT`
 - Tag: `v0.2.0`
 - Release name: `PMTCONCON Studio v0.2.0`
-- Assets: `PMTCONCON Studio_0.2.0_x64-setup.exe`, `SHA256SUMS.txt`
+- Assets: `PMTCONCON.Studio_0.2.0_x64-setup.exe`, `SHA256SUMS.txt`
 - Body: `docs/RELEASE_NOTES_0.2.0.md`
