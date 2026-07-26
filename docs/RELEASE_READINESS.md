@@ -53,7 +53,7 @@ npm.cmd run release:checksums
 | Dependency/license guardrails | passed | No forbidden dependency names; optional `cargo-deny` and `cargo-about` were unavailable and explicitly skipped. |
 | Diff hygiene | passed | No whitespace errors or conflict markers. Git reports only the repository's existing LF-to-CRLF checkout warnings. |
 | Tauri packaging | passed | Built the release executable, x64 MSI, and x64 NSIS setup for 0.2.0. |
-| NSIS checksum | passed | SHA-256 matches `SHA256SUMS.txt`. |
+| NSIS checksum | passed | SHA-256 matches `SHA256SUMS.txt`; its filename entry matches GitHub's dot-normalized downloaded asset name. |
 | Packaged executable metadata | passed | Product name `PMTCONCON Studio`, file/product version `0.2.0`. |
 | Isolated packaged launch | passed | Release executable opened with window title `PMTCONCON Studio` and created a separate app-data library. |
 | Isolated database startup | passed | SQLite integrity `ok`; all 11 migrations applied through `011_icon_motion_recipes`. |
@@ -88,5 +88,5 @@ is withheld until a clean Windows VM install/uninstall pass is completed.
 - Tag and release: `v0.2.0`
 - Release name: `PMTCONCON Studio v0.2.0`
 - Release notes: [`RELEASE_NOTES_0.2.0.md`](RELEASE_NOTES_0.2.0.md)
-- Public assets: unsigned NSIS setup plus matching `SHA256SUMS.txt`
+- Public assets: unsigned `PMTCONCON.Studio_0.2.0_x64-setup.exe` plus matching `SHA256SUMS.txt`
 - MSI publication: deferred pending clean-machine QA
