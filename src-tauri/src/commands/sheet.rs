@@ -4,6 +4,9 @@ use crate::app_state::AppState;
 use crate::error::AppResult;
 use crate::sheet::auto_detect::{AutoDetectSheetGridRequest, AutoDetectSheetGridResult};
 use crate::sheet::exporter::{ExportEditSheetRequest, ExportEditSheetResult};
+use crate::sheet::frame_sheet_gif::{
+    FrameSheetGifCreateResult, FrameSheetGifMeasurement, FrameSheetGifRequest,
+};
 use crate::sheet::gif_frames::{
     AnalyzeGifFrameSheetExportRequest, GifFrameSheetExportAnalysis, GifFrameSheetExportRequest,
     GifFrameSheetExportResult, GifFrameSheetReimportRequest, GifFrameSheetReimportResult,
@@ -49,8 +52,28 @@ pub fn import_sheet_cells(
     request: ImportSheetCellsRequest,
 ) -> AppResult<ImportSheetCellsResult> {
     let paths = state.paths().clone();
-    let mut connection = state.connection()?;
+    let mut connection = state.render_connection()?;
     crate::sheet::importer::import_sheet_cells(&mut connection, &paths, request)
+}
+
+#[tauri::command]
+pub fn measure_frame_sheet_gif(
+    state: State<'_, AppState>,
+    request: FrameSheetGifRequest,
+) -> AppResult<FrameSheetGifMeasurement> {
+    let paths = state.paths().clone();
+    let connection = state.render_connection()?;
+    crate::sheet::frame_sheet_gif::measure_frame_sheet_gif(&connection, &paths, request)
+}
+
+#[tauri::command]
+pub fn create_frame_sheet_gif(
+    state: State<'_, AppState>,
+    request: FrameSheetGifRequest,
+) -> AppResult<FrameSheetGifCreateResult> {
+    let paths = state.paths().clone();
+    let mut connection = state.render_connection()?;
+    crate::sheet::frame_sheet_gif::create_frame_sheet_gif(&mut connection, &paths, request)
 }
 
 #[tauri::command]
@@ -67,7 +90,7 @@ pub fn import_manual_slices(
     request: ImportManualSlicesRequest,
 ) -> AppResult<ImportManualSlicesResult> {
     let paths = state.paths().clone();
-    let mut connection = state.connection()?;
+    let mut connection = state.render_connection()?;
     crate::sheet::slices::import_manual_slices(&mut connection, &paths, request)
 }
 
@@ -95,7 +118,7 @@ pub fn export_edit_sheet(
     request: ExportEditSheetRequest,
 ) -> AppResult<ExportEditSheetResult> {
     let paths = state.paths().clone();
-    let connection = state.connection()?;
+    let connection = state.render_connection()?;
     crate::sheet::exporter::export_edit_sheet(&connection, &paths, request)
 }
 
@@ -105,7 +128,7 @@ pub fn reimport_edit_sheet(
     request: ReimportEditSheetRequest,
 ) -> AppResult<ReimportEditSheetResult> {
     let paths = state.paths().clone();
-    let mut connection = state.connection()?;
+    let mut connection = state.render_connection()?;
     crate::sheet::reimport::reimport_edit_sheet(&mut connection, &paths, request)
 }
 
@@ -114,7 +137,7 @@ pub fn analyze_gif_frame_sheet_export(
     state: State<'_, AppState>,
     request: AnalyzeGifFrameSheetExportRequest,
 ) -> AppResult<GifFrameSheetExportAnalysis> {
-    let connection = state.connection()?;
+    let connection = state.render_connection()?;
     crate::sheet::gif_frames::analyze_gif_frame_sheet_export(&connection, request)
 }
 
@@ -124,7 +147,7 @@ pub fn export_gif_frame_sheet(
     request: GifFrameSheetExportRequest,
 ) -> AppResult<GifFrameSheetExportResult> {
     let paths = state.paths().clone();
-    let connection = state.connection()?;
+    let connection = state.render_connection()?;
     crate::sheet::gif_frames::export_gif_frame_sheet(&connection, &paths, request)
 }
 
@@ -142,7 +165,7 @@ pub fn reimport_gif_frame_sheet(
     request: GifFrameSheetReimportRequest,
 ) -> AppResult<GifFrameSheetReimportResult> {
     let paths = state.paths().clone();
-    let connection = state.connection()?;
+    let connection = state.render_connection()?;
     crate::sheet::gif_frames::reimport_gif_frame_sheet(&connection, &paths, request)
 }
 
@@ -151,7 +174,7 @@ pub fn list_sheet_grid_presets(
     state: State<'_, AppState>,
     collection_id: Option<String>,
 ) -> AppResult<Vec<SheetGridPresetDto>> {
-    let connection = state.connection()?;
+    let connection = state.render_connection()?;
     crate::sheet::presets::list_sheet_grid_presets(&connection, collection_id)
 }
 
@@ -160,7 +183,7 @@ pub fn create_sheet_grid_preset(
     state: State<'_, AppState>,
     input: SheetGridPresetInput,
 ) -> AppResult<SheetGridPresetDto> {
-    let connection = state.connection()?;
+    let connection = state.render_connection()?;
     crate::sheet::presets::create_sheet_grid_preset(&connection, input)
 }
 
@@ -170,13 +193,13 @@ pub fn update_sheet_grid_preset(
     id: String,
     input: SheetGridPresetInput,
 ) -> AppResult<SheetGridPresetDto> {
-    let connection = state.connection()?;
+    let connection = state.render_connection()?;
     crate::sheet::presets::update_sheet_grid_preset(&connection, id, input)
 }
 
 #[tauri::command]
 pub fn delete_sheet_grid_preset(state: State<'_, AppState>, id: String) -> AppResult<()> {
-    let connection = state.connection()?;
+    let connection = state.render_connection()?;
     crate::sheet::presets::delete_sheet_grid_preset(&connection, id)
 }
 
@@ -185,7 +208,7 @@ pub fn duplicate_sheet_grid_preset(
     state: State<'_, AppState>,
     id: String,
 ) -> AppResult<SheetGridPresetDto> {
-    let connection = state.connection()?;
+    let connection = state.render_connection()?;
     crate::sheet::presets::duplicate_sheet_grid_preset(&connection, id)
 }
 
@@ -196,7 +219,7 @@ pub fn set_default_sheet_grid_preset(
     target: String,
     collection_id: Option<String>,
 ) -> AppResult<SheetGridPresetDto> {
-    let connection = state.connection()?;
+    let connection = state.render_connection()?;
     crate::sheet::presets::set_default_sheet_grid_preset(&connection, id, target, collection_id)
 }
 
@@ -206,6 +229,6 @@ pub fn get_default_sheet_grid_preset(
     target: String,
     collection_id: Option<String>,
 ) -> AppResult<Option<SheetGridPresetDto>> {
-    let connection = state.connection()?;
+    let connection = state.render_connection()?;
     crate::sheet::presets::get_default_sheet_grid_preset(&connection, target, collection_id)
 }

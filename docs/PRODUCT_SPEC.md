@@ -72,7 +72,7 @@ DCInside 외 이모티콘 제작을 위해 collection 또는 icon 단위로 기�
 - 고정모드: 박스 크기 고정, 위치만 이동 가능.
 - 고정모드 위치 프리셋: 중앙, 좌상단, 상단, 우상단, 좌측, 우측, 좌하단, 하단, 우하단.
 - GIF 반복 설정: 원본 유지, 무한 반복, 1회, 사용자 지정 반복 횟수.
-- 적용, 되돌리기, 원본으로 초기화.
+- 적용, `크롭 기본값`, `저장값으로 되돌리기`.
 
 적용을 눌러도 원본과 crop metadata를 유지해서 나중에 박스 위치/크기를 다시 수정할 수 있어야 한다.
 
@@ -155,3 +155,133 @@ Custom profile에서는 별도 규칙을 설정할 수 있다.
 ## 2026-05-10 QA stabilization policy note
 
 - Latest user direction for export UX: DCInside output count and alt-text validity/duplication should be shown as warnings in sequence filename export, not as hard blockers. Truly mechanical export blockers still block: empty collection, missing source files, unsupported output mechanics, unsafe alt filename mode collisions/empty stems, invalid dimensions where output cannot be produced safely, and encoded file size over the configured hard byte limit.
+
+## 11. 편집 완성도 확장 범위
+
+2026-07-24 사용자 승인 범위는 다음 다섯 단계다. 각 단계는 구현·검증 후 별도
+Stage Gate를 통과해야 하며 미래 기능을 동작하지 않는 메뉴로 먼저 노출하지 않는다.
+
+1. 초기화 의미와 기존 기능 발견성 개선
+2. 비파괴 좌우/상하 반전과 90도 회전
+3. 임의 프레임 시트에서 새 GIF 만들기
+4. 픽셀화와 검증된 내장 효과
+5. 컬렉션 복제 완전성 보강
+
+### 초기화 의미
+
+- `크롭 기본값`은 현재 편집 draft의 crop만 기본 위치와 크기로 되돌린다.
+- `저장값으로 되돌리기`는 이번 편집 draft를 마지막 저장 상태로 복원한다.
+- `미리보기 비우기`는 실사용 미리보기의 임시 댓글과 삽입 아이콘만 비운다.
+- `분할 설정 초기값`은 시트 분할 draft와 기존 셀 분석/선택만 앱 초기값으로
+  되돌리며 저장된 기본 프리셋을 뜻하지 않는다.
+- 향후 `이 아이콘의 시각 편집 초기화`는 crop, transform, effect, text, active
+  visual variant만 대상으로 하고 아이콘명, alt, 메모, 순서, 원본은 유지한다.
+- 앱 데이터 전체 초기화는 편집기 초기화와 분리하고 위험 구역과 강한 확인을
+  사용한다.
+
+### 정적 이모티콘 시트
+
+- Aseprite의 sprite sheet UX는 GIF 전용 참고가 아니다. 기존 다중 이모티콘
+  가져오기에도 시작 X/Y, cell 크기, padding/gap, 행·열 수와 읽기 순서를
+  독립적으로 검토하는 원칙을 적용한다.
+- 정적 시트 가져오기는 번호 overlay, 빈 셀 후보 제외와 셀별 포함/제외 검토를
+  거친다.
+- 정적 작업 시트 내보내기는 영속화된 icon/piece 순서를 유지하고, 편집용 clean
+  sheet와 확인용 guide sheet 및 ID mapping manifest를 분리한다.
+- packed layout은 manifest 없이 원위치 재가져오기에 사용하지 않는다.
+
+### 프레임 시트 → GIF
+
+- grid offset, cell size, gap/padding, 행/열과 읽기 순서를 먼저 검토한다.
+- 선택 프레임은 한 줄 frame strip에서 순서, 포함 여부와 frame duration(ms)을
+  편집한다.
+- FPS는 frame duration 일괄 입력의 편의 기능이며 persisted timing의 기준은
+  frame별 duration이다.
+- 실시간 preview, 반복(한 번/무한/지정), 생성 방향(정방향/역방향/핑퐁),
+  총 재생시간, 실제 측정 용량을 GIF 생성 전에 확인한다.
+- 첫 MVP의 역방향/핑퐁은 생성 frame sequence에 반영하며 별도 영속 direction
+  필드는 수용 기준으로 약속하지 않는다.
+- 원본 sheet를 library에 보존하고 생성 GIF를 새 animated icon으로 등록한다.
+
+### 변형과 효과
+
+- 변형/effect recipe는 비파괴 metadata로 영속화하고 preview/export에 동일하게
+  적용한다.
+- 90도 회전은 비정사각 cell의 너비/높이와 가로/세로 다중콘 shape을 교환한다.
+  piece ID와 alt는 시각 내용에 따라 이동하고 piece index/role은 변형 후 출력
+  위치를 나타낸다.
+- transform은 결합 viewport 전체에 적용한 뒤 piece를 분할하며 GIF의 모든
+  frame에 동일하게 적용한다. 원본 교체 시 crop과 transform은 기본값으로
+  초기화한다.
+- 첫 정적 효과군은 픽셀화, 색상 조정, 흑백/세피아 tone, 블러, 선명화,
+  윤곽선, 그림자의 7종이다.
+- 정적 효과는 아이콘별 `pmtcon-effects-v1` ordered JSON recipe로 저장한다.
+  recipe revision을 함께 저장하고 마지막으로 읽은 revision과 다른 저장은
+  충돌로 거부한다. 각 step은 안정적인 ID, enabled 상태와 bounded parameter를
+  가지며 step 순서가 렌더 결과와 hash에 영향을 준다.
+- 정적 효과는 crop/resize와 whole-viewport transform 뒤, piece split 전에
+  결합 viewport 전체에 적용한다. GIF는 같은 순서와 parameter를 모든 frame에
+  적용하고 기존 frame delay와 loop 설정을 가능한 범위에서 보존한다.
+- 브라우저 CSS filter를 결과 기준으로 사용하지 않는다. Rust native renderer가
+  exact preview와 저장·export 결과의 기준이며 optimizer 분석, 정적 작업 시트,
+  GIF frame 작업 시트의 source/render recipe hash에도 같은 effect recipe를
+  포함한다.
+- 정적 효과 MVP는 기존 `image`/`gif` 처리 기반으로 구현하며 새 effect
+  dependency나 외부 editor runtime을 추가하지 않는다.
+
+### Motion 효과
+
+- motion 효과는 구현 완료된 필수 편집 기능이다. 아이콘별 revision과 함께
+  `pmtcon-motion-v1` 정규화 recipe를 영속화하며 stale revision 또는 render
+  signature로 저장된 측정값이 만료되면 저장을 거부한다.
+- 모션 탭은 다음 네 범주의 16개 preset을 제공한다.
+  - 공간 변형: 흔들기, 통통 튀기, 두근/호흡, 까딱 회전, 회전
+  - procedural displacement: 가로/세로 사인파 물결, 2축 젤리 일렁임,
+    방사형 리플, 제한된 글리치 밴드
+  - 색상·불투명도: 색조 순환, 지정색 박동, 밝기·채도 박동, 번쩍임
+  - overlay: 집중선, 반짝이, 확산 링
+- 범주별 최대 한 효과만 활성화하고 `저장된 정적 효과 결과 → 공간 변형 →
+  displacement → 색상·불투명도 → overlay`의 고정 합성 순서를 사용한다.
+  효과는 다중콘 결합 viewport 전체에 적용한 뒤 piece를 분할한다.
+- 반복 출력은 normalized phase와 정수 cycles-per-loop를 사용해 결정적으로
+  이어져야 한다. 정적 입력은 duration과 FPS로 새 GIF가 되며, 기존 GIF는 frame
+  index가 아니라 누적 frame timestamp로 phase를 계산하고 원본 frame timing과
+  effective loop를 보존한다. 흔들림·반짝이 같은 변동 효과는 persisted seed로
+  재현한다.
+- displacement는 output pixel에서 source pixel을 찾는 inverse sampling으로
+  구현한다. bilinear 보간은 premultiplied alpha에서 수행하고 pixel art를 위한
+  nearest 옵션과 transparent/clamp/mirror bounded edge handling을 제공한다.
+- motion UI는 play/pause, OS reduced-motion 상태, duration, FPS, frame 수, loop,
+  잘림 frame, 실제 인코딩 전체 및 piece별 용량을 함께 보여준다. 이 수치는 현재
+  편집 native preview 기준이며 최종 용량은 export profile과 optimizer를 적용한 뒤
+  다시 검증한다. measure와 commit은 같은 renderer와 recipe hash를 사용한다.
+- 활성 motion은 editor preview, saved preview, export, optimizer baseline/cache,
+  GIF frame 작업 시트에서 동일한 recipe를 사용한다. 출력 profile이 GIF를 허용하지
+  않으면 motion export를 검증 단계에서 막고 사용자가 profile을 고치게 한다.
+- 정적 작업 시트에는 0ms poster frame 하나만 포함하고 애니메이션 손실 warning을
+  반환한다. `pmtcon-sheet-v1`의 `render_recipe_hash`에 motion을 포함해, 내보낸 뒤
+  recipe가 바뀌면 가공본 적용/교체 모드에서 해당 셀을 건너뛰고 적용하지 않는다.
+  새 아이콘 생성 모드는 원본을 보존하며, 모든 frame, duration과 loop를 왕복하려면
+  GIF frame 작업 시트를 사용한다.
+- native GIF 인코딩 전에는 DB snapshot을 만들고 shared SQLite lock을 해제한다.
+  저장 직전 revision/input signature를 다시 검사하며 요청 preview와 최종 artifact는
+  bounded cleanup 정책으로 관리한다. 아이콘/컬렉션 복제는 motion recipe를 독립적으로
+  보존하고 mutable preview path를 공유하지 않는다.
+- 기존 `image`/`gif` 처리 기반을 재사용하며 새 motion dependency를 추가하지 않는다.
+  사용자 제공 displacement map, freeform liquify, 임의 shader, 실행형 effect plugin과
+  범용 layer/brush editor는 현재 범위에서 제외한다.
+
+### 컬렉션 복제 완전성
+
+- 컬렉션 복제는 collection/export profile/icon/piece와 crop, 크기, GIF loop,
+  ping-pong, text, transform, effect, motion, alt, note, cover를 새 ID로 복사한다.
+- 컬렉션 전용 시트 프리셋과 frame-sheet GIF 생성 provenance도 복사하되, 복제본의
+  수정이 원본을 바꾸지 않도록 새 ID를 사용한다.
+- 현재 source/crop/profile hash 및 형식과 일치하는 유효한 활성 최적화 결과만
+  복제본 소유 경로로 복사하고, 새 profile/icon/piece ID 기준 hash를 다시 계산한다.
+  오래됐거나 파일이 사라진 variant는 복사하지 않고 저장된 편집 recipe로 되돌아간다.
+- optimization job과 `last_export_path`는 실행 이력이므로 복사하지 않는다.
+  복제 중에는 도구막대와 context menu의 추가 복제 요청을 막는다.
+
+세부 UX, 라이선스 경계와 단계별 수용 기준은
+`docs/EDITOR_COMPLETENESS_DESIGN.md`를 따른다.

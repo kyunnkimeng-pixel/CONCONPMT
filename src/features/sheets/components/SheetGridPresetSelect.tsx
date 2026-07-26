@@ -24,6 +24,7 @@ interface SheetGridPresetSelectProps {
   currentSummary: string;
   saveKindLabel: string;
   autoApplyDefault?: boolean;
+  disabled?: boolean;
   buildPresetInput: (name: string) => SheetGridPresetInput;
   onApplyPreset: (preset: SheetGridPreset) => void;
 }
@@ -35,6 +36,7 @@ export function SheetGridPresetSelect({
   currentSummary,
   saveKindLabel,
   autoApplyDefault = true,
+  disabled = false,
   buildPresetInput,
   onApplyPreset,
 }: SheetGridPresetSelectProps) {
@@ -83,7 +85,7 @@ export function SheetGridPresetSelect({
   }, [collectionId]);
 
   useEffect(() => {
-    if (!autoApplyDefault || didApplyDefaultRef.current) {
+    if (disabled || !autoApplyDefault || didApplyDefaultRef.current) {
       return;
     }
     let cancelled = false;
@@ -105,7 +107,7 @@ export function SheetGridPresetSelect({
     return () => {
       cancelled = true;
     };
-  }, [autoApplyDefault, collectionId, compatibleKindSet, onApplyPreset, target]);
+  }, [autoApplyDefault, collectionId, compatibleKindSet, disabled, onApplyPreset, target]);
 
   const reloadAndSelect = async (presetId: string) => {
     const nextPresets = await listSheetGridPresets(collectionId);
@@ -154,7 +156,7 @@ export function SheetGridPresetSelect({
         <div className="flex flex-wrap gap-1">
           <button
             className="rounded border border-border bg-white px-2 py-1.5 text-xs font-medium hover:bg-menu-hover disabled:cursor-not-allowed disabled:text-muted"
-            disabled={!selectedPreset}
+            disabled={disabled || !selectedPreset}
             type="button"
             onClick={() => selectedPreset && onApplyPreset(selectedPreset)}
           >

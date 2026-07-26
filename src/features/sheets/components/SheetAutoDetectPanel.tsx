@@ -69,6 +69,7 @@ export function SheetAutoDetectPanel({
             <div className="grid gap-3 xl:grid-cols-2">
               {result.proposals.map((proposal) => (
                 <AutoDetectProposalCard
+                  disabled={isRunning}
                   key={proposal.id}
                   proposal={proposal}
                   onApply={() => onApplyProposal(proposal)}
@@ -93,9 +94,11 @@ export function SheetAutoDetectPanel({
 }
 
 function AutoDetectProposalCard({
+  disabled = false,
   proposal,
   onApply,
 }: {
+  disabled?: boolean;
   proposal: AutoDetectSheetGridProposal;
   onApply: () => void;
 }) {
@@ -136,7 +139,8 @@ function AutoDetectProposalCard({
         <p className="mt-3 text-xs text-muted">{proposal.warnings.join(" / ")}</p>
       ) : null}
       <button
-        className="mt-3 rounded-md border border-border bg-white px-3 py-2 text-sm font-medium hover:bg-menu-hover"
+        className="mt-3 rounded-md border border-border bg-white px-3 py-2 text-sm font-medium hover:bg-menu-hover disabled:cursor-not-allowed disabled:text-muted"
+        disabled={disabled}
         type="button"
         onClick={onApply}
       >

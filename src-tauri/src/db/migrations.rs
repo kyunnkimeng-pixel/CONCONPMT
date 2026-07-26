@@ -31,6 +31,22 @@ const MIGRATIONS: &[(&str, &str)] = &[
         "007_context_menu_sheet_workflows",
         include_str!("../../migrations/007_context_menu_sheet_workflows.sql"),
     ),
+    (
+        "008_icon_transforms",
+        include_str!("../../migrations/008_icon_transforms.sql"),
+    ),
+    (
+        "009_frame_sheet_gif_recipes",
+        include_str!("../../migrations/009_frame_sheet_gif_recipes.sql"),
+    ),
+    (
+        "010_icon_effect_recipes",
+        include_str!("../../migrations/010_icon_effect_recipes.sql"),
+    ),
+    (
+        "011_icon_motion_recipes",
+        include_str!("../../migrations/011_icon_motion_recipes.sql"),
+    ),
 ];
 
 pub fn run(connection: &mut Connection) -> AppResult<()> {
@@ -91,6 +107,9 @@ mod tests {
             "optimization_jobs",
             "icon_notes",
             "sheet_grid_presets",
+            "frame_sheet_gif_recipes",
+            "icon_effect_recipes",
+            "icon_motion_recipes",
             "app_settings",
         ] {
             let exists: i64 = connection
@@ -115,5 +134,179 @@ mod tests {
             .query_row("SELECT COUNT(*) FROM app_settings", [], |row| row.get(0))
             .unwrap();
         assert_eq!(app_settings_rows, 1);
+    }
+
+    #[test]
+    fn migration_adds_persistent_icon_transform_columns() {
+        let mut connection = Connection::open_in_memory().unwrap();
+
+        run(&mut connection).unwrap();
+
+        let mut statement = connection.prepare("PRAGMA table_info(icons)").unwrap();
+        let columns = statement
+            .query_map([], |row| row.get::<_, String>("name"))
+            .unwrap()
+            .collect::<Result<Vec<_>, _>>()
+            .unwrap();
+
+        assert!(columns.contains(&"transform_quarter_turns".to_string()));
+        assert!(columns.contains(&"transform_flip_horizontal".to_string()));
+        assert!(columns.contains(&"transform_flip_vertical".to_string()));
+    }
+
+    #[test]
+    fn migration_adds_frame_sheet_gif_recipe_provenance_schema() {
+        let mut connection = Connection::open_in_memory().unwrap();
+
+        run(&mut connection).unwrap();
+
+        let mut statement = connection
+            .prepare("PRAGMA table_info(frame_sheet_gif_recipes)")
+            .unwrap();
+        let columns = statement
+            .query_map([], |row| row.get::<_, String>("name"))
+            .unwrap()
+            .collect::<Result<Vec<_>, _>>()
+            .unwrap();
+
+        assert_eq!(
+            columns,
+            [
+                "id",
+                "generated_icon_id",
+                "original_sheet_filename",
+                "original_sheet_path",
+                "original_sheet_sha256",
+                "recipe_schema",
+                "grid_settings_json",
+                "frames_json",
+                "direction",
+                "loop_mode",
+                "loop_count",
+                "measured_byte_size",
+                "render_hash",
+                "created_at",
+                "updated_at",
+            ]
+        );
+
+        let foreign_key = connection
+            .query_row(
+                "PRAGMA foreign_key_list(frame_sheet_gif_recipes)",
+                [],
+                |row| {
+                    Ok((
+                        row.get::<_, String>("table")?,
+                        row.get::<_, String>("from")?,
+                        row.get::<_, String>("to")?,
+                        row.get::<_, String>("on_delete")?,
+                    ))
+                },
+            )
+            .unwrap();
+        assert_eq!(
+            foreign_key,
+            (
+                "icons".to_string(),
+                "generated_icon_id".to_string(),
+                "id".to_string(),
+                "CASCADE".to_string(),
+            )
+        );
+    }
+
+    #[test]
+    fn migration_adds_revisioned_icon_effect_recipe_schema() {
+        let mut connection = Connection::open_in_memory().unwrap();
+
+        run(&mut connection).unwrap();
+
+        let mut statement = connection
+            .prepare("PRAGMA table_info(icon_effect_recipes)")
+            .unwrap();
+        let columns = statement
+            .query_map([], |row| row.get::<_, String>("name"))
+            .unwrap()
+            .collect::<Result<Vec<_>, _>>()
+            .unwrap();
+
+        assert_eq!(
+            columns,
+            [
+                "icon_id",
+                "recipe_schema",
+                "revision",
+                "effects_json",
+                "created_at",
+                "updated_at",
+            ]
+        );
+
+        let foreign_key = connection
+            .query_row("PRAGMA foreign_key_list(icon_effect_recipes)", [], |row| {
+                Ok((
+                    row.get::<_, String>("table")?,
+                    row.get::<_, String>("from")?,
+                    row.get::<_, String>("to")?,
+                    row.get::<_, String>("on_delete")?,
+                ))
+            })
+            .unwrap();
+        assert_eq!(
+            foreign_key,
+            (
+                "icons".to_string(),
+                "icon_id".to_string(),
+                "id".to_string(),
+                "CASCADE".to_string(),
+            )
+        );
+    }
+    #[test]
+    fn migration_adds_revisioned_icon_motion_recipe_schema() {
+        let mut connection = Connection::open_in_memory().unwrap();
+
+        run(&mut connection).unwrap();
+
+        let mut statement = connection
+            .prepare("PRAGMA table_info(icon_motion_recipes)")
+            .unwrap();
+        let columns = statement
+            .query_map([], |row| row.get::<_, String>("name"))
+            .unwrap()
+            .collect::<Result<Vec<_>, _>>()
+            .unwrap();
+
+        assert_eq!(
+            columns,
+            [
+                "icon_id",
+                "recipe_schema",
+                "revision",
+                "motion_json",
+                "created_at",
+                "updated_at",
+            ]
+        );
+
+        let foreign_key = connection
+            .query_row("PRAGMA foreign_key_list(icon_motion_recipes)", [], |row| {
+                Ok((
+                    row.get::<_, String>("table")?,
+                    row.get::<_, String>("from")?,
+                    row.get::<_, String>("to")?,
+                    row.get::<_, String>("on_delete")?,
+                ))
+            })
+            .unwrap();
+        assert_eq!(
+            foreign_key,
+            (
+                "icons".to_string(),
+                "icon_id".to_string(),
+                "id".to_string(),
+                "CASCADE".to_string(),
+            )
+        );
     }
 }

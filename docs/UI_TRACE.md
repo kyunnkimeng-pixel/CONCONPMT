@@ -59,7 +59,7 @@ omitted visual element must not remove a required feature.
 | F021 | Selection model for Shift range select with selected tile states | R2 | Static image cannot show range gesture, but selected states anchor it. |
 | F022 | Planned `IconContextMenu.tsx`: edit, rename, duplicate, delete, set cover | R2 | Do not add context actions beyond implemented/spec items. |
 | F023 | Icon duplicate action in `IconContextMenu.tsx` plus clone command | R2 | Duplicate must clone durable icon/piece data. |
-| F024 | Home toolbar `선택 복제` plus clone collection command | R1 | Collection duplicate is discoverable without adding fake card menus. |
+| F024 | Home toolbar `모음 복제` plus clone collection command | R1 | Collection duplicate is discoverable without adding fake card menus. |
 | F025 | `features/editor/components/EditorPanel.tsx` shape selector: `단일콘` | R3 | Single icon editor mode must affect preview/export. |
 | F026 | Editor shape selector: `가로 이중콘` | R3 | Horizontal double requires 2W x H crop viewport and two pieces. |
 | F027 | Editor shape selector: `세로 이중콘` | R3 | Vertical double is required even if the visual reference emphasizes horizontal. |
@@ -102,3 +102,7 @@ omitted visual element must not remove a required feature.
 | F064 | Export dimension validation for default 200x200 DCInside pieces | R4 | Hard error for DCInside profile when dimensions are invalid. |
 | F065 | Custom profile validation controls for size/format/bytes | R4 | Generated image focuses DCInside; custom profile remains required. |
 | F066 | Piece-level alt editor for multi-piece icons | R2, R3 | Double icons need separate alt values for each exported piece. |
+| F130 | `EditorPanel.tsx` transform controls plus shared Rust render recipe | R3 | Flip and quarter-turn commands are non-destructive and apply identically to static/GIF preview, sheets, optimization, and export. |
+| F131 | Collection toolbar `시트로 GIF 만들기` and `FrameSheetToGifDialog.tsx` | R2, R3 | Reuses static grid settings/overlay and adds reviewed frame strip, duration/FPS convenience, loop/direction, sticky playback, actual byte measurement, stale-hash guard, preserved source sheet, and new animated icon commit. |
+| F132 | `EditorPanel.tsx` advanced section and `EffectRecipeEditor.tsx`; native `preview_icon_effects` / `update_icon_effects` | R3 | Completed: seven ordered, revisioned static effect kinds render on the combined viewport for static/GIF preview and export. Optimizer and sheet hashes include the recipe; request-scoped artifacts, clone independence, and preview/export/sheet regressions passed the Stage Gate. |
+| F133 | `EditorPanel.tsx` 모션 탭, lazy `MotionEditorSection.tsx`, `MotionRecipeEditor.tsx`, `MotionPreviewPanel.tsx`; native `preview_icon_motion` / `update_icon_motion` | R3 | Implemented: 16 presets in four bounded categories, fixed spatial/displacement/color/overlay composition, revisioned `pmtcon-motion-v1`, actual GIF and per-piece byte measurement, clipping/loop/timing details, stale-measurement guards, play/pause and reduced-motion behavior. Static and existing GIF sources share the export/optimizer/sheet renderer; static sheets intentionally use the 0ms poster while GIF frame sheets preserve all frames. |

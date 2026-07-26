@@ -6,6 +6,7 @@ import {
   ChevronLeft,
   Download,
   FileImage,
+  Film,
   FolderPlus,
   Grid3X3,
   ImagePlus,
@@ -34,6 +35,7 @@ import type {
 import { EditorPanel } from "@/features/editor/components/EditorPanel";
 import { ExportDialog } from "@/features/export/components/ExportDialog";
 import { GifFrameSheetDialog } from "@/features/sheets/components/GifFrameSheetDialog";
+import { FrameSheetToGifDialog } from "@/features/sheets/components/FrameSheetToGifDialog";
 import { SheetExportDialog } from "@/features/sheets/components/SheetExportDialog";
 import { SheetImportWizard } from "@/features/sheets/components/SheetImportWizard";
 import {
@@ -112,8 +114,10 @@ export function CollectionRoute() {
   const [isDragging, setIsDragging] = useState(false);
   const [isImporting, setIsImporting] = useState(false);
   const [editingIconId, setEditingIconId] = useState<string | null>(null);
+  const [isEditorDirty, setIsEditorDirty] = useState(false);
   const [isExportDialogOpen, setIsExportDialogOpen] = useState(false);
   const [isSheetImportOpen, setIsSheetImportOpen] = useState(false);
+  const [isFrameSheetGifOpen, setIsFrameSheetGifOpen] = useState(false);
   const [isSheetExportOpen, setIsSheetExportOpen] = useState(false);
   const [sheetExportSelectedIconIds, setSheetExportSelectedIconIds] = useState<string[]>([]);
   const [gifFrameSheetRequest, setGifFrameSheetRequest] = useState<{
@@ -335,6 +339,7 @@ export function CollectionRoute() {
         setIcons(await listIcons(collectionId));
         if (editingIconId && iconIds.includes(editingIconId)) {
           setEditingIconId(null);
+          setIsEditorDirty(false);
         }
         setImportStatus(`${iconIds.length}개 아이콘을 삭제했습니다.`);
         notifyCollectionListChanged();
@@ -426,10 +431,21 @@ export function CollectionRoute() {
 
   const handleEditIcon = useCallback(
     (iconId: string) => {
+      if (editingIconId === iconId) {
+        return;
+      }
+      if (
+        editingIconId &&
+        isEditorDirty &&
+        !window.confirm("저장하지 않은 편집 변경을 버리고 다른 아이콘을 열까요?")
+      ) {
+        return;
+      }
+      setIsEditorDirty(false);
       setEditingIconId(iconId);
       setImportStatus("아이콘 편집 패널을 열었습니다.");
     },
-    [],
+    [editingIconId, isEditorDirty],
   );
 
   const handleIconUpdated = useCallback((updatedIcon: IconSummary) => {
@@ -563,7 +579,7 @@ export function CollectionRoute() {
       setIcons((currentIcons) =>
         currentIcons.map((icon) => (icon.id === updatedIcon.id ? updatedIcon : icon)),
       );
-      setImportStatus("아이콘 이미지를 대체했습니다.");
+      setImportStatus("이미지를 교체하고 기존 크롭·회전·반전은 초기화했습니다.");
       notifyCollectionListChanged();
     } catch (error) {
       setErrorMessage(getCommandErrorMessage(error));
@@ -676,9 +692,21 @@ export function CollectionRoute() {
   }, [refreshCollectionAndIcons]);
 
   const changeViewMode = (nextMode: "explorer" | "usagePreview") => {
+    if (nextMode === viewMode) {
+      return;
+    }
+    if (
+      nextMode === "usagePreview" &&
+      editingIconId &&
+      isEditorDirty &&
+      !window.confirm("저장하지 않은 편집 변경을 버리고 사용 미리보기로 이동할까요?")
+    ) {
+      return;
+    }
     setViewMode(nextMode);
     if (nextMode === "usagePreview") {
       setEditingIconId(null);
+      setIsEditorDirty(false);
       setIsThumbnailOnly(false);
     }
   };
@@ -768,7 +796,7 @@ export function CollectionRoute() {
               </button>
             </div>
             <button
-              className="inline-flex items-center gap-2 rounded-md border border-border bg-white px-3 py-2 text-sm font-medium hover:bg-menu-hover focus-visible:outline focus-visible:outline-2 focus-visible:outline-focus disabled:cursor-not-allowed disabled:text-muted"
+              className="inline-flex shrink-0 items-center gap-2 whitespace-nowrap rounded-md border border-border bg-white px-3 py-2 text-sm font-medium hover:bg-menu-hover focus-visible:outline focus-visible:outline-2 focus-visible:outline-focus disabled:cursor-not-allowed disabled:text-muted"
               disabled={icons.length === 0}
               title={icons.length === 0 ? "내보낼 항목이 없습니다." : undefined}
               type="button"
@@ -778,17 +806,31 @@ export function CollectionRoute() {
               내보내기
             </button>
             <button
-              className="inline-flex items-center gap-2 rounded-md border border-border bg-white px-3 py-2 text-sm font-medium hover:bg-menu-hover focus-visible:outline focus-visible:outline-2 focus-visible:outline-focus disabled:cursor-not-allowed disabled:text-muted"
+              className="inline-flex shrink-0 items-center gap-2 whitespace-nowrap rounded-md border border-border bg-white px-3 py-2 text-sm font-medium hover:bg-menu-hover focus-visible:outline focus-visible:outline-2 focus-visible:outline-focus disabled:cursor-not-allowed disabled:text-muted"
+              title="스프라이트 시트 한 장을 셀로 나눠 여러 아이콘으로 가져옵니다."
               type="button"
               onClick={() => setIsSheetImportOpen(true)}
             >
               <Grid3X3 aria-hidden="true" />
-              시트 가져오기
+              시트에서 가져오기
             </button>
             <button
-              className="inline-flex items-center gap-2 rounded-md border border-border bg-white px-3 py-2 text-sm font-medium hover:bg-menu-hover focus-visible:outline focus-visible:outline-2 focus-visible:outline-focus disabled:cursor-not-allowed disabled:text-muted"
+              className="inline-flex shrink-0 items-center gap-2 whitespace-nowrap rounded-md border border-border bg-white px-3 py-2 text-sm font-medium hover:bg-menu-hover focus-visible:outline focus-visible:outline-2 focus-visible:outline-focus"
+              title="정적 프레임 시트를 나누고 순서와 시간을 편집해 새 GIF 아이콘을 만듭니다."
+              type="button"
+              onClick={() => setIsFrameSheetGifOpen(true)}
+            >
+              <Film aria-hidden="true" />
+              시트로 GIF 만들기
+            </button>
+            <button
+              className="inline-flex shrink-0 items-center gap-2 whitespace-nowrap rounded-md border border-border bg-white px-3 py-2 text-sm font-medium hover:bg-menu-hover focus-visible:outline focus-visible:outline-2 focus-visible:outline-focus disabled:cursor-not-allowed disabled:text-muted"
               disabled={icons.length === 0}
-              title={icons.length === 0 ? "작업 시트로 내보낼 아이콘이 없습니다." : undefined}
+              title={
+                icons.length === 0
+                  ? "시트로 내보낼 아이콘이 없습니다."
+                  : "현재 아이콘을 외부 편집용 작업 시트로 내보냅니다."
+              }
               type="button"
               onClick={() => {
                 setSheetExportSelectedIconIds([]);
@@ -796,7 +838,7 @@ export function CollectionRoute() {
               }}
             >
               <Grid3X3 aria-hidden="true" />
-              작업 시트
+              시트로 내보내기
             </button>
             <button
               className={viewModeButtonClass(isSortPanelOpen)}
@@ -817,7 +859,7 @@ export function CollectionRoute() {
               설정
             </button>
             <button
-              className="inline-flex items-center gap-2 rounded-md border border-border bg-white px-3 py-2 text-sm font-medium hover:bg-menu-hover focus-visible:outline focus-visible:outline-2 focus-visible:outline-focus"
+              className="inline-flex shrink-0 items-center gap-2 whitespace-nowrap rounded-md border border-border bg-white px-3 py-2 text-sm font-medium hover:bg-menu-hover focus-visible:outline focus-visible:outline-2 focus-visible:outline-focus"
               type="button"
               onClick={() => {
                 void handleCreatePlaceholder();
@@ -827,7 +869,7 @@ export function CollectionRoute() {
               빈 디시콘
             </button>
             <button
-              className="inline-flex items-center gap-2 rounded-md border border-border bg-white px-3 py-2 text-sm font-medium hover:bg-menu-hover focus-visible:outline focus-visible:outline-2 focus-visible:outline-focus"
+              className="inline-flex shrink-0 items-center gap-2 whitespace-nowrap rounded-md border border-border bg-white px-3 py-2 text-sm font-medium hover:bg-menu-hover focus-visible:outline focus-visible:outline-2 focus-visible:outline-focus"
               type="button"
               onClick={openCoverImportPicker}
             >
@@ -835,7 +877,7 @@ export function CollectionRoute() {
               대표 이미지
             </button>
             <button
-              className="inline-flex items-center gap-2 rounded-md border border-border bg-white px-3 py-2 text-sm font-medium hover:bg-menu-hover focus-visible:outline focus-visible:outline-2 focus-visible:outline-focus disabled:cursor-not-allowed disabled:text-muted"
+              className="inline-flex shrink-0 items-center gap-2 whitespace-nowrap rounded-md border border-border bg-white px-3 py-2 text-sm font-medium hover:bg-menu-hover focus-visible:outline focus-visible:outline-2 focus-visible:outline-focus disabled:cursor-not-allowed disabled:text-muted"
               disabled={isImporting}
               type="button"
               onClick={openFolderImportPicker}
@@ -844,7 +886,7 @@ export function CollectionRoute() {
               폴더 추가
             </button>
             <button
-              className="inline-flex items-center gap-2 rounded-md border border-border bg-white px-3 py-2 text-sm font-medium hover:bg-menu-hover focus-visible:outline focus-visible:outline-2 focus-visible:outline-focus disabled:cursor-not-allowed disabled:text-muted"
+              className="inline-flex shrink-0 items-center gap-2 whitespace-nowrap rounded-md border border-border bg-white px-3 py-2 text-sm font-medium hover:bg-menu-hover focus-visible:outline focus-visible:outline-2 focus-visible:outline-focus disabled:cursor-not-allowed disabled:text-muted"
               disabled={isImporting}
               type="button"
               onClick={openImportPicker}
@@ -1019,7 +1061,11 @@ export function CollectionRoute() {
             collection={collection}
             iconId={editingIconId}
             key={editingIconId}
-            onClose={() => setEditingIconId(null)}
+            onClose={() => {
+              setEditingIconId(null);
+              setIsEditorDirty(false);
+            }}
+            onDirtyChange={setIsEditorDirty}
             onIconUpdated={handleIconUpdated}
           />
         ) : null}
@@ -1038,6 +1084,16 @@ export function CollectionRoute() {
           collection={collection}
           onClose={() => setIsSheetImportOpen(false)}
           onImported={async () => {
+            await refreshCollectionAndIcons();
+            notifyCollectionListChanged();
+          }}
+        />
+      ) : null}
+      {isFrameSheetGifOpen ? (
+        <FrameSheetToGifDialog
+          collection={collection}
+          onClose={() => setIsFrameSheetGifOpen(false)}
+          onCreated={async () => {
             await refreshCollectionAndIcons();
             notifyCollectionListChanged();
           }}
@@ -1365,7 +1421,7 @@ function OperationProgressOverlay({ progress }: { progress: OperationProgress })
 
 function viewModeButtonClass(isSelected: boolean) {
   return cn(
-    "inline-flex items-center gap-2 rounded px-2.5 py-1.5 text-sm font-medium hover:bg-menu-hover focus-visible:outline focus-visible:outline-2 focus-visible:outline-focus",
+    "inline-flex shrink-0 items-center gap-2 whitespace-nowrap rounded px-2.5 py-1.5 text-sm font-medium hover:bg-menu-hover focus-visible:outline focus-visible:outline-2 focus-visible:outline-focus",
     isSelected ? "bg-selected text-foreground" : "text-muted",
   );
 }
@@ -1373,7 +1429,7 @@ function viewModeButtonClass(isSelected: boolean) {
 function BackLink({ label = "홈" }: { label?: string }) {
   return (
     <Link
-      className="inline-flex items-center gap-2 rounded-md border border-border bg-white px-3 py-2 text-sm font-medium hover:bg-menu-hover focus-visible:outline focus-visible:outline-2 focus-visible:outline-focus"
+      className="inline-flex shrink-0 items-center gap-2 whitespace-nowrap rounded-md border border-border bg-white px-3 py-2 text-sm font-medium hover:bg-menu-hover focus-visible:outline focus-visible:outline-2 focus-visible:outline-focus"
       to="/"
     >
       <ChevronLeft aria-hidden="true" />

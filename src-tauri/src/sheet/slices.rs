@@ -12,10 +12,14 @@ use sha2::{Digest, Sha256};
 use crate::db::repositories::icons as icon_repository;
 use crate::error::{AppError, AppResult};
 use crate::ids::create_id;
-use crate::imaging::import_limits::decode_import_image;
+use crate::imaging::import_limits::{
+    decode_import_image, validate_import_dimensions, MAX_GIF_TOTAL_FRAME_PIXELS,
+    MAX_IMPORT_DIMENSION,
+};
 use crate::models::{IconDto, ImportImageFilePayload};
 use crate::paths::AppPaths;
 
+use super::grid::MAX_SHEET_CELLS;
 use super::importer::{create_icons_from_png_cells, CellImportInput};
 use super::{image_format_for_extension, path_string, read_sheet_image_input};
 
@@ -128,6 +132,7 @@ pub struct ManualSliceLoadResult {
 pub fn analyze_manual_slices(
     request: AnalyzeManualSlicesRequest,
 ) -> AppResult<ManualSliceAnalysis> {
+    validate_manual_slices(&request.slices)?;
     let source = read_sheet_image_input(
         request.sheet_path.as_deref(),
         request.sheet_file.as_ref(),
@@ -148,6 +153,7 @@ pub fn import_manual_slices(
     paths: &AppPaths,
     request: ImportManualSlicesRequest,
 ) -> AppResult<ImportManualSlicesResult> {
+    validate_manual_slices(&request.slices)?;
     let source = read_sheet_image_input(
         request.sheet_path.as_deref(),
         request.sheet_file.as_ref(),
@@ -203,10 +209,11 @@ pub fn import_manual_slices(
             slice,
             cell_imports.len(),
         );
-        let original_filename = format!("{display_name}.png");
+        let safe_stem = safe_file_stem(&display_name, "manual_slice");
+        let original_filename = format!("{safe_stem}.png");
         let extracted_path = paths
             .sheet_import_cells_dir
-            .join(format!("{}-{display_name}.png", create_id("slice")));
+            .join(format!("{}.png", create_id("slice")));
         if let Some(parent) = extracted_path.parent() {
             fs::create_dir_all(parent)?;
         }
@@ -291,6 +298,13 @@ pub fn load_manual_slices(paths: &AppPaths, sheet_id: String) -> AppResult<Manua
 }
 
 pub fn validate_manual_slices(slices: &[ManualSlice]) -> AppResult<()> {
+    if slices.len() > usize::try_from(MAX_SHEET_CELLS).unwrap_or(usize::MAX) {
+        return Err(AppError::new(
+            "validation",
+            format!("직접 Slice는 최대 {MAX_SHEET_CELLS}개까지 처리할 수 있습니다."),
+        ));
+    }
+    let mut total_crop_pixels = 0_u64;
     for slice in slices {
         if slice.slice_id.trim().is_empty() {
             return Err(AppError::new(
@@ -298,10 +312,34 @@ pub fn validate_manual_slices(slices: &[ManualSlice]) -> AppResult<()> {
                 "직접 Slice ID가 비어 있습니다.",
             ));
         }
-        if slice.w <= 0 || slice.h <= 0 {
+        if slice.x.unsigned_abs() > u64::from(MAX_IMPORT_DIMENSION)
+            || slice.y.unsigned_abs() > u64::from(MAX_IMPORT_DIMENSION)
+        {
             return Err(AppError::new(
                 "validation",
-                "직접 Slice 영역의 너비와 높이는 1px 이상이어야 합니다.",
+                "직접 Slice 좌표가 지원 범위를 벗어났습니다.",
+            ));
+        }
+        let width = u32::try_from(slice.w)
+            .map_err(|_| AppError::new("validation", "직접 Slice 너비가 올바르지 않습니다."))?;
+        let height = u32::try_from(slice.h)
+            .map_err(|_| AppError::new("validation", "직접 Slice 높이가 올바르지 않습니다."))?;
+        validate_import_dimensions(width, height)?;
+        slice
+            .x
+            .checked_add(slice.w)
+            .and_then(|_| slice.y.checked_add(slice.h))
+            .ok_or_else(|| AppError::new("validation", "직접 Slice 좌표가 너무 큽니다."))?;
+        let crop_pixels = u64::from(width)
+            .checked_mul(u64::from(height))
+            .ok_or_else(|| AppError::new("validation", "직접 Slice 픽셀 수가 너무 큽니다."))?;
+        total_crop_pixels = total_crop_pixels
+            .checked_add(crop_pixels)
+            .ok_or_else(|| AppError::new("validation", "직접 Slice 전체 픽셀 수가 너무 큽니다."))?;
+        if total_crop_pixels > MAX_GIF_TOTAL_FRAME_PIXELS {
+            return Err(AppError::new(
+                "validation",
+                "직접 Slice 전체 픽셀 수가 지원 범위를 벗어났습니다.",
             ));
         }
     }
@@ -379,12 +417,18 @@ fn sorted_included_slices(slices: &[ManualSlice]) -> Vec<&ManualSlice> {
 }
 
 fn slice_out_of_bounds(slice: &ManualSlice, sheet_width: i64, sheet_height: i64) -> bool {
+    let Some(right) = slice.x.checked_add(slice.w) else {
+        return true;
+    };
+    let Some(bottom) = slice.y.checked_add(slice.h) else {
+        return true;
+    };
     slice.x < 0
         || slice.y < 0
         || slice.w <= 0
         || slice.h <= 0
-        || slice.x + slice.w > sheet_width
-        || slice.y + slice.h > sheet_height
+        || right > sheet_width
+        || bottom > sheet_height
 }
 
 fn crop_manual_slice(image: &RgbaImage, slice: &ManualSlice) -> RgbaImage {
@@ -445,10 +489,43 @@ fn display_name_for_slice(
         .filter(|pattern| !pattern.is_empty())
         .unwrap_or("slice_{number}");
     let number = imported_index + 1;
-    pattern
+    let rendered = pattern
         .replace("{index}", &slice.order_index.to_string())
         .replace("{number}", &format!("{number:03}"))
-        .replace("{slice_id}", &sanitize_name(&slice.slice_id))
+        .replace("{slice_id}", &sanitize_name(&slice.slice_id));
+    let display_name = rendered.trim().chars().take(80).collect::<String>();
+    if display_name.is_empty() {
+        format!("slice_{number:03}")
+    } else {
+        display_name
+    }
+}
+
+fn safe_file_stem(value: &str, fallback: &str) -> String {
+    let safe = value
+        .chars()
+        .map(|character| {
+            if character.is_control()
+                || matches!(
+                    character,
+                    '/' | '\\' | ':' | '*' | '?' | '"' | '<' | '>' | '|'
+                )
+            {
+                '_'
+            } else {
+                character
+            }
+        })
+        .collect::<String>()
+        .trim_matches(|character: char| character.is_whitespace() || character == '.')
+        .chars()
+        .take(80)
+        .collect::<String>();
+    if safe.is_empty() || matches!(safe.as_str(), "." | "..") {
+        fallback.to_string()
+    } else {
+        safe
+    }
 }
 
 fn manual_slice_metadata_path(paths: &AppPaths, sheet_id: &str) -> PathBuf {
@@ -503,8 +580,9 @@ mod tests {
     use crate::paths::AppPaths;
 
     use super::{
-        analyze_manual_slices, import_manual_slices, load_manual_slices, save_manual_slices,
-        AnalyzeManualSlicesRequest, ImportManualSlicesRequest, ManualSlice, ManualSliceSaveRequest,
+        analyze_manual_slices, display_name_for_slice, import_manual_slices, load_manual_slices,
+        safe_file_stem, save_manual_slices, validate_manual_slices, AnalyzeManualSlicesRequest,
+        ImportManualSlicesRequest, ManualSlice, ManualSliceSaveRequest,
     };
 
     fn connection() -> Connection {
@@ -552,6 +630,40 @@ mod tests {
             include: true,
             notes: None,
         }
+    }
+
+    #[test]
+    fn slice_display_name_pattern_cannot_escape_output_directory() {
+        let manual_slice = slice("../../id", "", 0, 0, 1, 1, 0);
+        let display_name = display_name_for_slice(Some("../../밖/{slice_id}"), &manual_slice, 0);
+        assert!(display_name.contains('밖'));
+        let safe_stem = safe_file_stem(&display_name, "manual_slice");
+        assert!(!safe_stem.contains(['/', '\\']));
+        assert!(safe_stem.chars().count() <= 80);
+        let root = std::path::Path::new("sheet_cells");
+        let candidate = root.join("slice_safe_id.png");
+        assert_eq!(candidate.parent(), Some(root));
+    }
+
+    #[test]
+    fn manual_slice_validation_rejects_extreme_geometry() {
+        assert!(validate_manual_slices(&[slice(
+            "overflow",
+            "overflow",
+            i64::MAX,
+            0,
+            i64::MAX,
+            1,
+            0,
+        )])
+        .is_err());
+        assert!(
+            validate_manual_slices(&[slice("minimum", "minimum", i64::MIN, 0, 1, 1, 0,)]).is_err()
+        );
+        assert!(
+            validate_manual_slices(&[slice("workload", "workload", 0, 0, 8_000, 8_000, 0,)])
+                .is_err()
+        );
     }
 
     #[test]

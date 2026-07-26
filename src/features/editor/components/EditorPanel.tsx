@@ -1,7 +1,21 @@
-import { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import type { CSSProperties, PointerEvent } from "react";
+import {
+  lazy,
+  Suspense,
+  useCallback,
+  useEffect,
+  useMemo,
+  useRef,
+  useState,
+} from "react";
+import type {
+  CSSProperties,
+  KeyboardEvent as ReactKeyboardEvent,
+  PointerEvent,
+} from "react";
 import {
   CircleDot,
+  FlipHorizontal2,
+  FlipVertical2,
   type LucideIcon,
   MoveDown,
   MoveDownLeft,
@@ -14,14 +28,23 @@ import {
   Pencil,
   RefreshCcw,
   RotateCcw,
+  RotateCw,
   Save,
+  Undo2,
   X,
 } from "lucide-react";
 
 import type { CollectionSummary, IconSummary } from "@/features/collections/types";
-import { applyIconCrop, getIconEditorState } from "@/features/editor/api";
 import {
+  nextAdvancedEditorMode,
+  type AdvancedEditorMode,
+} from "@/features/editor/advanced-editor-tabs";
+import {
+  applyIconCrop,
+  getIconEditorState,
   pickTextOverlayFont,
+  previewIconEffects,
+  updateIconEffects,
   updateIconTextOverlay,
 } from "@/features/editor/api";
 import {
@@ -30,8 +53,26 @@ import {
   constrainCropToAspect,
   fixedCropForPreset,
 } from "@/features/editor/crop-math";
+import {
+  effectPreviewRequestKey,
+  hasUnsavedEditorChanges,
+  isEditorStateResponseCurrent,
+  isRevisionConflict,
+  isTextOverlayDraftDirty,
+} from "@/features/editor/editor-state-guards";
 import { CropCanvas } from "@/features/editor/components/CropCanvas";
 import { EditorOutputPreview } from "@/features/editor/components/EditorOutputPreview";
+import {
+  effectRecipeSignature,
+  effectRecipeStateSignature,
+  normalizeEffectRecipe,
+} from "@/features/editor/effect-recipe-model";
+import {
+  flipIconDraft,
+  rotateIconDraft,
+  sourceViewportGeometry,
+  transformSummary,
+} from "@/features/editor/transform-math";
 import {
   applyGifOriginalPlaybackToPreview,
   applyOptimizationCandidate,
@@ -50,7 +91,9 @@ import type {
 import type {
   CropMode,
   CropRect,
+  EffectRecipeV1,
   GifLoopMode,
+  IconEffectPreview,
   IconEditorState,
   IconShape,
   PresetPosition,
@@ -58,7 +101,22 @@ import type {
 } from "@/features/editor/types";
 import { filePathToAssetUrl } from "@/lib/asset-url";
 import { getCommandErrorMessage } from "@/lib/tauri";
+import { useModalFocus } from "@/lib/use-modal-focus";
 import { cn } from "@/lib/utils";
+
+const LazyEffectRecipeEditor = lazy(async () => {
+  const module = await import(
+    "@/features/editor/components/EffectRecipeEditor"
+  );
+  return { default: module.EffectRecipeEditor };
+});
+
+const LazyMotionEditorSection = lazy(async () => {
+  const module = await import(
+    "@/features/editor/components/MotionEditorSection"
+  );
+  return { default: module.MotionEditorSection };
+});
 
 const nonDraggableImageStyle: CSSProperties & { WebkitUserDrag: string } = {
   WebkitUserDrag: "none",
@@ -68,6 +126,7 @@ const nonDraggableImageStyle: CSSProperties & { WebkitUserDrag: string } = {
 interface EditorPanelProps {
   collection: CollectionSummary;
   iconId: string;
+  onDirtyChange?: (dirty: boolean) => void;
   onClose: () => void;
   onIconUpdated: (icon: IconSummary) => void;
 }
@@ -79,6 +138,10 @@ interface EditorDraft {
   presetPosition: PresetPosition;
   cellWidth: number;
   cellHeight: number;
+  transformQuarterTurns: 0 | 1 | 2 | 3;
+  transformFlipHorizontal: boolean;
+  transformFlipVertical: boolean;
+  pieceIds: string[];
   gifLoopMode: GifLoopMode;
   gifLoopCount: number;
 }
@@ -128,6 +191,7 @@ export function EditorPanel({
   iconId,
   onClose,
   onIconUpdated,
+  onDirtyChange,
 }: EditorPanelProps) {
   const [editorState, setEditorState] = useState<IconEditorState | null>(null);
   const [draft, setDraft] = useState<EditorDraft | null>(null);
@@ -136,8 +200,11 @@ export function EditorPanel({
   const [statusMessage, setStatusMessage] = useState<string | null>(null);
   const [errorMessage, setErrorMessage] = useState<string | null>(null);
   const [isAdvancedOpen, setIsAdvancedOpen] = useState(false);
+  const [isAdvancedDirty, setIsAdvancedDirty] = useState(false);
   const resizeStartRef = useRef<{ pointerX: number; width: number } | null>(null);
   const loadRequestIdRef = useRef(0);
+  const activeIconIdRef = useRef(iconId);
+  activeIconIdRef.current = iconId;
   const [panelWidth, setPanelWidth] = useState(() => {
     const savedWidth = window.localStorage.getItem(EDITOR_PANEL_WIDTH_STORAGE_KEY);
     const parsedWidth = savedWidth ? Number.parseInt(savedWidth, 10) : NaN;
@@ -218,6 +285,38 @@ export function EditorPanel({
       height: editorState.source.height,
     };
   }, [editorState]);
+  const hasUnsavedDraft = useMemo(() => {
+    if (!editorState || !draft) {
+      return false;
+    }
+    return JSON.stringify(draft) !== JSON.stringify(draftFromState(editorState, collection));
+  }, [collection, draft, editorState]);
+  const hasUnsavedChanges = hasUnsavedEditorChanges(
+    hasUnsavedDraft,
+    isAdvancedDirty,
+  );
+
+  useEffect(() => {
+    onDirtyChange?.(hasUnsavedChanges);
+  }, [hasUnsavedChanges, onDirtyChange]);
+
+  useEffect(
+    () => () => {
+      onDirtyChange?.(false);
+    },
+    [onDirtyChange],
+  );
+
+  const requestPanelClose = useCallback(() => {
+    if (
+      hasUnsavedChanges &&
+      !window.confirm("저장하지 않은 편집 변경을 버리고 패널을 닫을까요?")
+    ) {
+      return;
+    }
+    onClose();
+  }, [hasUnsavedChanges, onClose]);
+
 
   const updateShape = (shape: IconShape) => {
     setDraft((current) => {
@@ -225,24 +324,29 @@ export function EditorPanel({
         return current;
       }
 
+      const nextDraft = { ...current, shape };
+      const sourceGeometry = sourceViewportGeometry(nextDraft);
       const crop =
         current.cropMode === "fixed"
           ? fixedCropForPreset(
               sourceDimensions,
-              shape,
-              current.cellWidth,
-              current.cellHeight,
+              sourceGeometry.shape,
+              sourceGeometry.cellWidth,
+              sourceGeometry.cellHeight,
               current.presetPosition,
             )
           : constrainCropToAspect(
               current.crop,
               sourceDimensions,
-              aspectRatioForShape(shape, current.cellWidth, current.cellHeight),
+              aspectRatioForShape(
+                sourceGeometry.shape,
+                sourceGeometry.cellWidth,
+                sourceGeometry.cellHeight,
+              ),
             );
 
       return {
-        ...current,
-        shape,
+        ...nextDraft,
         crop,
         presetPosition: current.cropMode === "fixed" ? current.presetPosition : "custom",
       };
@@ -259,20 +363,21 @@ export function EditorPanel({
         cropMode === "fixed" && current.presetPosition === "custom"
           ? "center"
           : current.presetPosition;
+      const sourceGeometry = sourceViewportGeometry(current);
       const crop =
         cropMode === "fixed"
           ? fixedCropForPreset(
               sourceDimensions,
-              current.shape,
-              current.cellWidth,
-              current.cellHeight,
+              sourceGeometry.shape,
+              sourceGeometry.cellWidth,
+              sourceGeometry.cellHeight,
               presetPosition,
             )
           : centeredFreeCrop(
               sourceDimensions,
-              current.shape,
-              current.cellWidth,
-              current.cellHeight,
+              sourceGeometry.shape,
+              sourceGeometry.cellWidth,
+              sourceGeometry.cellHeight,
               0.8,
             );
 
@@ -299,22 +404,23 @@ export function EditorPanel({
         ...current,
         [field]: Math.round(value),
       };
+      const sourceGeometry = sourceViewportGeometry(nextDraft);
       const crop =
         nextDraft.cropMode === "fixed"
           ? fixedCropForPreset(
               sourceDimensions,
-              nextDraft.shape,
-              nextDraft.cellWidth,
-              nextDraft.cellHeight,
+              sourceGeometry.shape,
+              sourceGeometry.cellWidth,
+              sourceGeometry.cellHeight,
               nextDraft.presetPosition,
             )
           : constrainCropToAspect(
               nextDraft.crop,
               sourceDimensions,
               aspectRatioForShape(
-                nextDraft.shape,
-                nextDraft.cellWidth,
-                nextDraft.cellHeight,
+                sourceGeometry.shape,
+                sourceGeometry.cellWidth,
+                sourceGeometry.cellHeight,
               ),
             );
 
@@ -331,14 +437,15 @@ export function EditorPanel({
         return current;
       }
 
+      const sourceGeometry = sourceViewportGeometry(current);
       return {
         ...current,
         presetPosition,
         crop: fixedCropForPreset(
           sourceDimensions,
-          current.shape,
-          current.cellWidth,
-          current.cellHeight,
+          sourceGeometry.shape,
+          sourceGeometry.cellWidth,
+          sourceGeometry.cellHeight,
           presetPosition,
         ),
       };
@@ -357,6 +464,26 @@ export function EditorPanel({
     );
   };
 
+  const applyFlip = (axis: "horizontal" | "vertical") => {
+    setDraft((current) => (current ? flipIconDraft(current, axis) : current));
+    setStatusMessage(
+      axis === "horizontal"
+        ? "현재 결과를 좌우로 반전했습니다. 적용을 눌러 저장하세요."
+        : "현재 결과를 상하로 반전했습니다. 적용을 눌러 저장하세요.",
+    );
+    setErrorMessage(null);
+  };
+
+  const applyQuarterTurn = (direction: "left" | "right") => {
+    setDraft((current) => (current ? rotateIconDraft(current, direction) : current));
+    setStatusMessage(
+      direction === "left"
+        ? "현재 결과를 왼쪽으로 90° 회전했습니다. 셀 크기와 2칸 방향도 함께 바뀝니다."
+        : "현재 결과를 오른쪽으로 90° 회전했습니다. 셀 크기와 2칸 방향도 함께 바뀝니다.",
+    );
+    setErrorMessage(null);
+  };
+
   const useCollectionDefaultSize = () => {
     setDraft((current) => {
       if (!current || !sourceDimensions) {
@@ -368,6 +495,7 @@ export function EditorPanel({
         cellWidth: collection.defaultCellWidth,
         cellHeight: collection.defaultCellHeight,
       };
+      const sourceGeometry = sourceViewportGeometry(nextDraft);
 
       return {
         ...nextDraft,
@@ -375,30 +503,35 @@ export function EditorPanel({
           nextDraft.cropMode === "fixed"
             ? fixedCropForPreset(
                 sourceDimensions,
-                nextDraft.shape,
-                nextDraft.cellWidth,
-                nextDraft.cellHeight,
+                sourceGeometry.shape,
+                sourceGeometry.cellWidth,
+                sourceGeometry.cellHeight,
                 nextDraft.presetPosition,
               )
             : constrainCropToAspect(
                 nextDraft.crop,
                 sourceDimensions,
                 aspectRatioForShape(
-                  nextDraft.shape,
-                  nextDraft.cellWidth,
-                  nextDraft.cellHeight,
+                  sourceGeometry.shape,
+                  sourceGeometry.cellWidth,
+                  sourceGeometry.cellHeight,
                 ),
               ),
       };
     });
   };
 
-  const resetCropToCenter = () => {
+  const resetCropToDefault = () => {
+    if (!sourceDimensions) {
+      return;
+    }
+
     setDraft((current) => {
-      if (!current || !sourceDimensions) {
+      if (!current) {
         return current;
       }
 
+      const sourceGeometry = sourceViewportGeometry(current);
       return {
         ...current,
         presetPosition: "center",
@@ -406,24 +539,32 @@ export function EditorPanel({
           current.cropMode === "fixed"
             ? fixedCropForPreset(
                 sourceDimensions,
-                current.shape,
-                current.cellWidth,
-                current.cellHeight,
+                sourceGeometry.shape,
+                sourceGeometry.cellWidth,
+                sourceGeometry.cellHeight,
                 "center",
               )
             : centeredFreeCrop(
                 sourceDimensions,
-                current.shape,
-                current.cellWidth,
-                current.cellHeight,
+                sourceGeometry.shape,
+                sourceGeometry.cellWidth,
+                sourceGeometry.cellHeight,
                 0.8,
               ),
       };
     });
+    setStatusMessage("크롭을 기본 위치와 크기로 맞췄습니다.");
+    setErrorMessage(null);
   };
 
   const revertSavedSettings = () => {
     if (!editorState) {
+      return;
+    }
+    if (
+      hasUnsavedDraft &&
+      !window.confirm("저장하지 않은 크롭·변형 변경을 버리고 저장값으로 되돌릴까요?")
+    ) {
       return;
     }
 
@@ -453,6 +594,10 @@ export function EditorPanel({
         presetPosition: draft.presetPosition,
         cellWidth: draft.cellWidth,
         cellHeight: draft.cellHeight,
+        transformQuarterTurns: draft.transformQuarterTurns,
+        transformFlipHorizontal: draft.transformFlipHorizontal,
+        transformFlipVertical: draft.transformFlipVertical,
+        pieceIds: draft.pieceIds.slice(0, draft.shape === "single" ? 1 : 2),
         gifLoopMode: draft.gifLoopMode,
         gifLoopCount: draft.gifLoopMode === "count" ? draft.gifLoopCount : null,
       });
@@ -461,13 +606,15 @@ export function EditorPanel({
       const nextState = await getIconEditorState(collection.id, iconId);
       setEditorState(nextState);
       setDraft(draftFromState(nextState, collection));
-      setStatusMessage("크롭을 적용했습니다.");
+      setStatusMessage("크롭·변형 설정을 적용했습니다.");
     } catch (error) {
       setErrorMessage(getCommandErrorMessage(error));
     } finally {
       setIsApplying(false);
     }
   };
+
+  const sourceCropGeometry = draft ? sourceViewportGeometry(draft) : null;
 
   return (
     <aside
@@ -496,7 +643,7 @@ export function EditorPanel({
           aria-label="편집 패널 닫기"
           className="inline-flex size-9 items-center justify-center rounded-md border border-border bg-white hover:bg-menu-hover focus-visible:outline focus-visible:outline-2 focus-visible:outline-focus"
           type="button"
-          onClick={onClose}
+          onClick={requestPanelClose}
         >
           <X aria-hidden="true" />
         </button>
@@ -521,9 +668,14 @@ export function EditorPanel({
                   <h3 className="text-sm font-semibold tracking-normal">원본 이미지</h3>
                   <button
                     aria-label="고급 편집 열기"
-                    className="inline-flex h-8 items-center gap-1 rounded-md border border-border bg-white px-2 text-xs font-medium hover:bg-menu-hover focus-visible:outline focus-visible:outline-2 focus-visible:outline-focus"
+                    className="inline-flex h-8 items-center gap-1 rounded-md border border-border bg-white px-2 text-xs font-medium hover:bg-menu-hover focus-visible:outline focus-visible:outline-2 focus-visible:outline-focus disabled:cursor-not-allowed disabled:opacity-50"
                     data-testid="editor-advanced-open"
-                    title="고급 편집"
+                    disabled={hasUnsavedDraft}
+                    title={
+                      hasUnsavedDraft
+                        ? "크롭·변형 변경을 먼저 적용하거나 되돌리세요."
+                        : "고급 편집"
+                    }
                     type="button"
                     onClick={() => setIsAdvancedOpen(true)}
                   >
@@ -537,11 +689,11 @@ export function EditorPanel({
                 </p>
               </div>
               <CropCanvas
-                cellHeight={draft.cellHeight}
-                cellWidth={draft.cellWidth}
+                cellHeight={sourceCropGeometry?.cellHeight ?? draft.cellHeight}
+                cellWidth={sourceCropGeometry?.cellWidth ?? draft.cellWidth}
                 crop={draft.crop}
                 cropMode={draft.cropMode}
-                shape={draft.shape}
+                shape={sourceCropGeometry?.shape ?? draft.shape}
                 sourceHeight={editorState.source.height}
                 sourceUrl={editorState.source.originalImageUrl}
                 sourceWidth={editorState.source.width}
@@ -568,6 +720,9 @@ export function EditorPanel({
                 sourceUrl={editorState.source.originalImageUrl}
                 sourceWidth={editorState.source.width}
                 textOverlay={editorState.textOverlay}
+                transformFlipHorizontal={draft.transformFlipHorizontal}
+                transformFlipVertical={draft.transformFlipVertical}
+                transformQuarterTurns={draft.transformQuarterTurns}
               />
             </EditorOutputPreview>
 
@@ -655,6 +810,71 @@ export function EditorPanel({
               </div>
             </section>
 
+            <section
+              aria-label="아이콘 변형"
+              className="flex flex-col gap-3 border-t border-border pt-4"
+            >
+              <div className="flex items-center justify-between gap-3">
+                <h3 className="text-sm font-semibold tracking-normal">변형</h3>
+                <span
+                  className="rounded-full border border-border bg-white px-2 py-1 text-[11px] text-muted"
+                  data-testid="editor-transform-summary"
+                >
+                  현재: {transformSummary(draft)}
+                </span>
+              </div>
+              <div className="grid grid-cols-2 gap-2">
+                <button
+                  className={transformButtonClass()}
+                  data-testid="editor-flip-horizontal"
+                  disabled={isApplying}
+                  type="button"
+                  onClick={() => applyFlip("horizontal")}
+                >
+                  <FlipHorizontal2 aria-hidden="true" className="size-4" />
+                  좌우 반전
+                </button>
+                <button
+                  className={transformButtonClass()}
+                  data-testid="editor-flip-vertical"
+                  disabled={isApplying}
+                  type="button"
+                  onClick={() => applyFlip("vertical")}
+                >
+                  <FlipVertical2 aria-hidden="true" className="size-4" />
+                  상하 반전
+                </button>
+                <button
+                  className={transformButtonClass()}
+                  data-testid="editor-rotate-left"
+                  disabled={isApplying}
+                  type="button"
+                  onClick={() => applyQuarterTurn("left")}
+                >
+                  <RotateCcw aria-hidden="true" className="size-4" />
+                  왼쪽으로 90°
+                </button>
+                <button
+                  className={transformButtonClass()}
+                  data-testid="editor-rotate-right"
+                  disabled={isApplying}
+                  type="button"
+                  onClick={() => applyQuarterTurn("right")}
+                >
+                  <RotateCw aria-hidden="true" className="size-4" />
+                  오른쪽으로 90°
+                </button>
+              </div>
+              <p className="text-xs leading-5 text-muted">
+                {draft.shape === "single"
+                  ? "원본은 보존되며 크롭한 전체 이미지를 변형합니다."
+                  : "2개 조각을 한 이미지처럼 변형하며, 조각 위치와 내보내기 순서도 결과에 맞게 바뀝니다."}
+                {editorState.source.isAnimated
+                  ? " GIF의 모든 프레임에 같은 변형을 적용합니다."
+                  : ""}
+              </p>
+            </section>
+
             {editorState.source.isAnimated ? (
               <section className="flex flex-col gap-3 border-t border-border pt-4">
                 <h3 className="text-sm font-semibold tracking-normal">GIF 반복</h3>
@@ -723,30 +943,32 @@ export function EditorPanel({
         ) : null}
       </div>
 
-      <footer className="flex items-center justify-between gap-2 border-t border-border px-5 py-4">
+      <footer className="flex flex-wrap items-center justify-between gap-2 border-t border-border px-5 py-4">
         <button
-          className="inline-flex items-center gap-2 rounded-md border border-border bg-white px-3 py-2 text-sm font-medium hover:bg-menu-hover focus-visible:outline focus-visible:outline-2 focus-visible:outline-focus disabled:cursor-not-allowed disabled:text-muted"
+          className="inline-flex items-center gap-2 whitespace-nowrap rounded-md border border-border bg-white px-3 py-2 text-sm font-medium hover:bg-menu-hover focus-visible:outline focus-visible:outline-2 focus-visible:outline-focus disabled:cursor-not-allowed disabled:text-muted"
           data-testid="editor-reset"
-          disabled={!draft || isApplying}
+          disabled={!draft || !sourceDimensions || isApplying}
+          title="크롭 위치와 크기만 기본값으로 되돌립니다. 다른 편집값은 유지됩니다."
           type="button"
-          onClick={resetCropToCenter}
+          onClick={resetCropToDefault}
         >
           <RefreshCcw aria-hidden="true" />
-          초기화
+          크롭 기본값
         </button>
-        <div className="flex items-center gap-2">
+        <div className="flex flex-wrap items-center justify-end gap-2">
           <button
-            className="inline-flex items-center gap-2 rounded-md border border-border bg-white px-3 py-2 text-sm font-medium hover:bg-menu-hover focus-visible:outline focus-visible:outline-2 focus-visible:outline-focus disabled:cursor-not-allowed disabled:text-muted"
+            className="inline-flex items-center gap-2 whitespace-nowrap rounded-md border border-border bg-white px-3 py-2 text-sm font-medium hover:bg-menu-hover focus-visible:outline focus-visible:outline-2 focus-visible:outline-focus disabled:cursor-not-allowed disabled:text-muted"
             data-testid="editor-revert"
             disabled={!editorState || isApplying}
+            title="저장된 편집값을 다시 불러오며 아직 적용하지 않은 변경만 버립니다."
             type="button"
             onClick={revertSavedSettings}
           >
-            <RotateCcw aria-hidden="true" />
-            되돌리기
+            <Undo2 aria-hidden="true" />
+            저장값으로 되돌리기
           </button>
           <button
-            className="inline-flex items-center gap-2 rounded-md bg-accent px-3 py-2 text-sm font-semibold text-accent-foreground hover:bg-accent-strong focus-visible:outline focus-visible:outline-2 focus-visible:outline-focus disabled:cursor-not-allowed disabled:opacity-60"
+            className="inline-flex items-center gap-2 whitespace-nowrap rounded-md bg-accent px-3 py-2 text-sm font-semibold text-accent-foreground hover:bg-accent-strong focus-visible:outline focus-visible:outline-2 focus-visible:outline-focus disabled:cursor-not-allowed disabled:opacity-60"
             data-testid="editor-apply"
             disabled={!draft || isApplying}
             type="button"
@@ -759,16 +981,30 @@ export function EditorPanel({
           </button>
         </div>
       </footer>
-      {isAdvancedOpen && editorState ? (
+      {isAdvancedOpen &&
+      editorState &&
+      editorState.icon.id === activeIconIdRef.current ? (
         <AdvancedEditPanel
           collection={collection}
           editorState={editorState}
-          onClose={() => setIsAdvancedOpen(false)}
+          onClose={() => {
+            setIsAdvancedOpen(false);
+            setIsAdvancedDirty(false);
+          }}
           onEditorStateUpdated={(nextState) => {
+            if (
+              !isEditorStateResponseCurrent(
+                activeIconIdRef.current,
+                nextState.icon.id,
+              )
+            ) {
+              return;
+            }
             setEditorState(nextState);
             setDraft(draftFromState(nextState, collection));
             onIconUpdated(nextState.icon);
           }}
+          onDirtyChange={setIsAdvancedDirty}
           onStatus={setStatusMessage}
         />
       ) : null}
@@ -781,6 +1017,7 @@ function AdvancedEditPanel({
   editorState,
   onClose,
   onEditorStateUpdated,
+  onDirtyChange,
   onStatus,
 }: {
   collection: CollectionSummary;
@@ -788,7 +1025,10 @@ function AdvancedEditPanel({
   onClose: () => void;
   onEditorStateUpdated: (state: IconEditorState) => void;
   onStatus: (message: string | null) => void;
+  onDirtyChange: (dirty: boolean) => void;
 }) {
+  const initialEffectRecipe = normalizeEffectRecipe(editorState.effectRecipe);
+  const [advancedMode, setAdvancedMode] = useState<AdvancedEditorMode>("effects");
   const [profiles, setProfiles] = useState<ExportProfile[]>([]);
   const [profileId, setProfileId] = useState("");
   const [pieceId, setPieceId] = useState(editorState.icon.pieces[0]?.id ?? "");
@@ -819,6 +1059,104 @@ function AdvancedEditPanel({
   );
   const [isPlaybackPreviewLoading, setIsPlaybackPreviewLoading] = useState(false);
   const [playbackPreviewError, setPlaybackPreviewError] = useState<string | null>(null);
+  const effectPreviewRequestRef = useRef(0);
+  const advancedDialogRef = useRef<HTMLElement>(null);
+  const [savedEffectRecipe, setSavedEffectRecipe] =
+    useState<EffectRecipeV1>(initialEffectRecipe);
+  const [effectDraft, setEffectDraft] =
+    useState<EffectRecipeV1>(initialEffectRecipe);
+  const [effectRevision, setEffectRevision] = useState(
+    editorState.effectRevision,
+  );
+  const [effectPreview, setEffectPreview] =
+    useState<IconEffectPreview | null>(null);
+  const [effectPreviewResolvedKey, setEffectPreviewResolvedKey] =
+    useState<string | null>(null);
+  const [isEffectPreviewLoading, setIsEffectPreviewLoading] = useState(false);
+  const [isEffectSaving, setIsEffectSaving] = useState(false);
+  const [isEffectReverting, setIsEffectReverting] = useState(false);
+  const [effectPreviewError, setEffectPreviewError] = useState<string | null>(
+    null,
+  );
+  const [effectActionError, setEffectActionError] = useState<string | null>(
+    null,
+  );
+  const [hasEffectConflict, setHasEffectConflict] = useState(false);
+  const [isMotionDirty, setIsMotionDirty] = useState(false);
+  const [isMotionWorking, setIsMotionWorking] = useState(false);
+
+  const effectDraftSignature = useMemo(
+    () => effectRecipeSignature(effectDraft),
+    [effectDraft],
+  );
+  const currentEffectPreviewRequestKey = useMemo(
+    () =>
+      effectPreviewRequestKey({
+        iconId: editorState.icon.id,
+        iconUpdatedAt: editorState.icon.updatedAt,
+        effectRevision: editorState.effectRevision,
+        draftSignature: effectDraftSignature,
+      }),
+    [
+      editorState.effectRevision,
+      editorState.icon.id,
+      editorState.icon.updatedAt,
+      effectDraftSignature,
+    ],
+  );
+  const isEffectDirty =
+    effectRecipeStateSignature(effectDraft) !==
+    effectRecipeStateSignature(savedEffectRecipe);
+  const isTextDirty = isTextOverlayDraftDirty(
+    {
+      enabled: textEnabled,
+      text: textValue,
+      fontPath: textFontPath,
+      fontSize: textFontSize,
+      xPercent: textX,
+      yPercent: textY,
+      color: textColor,
+      strokeColor: textStrokeColor,
+      strokeWidth: textStrokeWidth,
+    },
+    editorState.textOverlay,
+  );
+  const isEffectPreviewStale =
+    effectPreview !== null &&
+    effectPreviewResolvedKey !== currentEffectPreviewRequestKey;
+  const isEffectRevisionStale =
+    hasEffectConflict || editorState.effectRevision !== effectRevision;
+  const isEffectWorking = isEffectSaving || isEffectReverting;
+  const isBlockingBusy = isBusy || isEffectWorking || isMotionWorking;
+  const isAdvancedDirty = isEffectDirty || isMotionDirty || isTextDirty;
+
+  useEffect(() => {
+    onDirtyChange(isAdvancedDirty);
+  }, [isAdvancedDirty, onDirtyChange]);
+
+  useEffect(
+    () => () => {
+      onDirtyChange(false);
+    },
+    [onDirtyChange],
+  );
+
+  const requestClose = useCallback(() => {
+    if (isBlockingBusy) {
+      return;
+    }
+    if (
+      isAdvancedDirty &&
+      !window.confirm(
+        "저장하지 않은 정적 효과, 모션 또는 텍스트 변경을 버리고 고급 편집을 닫을까요?",
+      )
+    ) {
+      return;
+    }
+    onClose();
+  }, [isAdvancedDirty, isBlockingBusy, onClose]);
+
+  useModalFocus(advancedDialogRef, requestClose);
 
   useEffect(() => {
     let isActive = true;
@@ -900,6 +1238,50 @@ function AdvancedEditPanel({
       window.clearTimeout(timer);
     };
   }, [editorState.icon.id, editorState.source.isAnimated, playbackFps]);
+
+  useEffect(() => {
+    const requestId = effectPreviewRequestRef.current + 1;
+    effectPreviewRequestRef.current = requestId;
+    const requestedKey = currentEffectPreviewRequestKey;
+    let isActive = true;
+
+    setEffectPreviewError(null);
+    setIsEffectPreviewLoading(true);
+    const timer = window.setTimeout(() => {
+      previewIconEffects(collection.id, {
+        iconId: editorState.icon.id,
+        recipe: effectDraft,
+      })
+        .then((preview) => {
+          if (!isActive || effectPreviewRequestRef.current !== requestId) {
+            return;
+          }
+          setEffectPreview(preview);
+          setEffectPreviewResolvedKey(requestedKey);
+        })
+        .catch((error) => {
+          if (!isActive || effectPreviewRequestRef.current !== requestId) {
+            return;
+          }
+          setEffectPreviewError(getCommandErrorMessage(error));
+        })
+        .finally(() => {
+          if (isActive && effectPreviewRequestRef.current === requestId) {
+            setIsEffectPreviewLoading(false);
+          }
+        });
+    }, 450);
+
+    return () => {
+      isActive = false;
+      window.clearTimeout(timer);
+    };
+  }, [
+    collection.id,
+    currentEffectPreviewRequestKey,
+    editorState.icon.id,
+    effectDraft,
+  ]);
 
   const handleGenerate = async () => {
     if (!selectedProfile || !selectedPiece) {
@@ -1070,44 +1452,477 @@ function AdvancedEditPanel({
     }
   };
 
+  const handleSaveEffects = async () => {
+    if (!isEffectDirty || isEffectRevisionStale) {
+      return;
+    }
+
+    setIsEffectSaving(true);
+    setEffectActionError(null);
+    try {
+      const nextState = await updateIconEffects(collection.id, {
+        iconId: editorState.icon.id,
+        expectedRevision: effectRevision,
+        recipe: effectDraft,
+      });
+      const nextRecipe = normalizeEffectRecipe(nextState.effectRecipe);
+      setSavedEffectRecipe(nextRecipe);
+      setEffectDraft(nextRecipe);
+      setEffectRevision(nextState.effectRevision);
+      setHasEffectConflict(false);
+      onEditorStateUpdated(nextState);
+      onStatus("효과 설정을 저장하고 실제 미리보기와 내보내기에 적용했습니다.");
+    } catch (error) {
+      if (isRevisionConflict(error)) {
+        setHasEffectConflict(true);
+      }
+      setEffectActionError(
+        `효과를 저장하지 못했습니다: ${getCommandErrorMessage(error)}`,
+      );
+    } finally {
+      setIsEffectSaving(false);
+    }
+  };
+
+  const handleRevertEffects = async () => {
+    if (
+      isEffectDirty &&
+      !window.confirm("저장하지 않은 효과 변경을 버리고 최신 저장값을 불러올까요?")
+    ) {
+      return;
+    }
+
+    setIsEffectReverting(true);
+    setEffectActionError(null);
+    try {
+      const latestState = await getIconEditorState(
+        collection.id,
+        editorState.icon.id,
+      );
+      const latestRecipe = normalizeEffectRecipe(latestState.effectRecipe);
+      setSavedEffectRecipe(latestRecipe);
+      setEffectDraft(latestRecipe);
+      setEffectRevision(latestState.effectRevision);
+      setHasEffectConflict(false);
+      onEditorStateUpdated(latestState);
+      onStatus("저장된 효과 설정으로 되돌렸습니다.");
+    } catch (error) {
+      setEffectActionError(
+        `저장된 효과를 불러오지 못했습니다: ${getCommandErrorMessage(error)}`,
+      );
+    } finally {
+      setIsEffectReverting(false);
+    }
+  };
+
+  const handleAdvancedTabKeyDown = (
+    event: ReactKeyboardEvent<HTMLButtonElement>,
+  ) => {
+    const nextMode = nextAdvancedEditorMode(advancedMode, event.key);
+    if (nextMode === null) {
+      return;
+    }
+
+    event.preventDefault();
+    setAdvancedMode(nextMode);
+    window.requestAnimationFrame(() => {
+      document.getElementById(`advanced-${nextMode}-tab`)?.focus();
+    });
+  };
+
   return (
-    <div className="absolute inset-0 z-20 flex items-center justify-center bg-black/30 p-4">
-      <section className="relative flex max-h-full w-full max-w-3xl flex-col rounded-md border border-border bg-surface shadow-xl">
+    <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/30 p-4">
+      <section
+        aria-labelledby="advanced-edit-heading"
+        aria-modal="true"
+        className="relative flex max-h-full w-full max-w-5xl flex-col rounded-md border border-border bg-surface shadow-xl"
+        ref={advancedDialogRef}
+        role="dialog"
+        tabIndex={-1}
+      >
         <header className="flex items-center justify-between gap-3 border-b border-border px-4 py-3">
           <div className="min-w-0">
-            <h3 className="truncate text-base font-semibold tracking-normal">고급 편집</h3>
+            <h3
+              className="truncate text-base font-semibold tracking-normal"
+              id="advanced-edit-heading"
+            >
+              고급 편집
+            </h3>
             <p className="mt-1 truncate text-xs text-muted">
-              실제 export 후보를 생성해서 용량을 측정하고 적용합니다.
+              {advancedMode === "effects"
+                ? "정적 효과 순서를 편집하고 실제 네이티브 출력으로 결과를 확인합니다."
+                : advancedMode === "motion"
+                  ? "움직임과 일렁임을 조합하고 실제 GIF로 재생·용량을 확인합니다."
+                  : "실제 export 후보를 생성해서 용량을 측정하고 적용합니다."}
             </p>
           </div>
           <button
             aria-label="고급 편집 닫기"
             className="inline-flex size-8 items-center justify-center rounded-md border border-border bg-white hover:bg-menu-hover focus-visible:outline focus-visible:outline-2 focus-visible:outline-focus"
-            disabled={isBusy}
+            disabled={isBlockingBusy}
             type="button"
-            onClick={onClose}
+            onClick={requestClose}
           >
             <X aria-hidden="true" className="size-4" />
           </button>
         </header>
 
-        {isBusy ? (
+        {isBlockingBusy ? (
           <div className="absolute inset-x-0 top-[57px] z-10 border-b border-border bg-surface/95 px-4 py-2">
             <div className="flex items-center justify-between text-xs text-muted">
-              <span>고급 편집 작업을 처리하는 중입니다.</span>
-              <span>실제 파일 생성 및 용량 측정</span>
+              <span>
+                {isMotionWorking
+                  ? "모션 GIF를 생성하거나 설정을 저장하는 중입니다."
+                  : isEffectSaving
+                  ? "효과 설정을 저장하는 중입니다."
+                  : isEffectReverting
+                    ? "저장된 효과 설정을 불러오는 중입니다."
+                  : "고급 편집 작업을 처리하는 중입니다."}
+              </span>
+              <span>
+                {isEffectSaving
+                  ? "미리보기와 내보내기 결과 갱신"
+                  : isEffectReverting
+                    ? "최신 저장 버전 확인"
+                  : "실제 파일 생성 및 용량 측정"}
+              </span>
             </div>
             <div
               aria-label="고급 편집 처리 중"
               className="mt-2 h-2 overflow-hidden rounded-full bg-preview"
               role="progressbar"
             >
-              <div className="h-full w-1/2 animate-pulse rounded-full bg-accent" />
+              <div className="h-full w-1/2 animate-pulse rounded-full bg-accent motion-reduce:animate-none" />
             </div>
           </div>
         ) : null}
 
-        <div className="grid min-h-0 gap-4 overflow-auto p-4 md:grid-cols-[260px_minmax(0,1fr)]">
+        <div
+          aria-label="고급 편집 기능"
+          className="flex gap-1 border-b border-border bg-canvas px-4 pt-2"
+          role="tablist"
+        >
+          <button
+            aria-controls="advanced-effects-panel"
+            aria-selected={advancedMode === "effects"}
+            className={cn(
+              "rounded-t-md border border-b-0 border-transparent px-3 py-2 text-sm font-medium focus-visible:outline focus-visible:outline-2 focus-visible:outline-focus",
+              advancedMode === "effects"
+                ? "border-border bg-surface text-foreground"
+                : "text-muted hover:bg-menu-hover",
+            )}
+            disabled={isBlockingBusy}
+            id="advanced-effects-tab"
+            role="tab"
+            tabIndex={advancedMode === "effects" ? 0 : -1}
+            type="button"
+            onClick={() => setAdvancedMode("effects")}
+            onKeyDown={handleAdvancedTabKeyDown}
+          >
+            정적 효과
+          </button>
+          <button
+            aria-controls="advanced-motion-panel"
+            aria-selected={advancedMode === "motion"}
+            className={cn(
+              "rounded-t-md border border-b-0 border-transparent px-3 py-2 text-sm font-medium focus-visible:outline focus-visible:outline-2 focus-visible:outline-focus",
+              advancedMode === "motion"
+                ? "border-border bg-surface text-foreground"
+                : "text-muted hover:bg-menu-hover",
+            )}
+            disabled={isBlockingBusy}
+            id="advanced-motion-tab"
+            role="tab"
+            tabIndex={advancedMode === "motion" ? 0 : -1}
+            type="button"
+            onClick={() => setAdvancedMode("motion")}
+            onKeyDown={handleAdvancedTabKeyDown}
+          >
+            모션
+          </button>
+          <button
+            aria-controls="advanced-tools-panel"
+            aria-selected={advancedMode === "tools"}
+            className={cn(
+              "rounded-t-md border border-b-0 border-transparent px-3 py-2 text-sm font-medium focus-visible:outline focus-visible:outline-2 focus-visible:outline-focus",
+              advancedMode === "tools"
+                ? "border-border bg-surface text-foreground"
+                : "text-muted hover:bg-menu-hover",
+            )}
+            disabled={isBlockingBusy}
+            id="advanced-tools-tab"
+            role="tab"
+            tabIndex={advancedMode === "tools" ? 0 : -1}
+            type="button"
+            onClick={() => setAdvancedMode("tools")}
+            onKeyDown={handleAdvancedTabKeyDown}
+          >
+            텍스트·용량
+          </button>
+        </div>
+
+        <div
+          aria-labelledby="advanced-effects-tab"
+          className={cn(
+            "grid min-h-0 gap-4 overflow-auto p-4 md:grid-cols-[minmax(360px,1.1fr)_minmax(280px,0.9fr)]",
+            advancedMode !== "effects" && "hidden",
+          )}
+          hidden={advancedMode !== "effects"}
+            id="advanced-effects-panel"
+            role="tabpanel"
+          >
+            <Suspense
+              fallback={
+                <div
+                  aria-live="polite"
+                  className="rounded-md border border-border bg-canvas p-4 text-sm text-muted"
+                >
+                  효과 편집기를 불러오는 중입니다.
+                </div>
+              }
+            >
+              <LazyEffectRecipeEditor
+                disabled={isEffectWorking || isEffectRevisionStale}
+                recipe={effectDraft}
+                onChange={(recipe) => {
+                  setEffectDraft(normalizeEffectRecipe(recipe));
+                  setEffectActionError(null);
+                }}
+              />
+            </Suspense>
+
+            <div className="flex min-h-0 flex-col gap-3">
+              <section
+                aria-labelledby="effect-preview-heading"
+                className="rounded-md border border-border bg-white p-3"
+              >
+                <div className="mb-3 flex flex-wrap items-start justify-between gap-2">
+                  <div>
+                    <h4
+                      className="text-sm font-semibold tracking-normal"
+                      id="effect-preview-heading"
+                    >
+                      현재 셀 네이티브 미리보기
+                    </h4>
+                    <p className="mt-1 text-[11px] text-muted">
+                      효과 합성은 export recipe와 같습니다. 최종 형식·리사이즈
+                      필터·최적화에 따라 색, 용량, 프레임 수와 타이밍은 달라질 수
+                      있습니다.
+                    </p>
+                  </div>
+                  <div className="flex flex-wrap justify-end gap-1 text-[11px]">
+                    <span
+                      className={cn(
+                        "rounded-full border px-2 py-0.5",
+                        isEffectDirty
+                          ? "border-amber-300 bg-amber-50 text-amber-800"
+                          : "border-border bg-canvas text-muted",
+                      )}
+                    >
+                      {isEffectDirty ? "저장 전 변경 있음" : "저장됨"}
+                    </span>
+                    <span
+                      className={cn(
+                        "rounded-full border px-2 py-0.5",
+                        isEffectPreviewLoading || isEffectPreviewStale
+                          ? "border-blue-200 bg-blue-50 text-blue-800"
+                          : "border-border bg-canvas text-muted",
+                      )}
+                    >
+                      {isEffectPreviewLoading
+                        ? "미리보기 생성 중"
+                        : isEffectPreviewStale
+                          ? "이전 미리보기"
+                          : effectPreview
+                            ? "최신 미리보기"
+                            : "미리보기 대기"}
+                    </span>
+                  </div>
+                </div>
+
+                <div className="relative mx-auto flex aspect-square w-full max-w-96 items-center justify-center overflow-hidden rounded-md border border-border bg-preview p-3">
+                  {effectPreview?.previewPath ? (
+                    <img
+                      alt="효과가 적용된 현재 셀 미리보기"
+                      className={cn(
+                        "max-h-full max-w-full object-contain",
+                        isEffectPreviewStale && "opacity-60",
+                      )}
+                      draggable={false}
+                      src={effectPreview.previewPath}
+                      style={nonDraggableImageStyle}
+                    />
+                  ) : (
+                    <p className="px-4 text-center text-sm text-muted">
+                      현재 셀 미리보기를 준비하고 있습니다.
+                    </p>
+                  )}
+                  {isEffectPreviewLoading ? (
+                    <div className="absolute inset-x-3 bottom-3 rounded-md bg-surface/90 px-3 py-2 text-center text-xs text-muted shadow">
+                      변경을 반영해 다시 렌더링하는 중입니다.
+                    </div>
+                  ) : null}
+                </div>
+
+                <p
+                  aria-live="polite"
+                  className="mt-2 text-xs text-muted"
+                  role="status"
+                >
+                  {isEffectPreviewLoading
+                    ? "효과 변경이 멈춘 뒤 네이티브 미리보기를 생성합니다."
+                    : isEffectPreviewStale
+                      ? "설정이 바뀌어 이전 미리보기를 표시하고 있습니다."
+                      : effectPreview
+                        ? `미리보기 생성 완료 · 저장 버전 ${effectRevision}`
+                        : "미리보기 요청을 기다리고 있습니다."}
+                </p>
+              </section>
+
+              {effectPreview ? (
+                <dl className="grid grid-cols-2 gap-2 rounded-md border border-border bg-canvas p-3 text-xs">
+                  <div>
+                    <dt className="text-muted">현재 미리보기 파일</dt>
+                    <dd className="mt-0.5 font-semibold">
+                      {formatBytes(effectPreview.byteSize)}
+                    </dd>
+                  </div>
+                  <div>
+                    <dt className="text-muted">가장 큰 조각</dt>
+                    <dd
+                      className={cn(
+                        "mt-0.5 font-semibold",
+                        effectPreview.maxPieceByteSize > effectPreview.maxBytes &&
+                          "text-danger",
+                      )}
+                    >
+                      {formatBytes(effectPreview.maxPieceByteSize)} /{" "}
+                      {formatBytes(effectPreview.maxBytes)}
+                    </dd>
+                  </div>
+                  <div>
+                    <dt className="text-muted">프레임</dt>
+                    <dd className="mt-0.5 font-semibold">
+                      {effectPreview.frameCount}개
+                    </dd>
+                  </div>
+                  <div>
+                    <dt className="text-muted">처리 시간</dt>
+                    <dd className="mt-0.5 font-semibold">
+                      {effectPreview.processingMs}ms
+                    </dd>
+                  </div>
+                </dl>
+              ) : null}
+
+              {effectPreview?.warnings.length ? (
+                <section
+                  aria-labelledby="effect-warning-heading"
+                  className="rounded-md border border-amber-300 bg-amber-50 p-3"
+                >
+                  <h4
+                    className="text-xs font-semibold text-amber-900"
+                    id="effect-warning-heading"
+                  >
+                    확인할 점
+                  </h4>
+                  <ul className="mt-1 list-disc space-y-1 pl-4 text-xs text-amber-900">
+                    {effectPreview.warnings.map((warning, index) => (
+                      <li key={`${index}-${warning}`}>{warning}</li>
+                    ))}
+                  </ul>
+                </section>
+              ) : null}
+
+              {isEffectRevisionStale ? (
+                <p className="rounded-md border border-amber-300 bg-amber-50 px-3 py-2 text-xs text-amber-900">
+                  다른 작업에서 저장된 효과 버전이 바뀌었습니다. 최신 저장값으로
+                  되돌린 뒤 다시 편집하세요.
+                </p>
+              ) : null}
+              {effectPreviewError ? (
+                <p className="rounded-md border border-red-200 bg-red-50 px-3 py-2 text-sm text-danger">
+                  미리보기를 만들지 못했습니다: {effectPreviewError}
+                </p>
+              ) : null}
+              {effectActionError ? (
+                <p className="rounded-md border border-red-200 bg-red-50 px-3 py-2 text-sm text-danger">
+                  {effectActionError}
+                </p>
+              ) : null}
+
+              <div className="mt-auto flex flex-wrap justify-end gap-2 border-t border-border pt-3">
+                <button
+                  className="rounded-md border border-border bg-white px-3 py-2 text-sm font-medium hover:bg-menu-hover focus-visible:outline focus-visible:outline-2 focus-visible:outline-focus disabled:cursor-not-allowed disabled:text-muted"
+                  disabled={
+                    isEffectWorking ||
+                    (!isEffectDirty && !isEffectRevisionStale)
+                  }
+                  type="button"
+                  onClick={() => {
+                    void handleRevertEffects();
+                  }}
+                >
+                  {isEffectReverting ? "저장값 불러오는 중" : "저장값으로 되돌리기"}
+                </button>
+                <button
+                  className="rounded-md bg-accent px-4 py-2 text-sm font-semibold text-accent-foreground hover:bg-accent-strong focus-visible:outline focus-visible:outline-2 focus-visible:outline-focus disabled:cursor-not-allowed disabled:opacity-60"
+                  disabled={
+                    isEffectWorking ||
+                    !isEffectDirty ||
+                    isEffectRevisionStale
+                  }
+                  type="button"
+                  onClick={() => {
+                    void handleSaveEffects();
+                  }}
+                >
+                  {isEffectSaving ? "효과 저장 중" : "효과 저장"}
+                </button>
+              </div>
+            </div>
+        </div>
+
+        <div
+          aria-labelledby="advanced-motion-tab"
+          className={cn(advancedMode !== "motion" && "hidden")}
+          hidden={advancedMode !== "motion"}
+          id="advanced-motion-panel"
+          role="tabpanel"
+        >
+          <Suspense
+            fallback={
+              advancedMode === "motion" ? (
+                <div className="p-4 text-sm text-muted" aria-live="polite">
+                  모션 편집기를 불러오는 중입니다.
+                </div>
+              ) : null
+            }
+          >
+            <LazyMotionEditorSection
+              key={editorState.icon.id}
+              collection={collection}
+              editorState={editorState}
+              staticEffectDirty={isEffectDirty}
+              staticEffectRevisionStale={isEffectRevisionStale}
+              onBusyChange={setIsMotionWorking}
+              onDirtyChange={setIsMotionDirty}
+              onEditorStateUpdated={onEditorStateUpdated}
+              onStatus={onStatus}
+            />
+          </Suspense>
+        </div>
+
+        <div
+          aria-labelledby="advanced-tools-tab"
+          className={cn(
+            "grid min-h-0 gap-4 overflow-auto p-4 md:grid-cols-[260px_minmax(0,1fr)]",
+            advancedMode !== "tools" && "hidden",
+          )}
+          hidden={advancedMode !== "tools"}
+          id="advanced-tools-panel"
+          role="tabpanel"
+        >
           <aside className="flex flex-col gap-3">
             <label className="flex flex-col gap-1 text-xs font-medium text-muted">
               Export 프로필
@@ -1397,6 +2212,14 @@ function AdvancedEditPanel({
           </aside>
 
           <div className="flex min-h-0 flex-col gap-3">
+            {editorState.icon.transformQuarterTurns !== 0 ||
+            editorState.icon.transformFlipHorizontal ||
+            editorState.icon.transformFlipVertical ? (
+              <p className="rounded-md border border-border bg-canvas px-3 py-2 text-xs text-muted">
+                텍스트 위치는 변형 전 원본 좌표에서 편집하며, 저장 결과에는 현재
+                회전·반전이 적용됩니다.
+              </p>
+            ) : null}
             <AdvancedLivePreview
               color={textColor}
               disabled={isBusy}
@@ -1790,6 +2613,12 @@ function draftFromState(
     presetPosition: state.crop.presetPosition,
     cellWidth: state.icon.cellWidthOverride ?? collection.defaultCellWidth,
     cellHeight: state.icon.cellHeightOverride ?? collection.defaultCellHeight,
+    transformQuarterTurns: state.icon.transformQuarterTurns,
+    transformFlipHorizontal: state.icon.transformFlipHorizontal,
+    transformFlipVertical: state.icon.transformFlipVertical,
+    pieceIds: [...state.icon.pieces]
+      .sort((left, right) => left.pieceIndex - right.pieceIndex)
+      .map((piece) => piece.id),
     gifLoopMode: state.icon.gifLoopMode,
     gifLoopCount: state.icon.gifLoopCount ?? 1,
   };
@@ -1800,6 +2629,10 @@ function segmentedButtonClass(isSelected: boolean) {
     "rounded-md border border-border bg-white px-3 py-2 text-sm font-medium hover:bg-menu-hover focus-visible:outline focus-visible:outline-2 focus-visible:outline-focus",
     isSelected && "border-focus bg-selected",
   );
+}
+
+function transformButtonClass() {
+  return "inline-flex min-h-10 items-center justify-center gap-2 rounded-md border border-border bg-white px-3 py-2 text-sm font-medium hover:bg-menu-hover focus-visible:outline focus-visible:outline-2 focus-visible:outline-focus disabled:cursor-not-allowed disabled:opacity-60";
 }
 
 function clampPanelWidth(width: number) {
@@ -1863,6 +2696,9 @@ function LiveCropPreview({
   previewWidth,
   previewHeight,
   textOverlay,
+  transformQuarterTurns,
+  transformFlipHorizontal,
+  transformFlipVertical,
 }: {
   sourceUrl: string;
   sourceWidth: number;
@@ -1874,9 +2710,26 @@ function LiveCropPreview({
   previewWidth: number;
   previewHeight: number;
   textOverlay?: TextOverlaySettings | null;
+  transformQuarterTurns: 0 | 1 | 2 | 3;
+  transformFlipHorizontal: boolean;
+  transformFlipVertical: boolean;
 }) {
   const viewport = previewViewportSize(previewWidth, previewHeight, shape);
-  const scale = viewport.width / Math.max(1, crop.width);
+  const sourceGeometry = sourceViewportGeometry({
+    shape,
+    cellWidth: previewWidth,
+    cellHeight: previewHeight,
+    transformQuarterTurns,
+    transformFlipHorizontal,
+    transformFlipVertical,
+    pieceIds: [],
+  });
+  const sourceViewport = previewViewportSize(
+    sourceGeometry.cellWidth,
+    sourceGeometry.cellHeight,
+    sourceGeometry.shape,
+  );
+  const scale = sourceViewport.width / Math.max(1, crop.width);
 
   return (
     <div
@@ -1888,38 +2741,58 @@ function LiveCropPreview({
       }}
       onDragStart={(event) => event.preventDefault()}
     >
-      <img
-        alt=""
-        className="pointer-events-none absolute left-0 top-0 max-w-none select-none"
-        draggable={false}
-        src={sourceUrl}
+      <div
+        className="absolute left-1/2 top-1/2"
         style={{
-          ...nonDraggableImageStyle,
-          height: sourceHeight * scale,
-          transform: `translate(${-crop.x * scale}px, ${-crop.y * scale}px)`,
-          width: sourceWidth * scale,
+          height: sourceViewport.height,
+          transform: "translate(-50%, -50%)",
+          width: sourceViewport.width,
         }}
-        onDragStart={(event) => event.preventDefault()}
-      />
-      {textOverlay?.enabled && textOverlay.text.trim() ? (
+      >
         <div
-          className="pointer-events-none absolute select-none whitespace-pre-line text-center font-semibold leading-[1.2]"
-          data-testid="editor-live-preview-text-overlay"
+          className="relative h-full w-full overflow-hidden"
+          data-testid="editor-live-preview-transform"
           style={{
-            color: textOverlay.color,
-            fontSize: Math.max(1, textOverlay.fontSize * scale),
-            left: (sourceWidth * textOverlay.x - crop.x) * scale,
-            textShadow: textStrokeShadow(
-              textOverlay.strokeColor,
-              textOverlay.strokeWidth * scale,
-            ),
-            top: (sourceHeight * textOverlay.y - crop.y) * scale,
-            transform: "translate(-50%, -50%)",
+            transform: `scaleX(${transformFlipHorizontal ? -1 : 1}) scaleY(${
+              transformFlipVertical ? -1 : 1
+            }) rotate(${transformQuarterTurns * 90}deg)`,
+            transformOrigin: "center",
           }}
         >
-          {textOverlay.text}
+          <img
+            alt=""
+            className="pointer-events-none absolute left-0 top-0 max-w-none select-none"
+            draggable={false}
+            src={sourceUrl}
+            style={{
+              ...nonDraggableImageStyle,
+              height: sourceHeight * scale,
+              transform: `translate(${-crop.x * scale}px, ${-crop.y * scale}px)`,
+              width: sourceWidth * scale,
+            }}
+            onDragStart={(event) => event.preventDefault()}
+          />
+          {textOverlay?.enabled && textOverlay.text.trim() ? (
+            <div
+              className="pointer-events-none absolute select-none whitespace-pre-line text-center font-semibold leading-[1.2]"
+              data-testid="editor-live-preview-text-overlay"
+              style={{
+                color: textOverlay.color,
+                fontSize: Math.max(1, textOverlay.fontSize * scale),
+                left: (sourceWidth * textOverlay.x - crop.x) * scale,
+                textShadow: textStrokeShadow(
+                  textOverlay.strokeColor,
+                  textOverlay.strokeWidth * scale,
+                ),
+                top: (sourceHeight * textOverlay.y - crop.y) * scale,
+                transform: "translate(-50%, -50%)",
+              }}
+            >
+              {textOverlay.text}
+            </div>
+          ) : null}
         </div>
-      ) : null}
+      </div>
       {shape === "horizontal_double" ? (
         <span className="absolute bottom-0 left-1/2 top-0 border-l border-dashed border-focus" />
       ) : null}

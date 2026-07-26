@@ -2,11 +2,13 @@ import type { SheetGridSettings, SheetReadOrder } from "@/features/sheets/types"
 
 export function SheetGridSettingsPanel({
   settings,
+  disabled = false,
   onChange,
   onPreview,
   onReset,
 }: {
   settings: SheetGridSettings;
+  disabled?: boolean;
   onChange: (settings: SheetGridSettings) => void;
   onPreview: () => void;
   onReset: () => void;
@@ -35,6 +37,7 @@ export function SheetGridSettingsPanel({
         분할 기준
         <select
           className="rounded-md border border-border bg-white px-2 py-2 text-sm text-foreground"
+          disabled={disabled}
           value={settings.mode}
           onChange={(event) =>
             onChange({ ...settings, mode: event.currentTarget.value as SheetGridSettings["mode"] })
@@ -45,21 +48,22 @@ export function SheetGridSettingsPanel({
         </select>
       </label>
       <div className="grid grid-cols-2 gap-2">
-        <NumberField label="열" value={settings.columns} onChange={(value) => updateNumber("columns", value)} />
-        <NumberField label="행" value={settings.rows} onChange={(value) => updateNumber("rows", value)} />
-        <NumberField label="셀 너비" value={settings.cellWidth} onChange={(value) => updateNumber("cellWidth", value)} />
-        <NumberField label="셀 높이" value={settings.cellHeight} onChange={(value) => updateNumber("cellHeight", value)} />
-        <NumberField label="좌측 여백" value={settings.borderLeft} onChange={(value) => updateNumber("borderLeft", value)} />
-        <NumberField label="상단 여백" value={settings.borderTop} onChange={(value) => updateNumber("borderTop", value)} />
-        <NumberField label="우측 여백" value={settings.borderRight} onChange={(value) => updateNumber("borderRight", value)} />
-        <NumberField label="하단 여백" value={settings.borderBottom} onChange={(value) => updateNumber("borderBottom", value)} />
-        <NumberField label="가로 간격" value={settings.gapX} onChange={(value) => updateNumber("gapX", value)} />
-        <NumberField label="세로 간격" value={settings.gapY} onChange={(value) => updateNumber("gapY", value)} />
+        <NumberField disabled={disabled} label="열" value={settings.columns} onChange={(value) => updateNumber("columns", value)} />
+        <NumberField disabled={disabled} label="행" value={settings.rows} onChange={(value) => updateNumber("rows", value)} />
+        <NumberField disabled={disabled} label="셀 너비" value={settings.cellWidth} onChange={(value) => updateNumber("cellWidth", value)} />
+        <NumberField disabled={disabled} label="셀 높이" value={settings.cellHeight} onChange={(value) => updateNumber("cellHeight", value)} />
+        <NumberField disabled={disabled} label="좌측 여백" value={settings.borderLeft} onChange={(value) => updateNumber("borderLeft", value)} />
+        <NumberField disabled={disabled} label="상단 여백" value={settings.borderTop} onChange={(value) => updateNumber("borderTop", value)} />
+        <NumberField disabled={disabled} label="우측 여백" value={settings.borderRight} onChange={(value) => updateNumber("borderRight", value)} />
+        <NumberField disabled={disabled} label="하단 여백" value={settings.borderBottom} onChange={(value) => updateNumber("borderBottom", value)} />
+        <NumberField disabled={disabled} label="가로 간격" value={settings.gapX} onChange={(value) => updateNumber("gapX", value)} />
+        <NumberField disabled={disabled} label="세로 간격" value={settings.gapY} onChange={(value) => updateNumber("gapY", value)} />
       </div>
       <label className="flex flex-col gap-1 text-xs font-medium text-muted">
         읽기 순서
         <select
           className="rounded-md border border-border bg-white px-2 py-2 text-sm text-foreground"
+          disabled={disabled}
           value={settings.readOrder}
           onChange={(event) =>
             onChange({ ...settings, readOrder: event.currentTarget.value as SheetReadOrder })
@@ -73,6 +77,7 @@ export function SheetGridSettingsPanel({
         빈 셀 alpha 기준
         <input
           className="w-full"
+          disabled={disabled}
           max={1}
           min={0.5}
           step={0.01}
@@ -86,18 +91,21 @@ export function SheetGridSettingsPanel({
       </label>
       <div className="flex gap-2">
         <button
-          className="rounded-md bg-accent px-3 py-2 text-sm font-semibold text-accent-foreground hover:bg-accent-strong"
+          className="rounded-md bg-accent px-3 py-2 text-sm font-semibold text-accent-foreground hover:bg-accent-strong disabled:cursor-not-allowed disabled:opacity-60"
+          disabled={disabled}
           type="button"
           onClick={onPreview}
         >
           미리보기 갱신
         </button>
         <button
-          className="rounded-md border border-border bg-white px-3 py-2 text-sm font-medium hover:bg-menu-hover"
+          className="rounded-md border border-border bg-white px-3 py-2 text-sm font-medium hover:bg-menu-hover disabled:cursor-not-allowed disabled:text-muted"
+          disabled={disabled}
+          title="분할 칸, 여백, 간격, 읽기 순서를 앱의 초기값으로 되돌립니다."
           type="button"
           onClick={onReset}
         >
-          Reset
+          분할 설정 초기값
         </button>
       </div>
     </aside>
@@ -105,10 +113,12 @@ export function SheetGridSettingsPanel({
 }
 
 function NumberField({
+  disabled = false,
   label,
   value,
   onChange,
 }: {
+  disabled?: boolean;
   label: string;
   value: number | null;
   onChange: (value: string) => void;
@@ -118,6 +128,7 @@ function NumberField({
       {label}
       <input
         className="min-w-0 rounded-md border border-border bg-white px-2 py-2 text-sm text-foreground"
+        disabled={disabled}
         min={0}
         type="number"
         value={value ?? ""}

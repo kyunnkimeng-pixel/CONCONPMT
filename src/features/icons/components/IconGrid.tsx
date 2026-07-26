@@ -194,6 +194,19 @@ export function IconGrid({
     });
   };
 
+  const handleEditNote = (iconId: string) => {
+    const icon = icons.find((candidate) => candidate.id === iconId);
+    if (!icon) {
+      return;
+    }
+
+    setNoteDialog({
+      iconId: icon.id,
+      displayName: icon.displayName,
+      note: icon.note ?? "",
+    });
+  };
+
   const handleDragEnd = (event: DragEndEvent) => {
     const { active, over } = event;
     if (!over || active.id === over.id) {
@@ -265,6 +278,7 @@ export function IconGrid({
                 validateCurrentAlt={validateCurrentAlt}
                 onAltCommit={onAltCommit}
                 onContextMenu={handleContextMenu}
+                onEditNote={handleEditNote}
                 onOpenEditor={onEditIcon}
                 onRename={onRenameIcon}
                 onSelect={handleSelect}
@@ -295,13 +309,7 @@ export function IconGrid({
             void onDuplicateIcon(targetIcon.id);
           }}
           onEdit={() => onEditIcon(targetIcon.id)}
-          onEditNote={() =>
-            setNoteDialog({
-              iconId: targetIcon.id,
-              displayName: targetIcon.displayName,
-              note: targetIcon.note ?? "",
-            })
-          }
+          onEditNote={() => handleEditNote(targetIcon.id)}
           onClearNote={() => {
             void onClearIconNote(targetIcon.id);
           }}

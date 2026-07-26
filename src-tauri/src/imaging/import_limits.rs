@@ -1,5 +1,5 @@
-use std::fs;
-use std::io::Cursor;
+use std::fs::File;
+use std::io::{Cursor, Read};
 use std::path::Path;
 
 use image::{DynamicImage, GenericImageView, ImageError, ImageFormat, ImageReader, Limits};
@@ -11,6 +11,52 @@ pub const MAX_IMPORT_DIMENSION: u32 = 12_000;
 pub const MAX_IMPORT_PIXELS: u64 = 32_000_000;
 pub const MAX_GIF_FRAMES: i64 = 500;
 pub const MAX_GIF_TOTAL_FRAME_PIXELS: u64 = 128_000_000;
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct ValidatedCropRect {
+    pub x: i64,
+    pub y: i64,
+    pub width: u32,
+    pub height: u32,
+}
+
+pub fn validate_crop_rect(x: f64, y: f64, width: f64, height: f64) -> AppResult<ValidatedCropRect> {
+    if !x.is_finite() || !y.is_finite() || !width.is_finite() || !height.is_finite() {
+        return Err(AppError::new(
+            "validation",
+            "크롭 좌표와 크기는 유한한 숫자여야 합니다.",
+        ));
+    }
+    let max_dimension = f64::from(MAX_IMPORT_DIMENSION);
+    if x.abs() > max_dimension || y.abs() > max_dimension {
+        return Err(AppError::new(
+            "validation",
+            "크롭 좌표가 지원 범위를 벗어났습니다.",
+        ));
+    }
+    if width < 1.0 || height < 1.0 || width > max_dimension || height > max_dimension {
+        return Err(AppError::new(
+            "validation",
+            "크롭 너비와 높이는 1~12,000px 범위여야 합니다.",
+        ));
+    }
+
+    let x = x.round() as i64;
+    let y = y.round() as i64;
+    let width = width.round() as u32;
+    let height = height.round() as u32;
+    validate_import_dimensions(width, height)?;
+    x.checked_add(i64::from(width))
+        .and_then(|_| y.checked_add(i64::from(height)))
+        .ok_or_else(|| AppError::new("validation", "크롭 영역 좌표가 너무 큽니다."))?;
+
+    Ok(ValidatedCropRect {
+        x,
+        y,
+        width,
+        height,
+    })
+}
 
 pub fn decode_import_image(bytes: &[u8], format: ImageFormat) -> AppResult<DynamicImage> {
     validate_import_file_size(bytes.len())?;
@@ -32,12 +78,17 @@ pub fn decode_import_image(bytes: &[u8], format: ImageFormat) -> AppResult<Dynam
     Ok(image)
 }
 
-pub fn decode_import_image_file(path: &Path, format: ImageFormat) -> AppResult<DynamicImage> {
-    let metadata = fs::metadata(path)?;
-    let byte_size = usize::try_from(metadata.len())
+pub fn read_import_file_bytes(path: &Path) -> AppResult<Vec<u8>> {
+    let file = File::open(path)?;
+    let metadata_size = usize::try_from(file.metadata()?.len())
         .map_err(|_| AppError::new("validation", "원본 파일 크기를 확인할 수 없습니다."))?;
-    validate_import_file_size(byte_size)?;
-    decode_import_image(&fs::read(path)?, format)
+    validate_import_file_size(metadata_size)?;
+
+    let mut bytes = Vec::with_capacity(metadata_size.min(MAX_IMPORT_FILE_BYTES));
+    let mut limited = file.take((MAX_IMPORT_FILE_BYTES as u64).saturating_add(1));
+    limited.read_to_end(&mut bytes)?;
+    validate_import_file_size(bytes.len())?;
+    Ok(bytes)
 }
 
 pub fn validate_import_file_size(byte_size: usize) -> AppResult<()> {
@@ -112,8 +163,8 @@ fn import_decode_error(error: ImageError) -> AppError {
 #[cfg(test)]
 mod tests {
     use super::{
-        validate_gif_workload, validate_import_dimensions, validate_import_file_size,
-        MAX_GIF_FRAMES, MAX_IMPORT_FILE_BYTES,
+        validate_crop_rect, validate_gif_workload, validate_import_dimensions,
+        validate_import_file_size, MAX_GIF_FRAMES, MAX_IMPORT_FILE_BYTES,
     };
 
     #[test]
@@ -128,5 +179,16 @@ mod tests {
     fn gif_workload_rejects_excessive_frames() {
         assert!(validate_gif_workload(1, 1, MAX_GIF_FRAMES).is_ok());
         assert!(validate_gif_workload(1, 1, MAX_GIF_FRAMES + 1).is_err());
+    }
+
+    #[test]
+    fn crop_validation_rejects_non_finite_and_excessive_geometry() {
+        assert!(validate_crop_rect(0.0, 0.0, 8_000.0, 4_000.0).is_ok());
+        assert!(validate_crop_rect(f64::NAN, 0.0, 20.0, 20.0).is_err());
+        assert!(validate_crop_rect(0.0, f64::INFINITY, 20.0, 20.0).is_err());
+        assert!(validate_crop_rect(0.0, 0.0, f64::INFINITY, 20.0).is_err());
+        assert!(validate_crop_rect(0.0, 0.0, 12_001.0, 1.0).is_err());
+        assert!(validate_crop_rect(0.0, 0.0, 8_000.0, 8_000.0).is_err());
+        assert!(validate_crop_rect(12_001.0, 0.0, 1.0, 1.0).is_err());
     }
 }

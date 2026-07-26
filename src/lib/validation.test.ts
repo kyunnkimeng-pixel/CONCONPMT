@@ -57,6 +57,9 @@ function icon(iconId: string, pieceId: string, altText: string): IconSummary {
     currentPreviewUrl: null,
     gifLoopMode: "preserve",
     gifLoopCount: null,
+    transformQuarterTurns: 0,
+    transformFlipHorizontal: false,
+    transformFlipVertical: false,
     createdAt: "2026-05-10T00:00:00.000Z",
     updatedAt: "2026-05-10T00:00:00.000Z",
     pieces: [

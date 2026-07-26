@@ -1,5 +1,8 @@
 use serde::{Deserialize, Serialize};
 
+use crate::imaging::effects::EffectRecipe;
+use crate::imaging::motion::MotionRecipe;
+
 #[derive(Debug, Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct CollectionDto {
@@ -37,6 +40,9 @@ pub struct IconDto {
     pub thumbnail_url: Option<String>,
     pub thumbnail_override_url: Option<String>,
     pub current_preview_url: Option<String>,
+    pub transform_quarter_turns: i64,
+    pub transform_flip_horizontal: bool,
+    pub transform_flip_vertical: bool,
     pub gif_loop_mode: String,
     pub gif_loop_count: Option<i64>,
     pub created_at: String,
@@ -98,6 +104,10 @@ pub struct IconEditorStateDto {
     pub source: SourceFileDto,
     pub crop: CropSettingsDto,
     pub text_overlay: TextOverlayDto,
+    pub effect_recipe: EffectRecipe,
+    pub effect_revision: i64,
+    pub motion_recipe: MotionRecipe,
+    pub motion_revision: i64,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -127,6 +137,14 @@ pub struct ApplyIconCropPayload {
     pub preset_position: String,
     pub cell_width: i64,
     pub cell_height: i64,
+    #[serde(default)]
+    pub transform_quarter_turns: i64,
+    #[serde(default)]
+    pub transform_flip_horizontal: bool,
+    #[serde(default)]
+    pub transform_flip_vertical: bool,
+    #[serde(default)]
+    pub piece_ids: Vec<String>,
     pub gif_loop_mode: String,
     pub gif_loop_count: Option<i64>,
 }
@@ -144,6 +162,75 @@ pub struct UpdateIconTextOverlayPayload {
     pub color: String,
     pub stroke_color: String,
     pub stroke_width: f64,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct PreviewIconEffectsPayload {
+    pub icon_id: String,
+    pub recipe: EffectRecipe,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct UpdateIconEffectsPayload {
+    pub icon_id: String,
+    pub expected_revision: i64,
+    pub recipe: EffectRecipe,
+}
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct EffectPreviewDto {
+    pub preview_path: String,
+    pub byte_size: i64,
+    pub max_piece_byte_size: i64,
+    pub max_bytes: i64,
+    pub frame_count: i64,
+    pub processing_ms: i64,
+    pub warnings: Vec<String>,
+    pub recipe_signature: String,
+    pub generated_at: String,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct PreviewIconMotionPayload {
+    pub icon_id: String,
+    pub recipe: MotionRecipe,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct UpdateIconMotionPayload {
+    pub icon_id: String,
+    pub expected_revision: i64,
+    pub expected_render_signature: String,
+    pub recipe: MotionRecipe,
+}
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct MotionPreviewDto {
+    pub preview_path: String,
+    pub poster_path: String,
+    pub byte_size: i64,
+    pub piece_byte_sizes: Vec<i64>,
+    pub max_piece_byte_size: i64,
+    pub max_bytes: i64,
+    pub passes_byte_limit: bool,
+    pub frame_count: i64,
+    pub duration_ms: i64,
+    pub effective_fps: f64,
+    pub timing_source: String,
+    pub loop_mode: String,
+    pub loop_count: Option<i64>,
+    pub clipped: bool,
+    pub clipped_frame_count: i64,
+    pub processing_ms: i64,
+    pub warnings: Vec<String>,
+    pub render_signature: String,
+    pub generated_at: String,
 }
 
 #[derive(Debug, Clone, Deserialize)]

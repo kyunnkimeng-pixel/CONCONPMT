@@ -2,6 +2,7 @@ use rusqlite::{params, Connection, OptionalExtension, Row};
 
 use crate::error::{AppError, AppResult};
 use crate::ids::create_id;
+use crate::imaging::import_limits::validate_import_dimensions;
 use crate::models::{ExportProfileDto, ExportRequestPayload};
 
 pub fn list_export_profiles(
@@ -317,12 +318,11 @@ fn validate_profile_settings(payload: &ExportRequestPayload) -> AppResult<()> {
         }
     }
 
-    if payload.target_cell_width <= 0 || payload.target_cell_height <= 0 {
-        return Err(AppError::new(
-            "validation",
-            "프로필 기준 크기는 1px 이상이어야 합니다.",
-        ));
-    }
+    let target_width = u32::try_from(payload.target_cell_width)
+        .map_err(|_| AppError::new("validation", "프로필 기준 너비가 올바르지 않습니다."))?;
+    let target_height = u32::try_from(payload.target_cell_height)
+        .map_err(|_| AppError::new("validation", "프로필 기준 높이가 올바르지 않습니다."))?;
+    validate_import_dimensions(target_width, target_height)?;
 
     if payload.max_bytes <= 0 {
         return Err(AppError::new(
@@ -371,5 +371,36 @@ impl ExportProfileDto {
     fn allowed_formats_as_json(&self) -> String {
         serde_json::to_string(&self.allowed_formats)
             .unwrap_or_else(|_| "[\"jpg\",\"jpeg\",\"png\",\"gif\"]".to_string())
+    }
+}
+#[cfg(test)]
+mod tests {
+    use crate::models::ExportRequestPayload;
+
+    use super::validate_profile_settings;
+
+    fn payload(width: i64, height: i64) -> ExportRequestPayload {
+        ExportRequestPayload {
+            profile_id: "profile_test".to_string(),
+            target_format: "png".to_string(),
+            target_cell_width: width,
+            target_cell_height: height,
+            max_bytes: 2_000_000,
+            filename_mode: "sequence".to_string(),
+            include_alt_txt: true,
+            strict_warnings: false,
+            output_directory: None,
+            open_folder_after_export: false,
+            open_alt_txt_after_export: false,
+            excluded_piece_ids: Vec::new(),
+            resize_filter: "lanczos3".to_string(),
+        }
+    }
+
+    #[test]
+    fn profile_settings_reject_extreme_dimensions_and_keep_normal_sizes() {
+        assert!(validate_profile_settings(&payload(200, 200)).is_ok());
+        assert!(validate_profile_settings(&payload(i64::MAX, 1)).is_err());
+        assert!(validate_profile_settings(&payload(8_000, 8_000)).is_err());
     }
 }

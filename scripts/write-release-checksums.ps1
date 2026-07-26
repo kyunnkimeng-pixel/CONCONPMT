@@ -39,7 +39,7 @@ $lines = foreach ($relativePath in $artifacts) {
   }
 
   $hash = (Get-FileHash -Algorithm SHA256 -LiteralPath $fullPath).Hash.ToLowerInvariant()
-  "$hash  $($relativePath -replace '\\', '/')"
+  "$hash  $(Split-Path -Leaf $relativePath)"
 }
 
 $outputPath = Join-Path $bundleRoot "SHA256SUMS.txt"

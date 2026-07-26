@@ -268,3 +268,211 @@ Status: implemented. The output preview now follows the crop canvas, remains sti
 5. Push the reviewed branch, merge the existing pull request, tag merged `main` as `v0.1.2`, and publish the NSIS setup plus checksum through GitHub Releases.
 
 Done when: the public `v0.1.2` release points to merged `main`, exposes the matching unsigned NSIS installer and checksum, and retains the MSI locally pending clean-machine QA.
+
+## Stage EDITOR_COMPLETENESS_REFERENCE_AND_RESET_UX
+1. Record the user-approved 1-5 scope and the Aseprite/permissive-editor reference
+   boundaries in `docs/EDITOR_COMPLETENESS_DESIGN.md`, covering both existing static
+   multi-emoticon sheet import/export and implemented frame-sheet animation workflows.
+2. Treat Aseprite as UX-only reference because its main application source and official
+   binaries are under the Aseprite EULA; some separately identified modules are MIT,
+   but no Aseprite code, binaries, UI assets, screenshots, themes, or icons are copied
+   or bundled. Apply the documented offset, cell size, padding, sheet-type/read-order,
+   rows/columns, empty-cell, and metadata concepts to PMTCONCON Studio's independent
+   Korean UI and manifest model.
+3. Rename scope-ambiguous reset actions:
+   - crop-only reset → `크롭 기본값`
+   - persisted-draft restore → `저장값으로 되돌리기`
+   - usage-preview clear → `미리보기 비우기`
+   - sheet split reset → `분할 설정 초기값` and invalidate stale cell analysis
+4. Add a visible public-manual entry in the app sidebar and explanatory tooltips for
+   collection duplication, sheet import, and work-sheet export.
+5. Add focused frontend coverage or a documented manual verification path, then run
+   frontend lint, tests, and production build.
+
+Done when: current reset actions state their exact scope, existing clone/note/sheet
+features are easier to discover without adding dead actions, the reference/license
+decision is documented, and frontend checks pass.
+
+Status: implemented. Reset/restore labels now name their exact scope; sheet setting
+changes, source replacement, reset, preview refresh, and auto-detect invalidate or gate
+stale analysis; the sticky sidebar opens the public manual; clone/sheet actions explain
+their result; memo add/edit is visible on detailed tiles; and command labels wrap only
+as whole buttons. `npm.cmd run lint`, all 14 frontend test files (60 tests),
+`npm.cmd run build`, `npm.cmd run license:forbidden`, and `git diff --check` pass.
+
+## Stage NONDESTRUCTIVE_TRANSFORMS_MVP
+1. Add persisted icon transform metadata for horizontal/vertical flip and quarter-turn
+   rotation without changing the original source file.
+2. Apply the same transform recipe in editor preview, generated piece previews, usage
+   preview, optimization hashing, and final export.
+3. Process every GIF frame while preserving timing/loop metadata.
+4. Define and test non-square custom cells plus horizontal/vertical multi-piece rotation
+   semantics before exposing the controls.
+5. Add Rust transform tests, frontend control tests, migration tests, and visual fixtures.
+
+Done when: static/GIF transforms persist across restart, preview and export match, multi-
+piece order remains correct, originals are untouched, and required checks pass.
+
+Status: implemented. The editor now composes four Korean transform commands into eight
+canonical visual states, swaps non-square cell dimensions and double-icon shape on odd
+quarter turns, and keeps piece IDs/alt attached to visual content. SQLite, generated
+previews, usage preview, optimization hashes, static/GIF export, static work sheets, and
+GIF frame sheets use the same recipe. Source replacement resets crop/transform and
+regenerates current/piece previews; GIF frame-sheet reimport only activates a variant
+when the manifest source/render-recipe hash still matches. `cargo test` passes 98 tests,
+all 15 frontend test files pass 66 tests, and lint, production build, Rust format,
+forbidden-dependency guard, and `git diff --check` pass.
+
+## Stage FRAME_SHEET_TO_GIF_MVP
+1. Reuse the same offset/cell/padding/order grid analysis already used by static
+   multi-icon sheet import for arbitrary PNG/JPG/JPEG frame sheets.
+2. Add row/column reading order, reverse order, selected-frame strip, drag reorder,
+   duplicate/delete, and per-frame duration in milliseconds.
+3. Add sticky realtime playback with one/infinite/count repetition plus a generation
+   direction of forward/reverse/ping-pong; bake reverse/ping-pong into the generated
+   frame sequence in the first MVP instead of promising an independent direction field.
+4. Render and measure the GIF before commit, warn for the active byte limit, preserve
+   the original sheet, and register the result as a new animated icon.
+5. Add resource-limit, order, timing, loop, alpha, palette, and native workflow tests.
+
+Done when: a manifest-free frame sheet can safely become a new editable/exportable GIF
+without a full layer/cel editor, and the original sheet remains recoverable.
+
+Status: implemented. The shared static-sheet analyzer and presets feed a dedicated,
+bounded GIF recipe (`cell index + duration`), so duplicate frames do not duplicate
+source pixels. The frame strip supports Ctrl/Shift selection, pointer/keyboard reorder,
+duplicate/delete/reverse, per-frame timing and FPS convenience; sticky playback covers
+once/infinite/count and baked forward/reverse/ping-pong with reduced-motion behavior.
+The native renderer enforces final frame/pixel/grid limits, quantizes timing, measures
+actual GIF bytes, warns for byte/partial-alpha/palette loss, and returns a render hash.
+Commit re-renders and verifies that hash, then transactionally creates the animated
+source/icon/crop/piece and versioned provenance while separately preserving the sheet;
+the result view can reveal that original sheet in Explorer. Ping-pong frame limits are
+checked before expansion, and one-shot ping-pong returns to its starting frame.
+All 131 Rust tests and 106 frontend tests pass, as do lint, production build, Rust
+format, forbidden-dependency guard, and `git diff --check`.
+
+## Stage CURATED_EFFECTS_MVP
+1. Add migration `010_icon_effect_recipes.sql` with a one-to-one, revisioned,
+   versioned ordered JSON recipe for each icon. Validate effect count, unique step IDs,
+   kinds, numeric bounds, modes, and RGBA colors in Rust before either rendering or
+   persistence; use the revision to reject stale saves.
+2. Implement one shared deterministic Rust renderer for pixelate, color adjustment,
+   grayscale/sepia, blur/sharpen, outline, and shadow without adding a dependency.
+   Apply the ordered recipe after crop/resize/transform to the combined viewport and
+   before multi-piece splitting, on every GIF frame.
+3. Carry the same recipe through saved editor previews, final export, optimization
+   baselines/cache hashes, static edit sheets, and GIF frame sheets so stale artifacts
+   cannot remain active after an effect change.
+4. Add a compact, keyboard-accessible Korean effect panel with add, enable/disable,
+   parameter editing, order movement, individual remove, saved-value restore, and
+   disable-all controls. Keep the native current-cell preview authoritative for effect
+   composition while clearly noting that the final export format, resize filter, and
+   optimization can change color and byte size.
+5. Add migration, recipe validation/hash, fixed-pixel image, GIF timing/frame, multi-
+   piece boundary, persistence, passthrough invalidation, and frontend model/surface
+   tests. Run full regression, build, formatting, and license guardrails.
+
+Done when: effect settings are non-destructive and persistent, static/GIF output is
+deterministic, preview/export fixtures match, and no unreviewed dependency or asset is
+introduced.
+
+Status: complete. The existing Rust `image`/`gif` pipeline remains authoritative and no
+dependency was added. Full Rust/frontend tests, lint, production build, rustfmt,
+forbidden-dependency and available license guards pass; optional `cargo-deny` and
+`cargo-about` remain explicitly skipped because they are not installed.
+Completed effect previews are bounded to the most recent eight requests per icon while
+in-progress requests are preserved. The UI confirms unsaved crop/transform, text, and
+effect changes and locks stale revision conflicts until the saved value is reloaded.
+
+## Stage MOTION_EFFECTS_MVP
+Status: complete (2026-07-26). The implementation uses five completed vertical slices:
+versioned persistence and validation; deterministic frame rendering; native
+measure/preview/save commands; shared export/optimizer/sheet integration; and a
+keyboard-accessible Korean editor surface.
+
+1. Persist a revisioned `pmtcon-motion-v1` recipe per icon and validate bounded timing,
+   seed, interpolation, edge mode, and category parameters before render or save.
+2. Provide 16 presets across spatial motion, procedural displacement, animated
+   color/opacity, and overlays, with at most one enabled effect per category and a fixed
+   `spatial → displacement → color/opacity → overlay` order.
+3. Turn a static source with enabled motion into a measured GIF schedule; evaluate an
+   existing GIF from cumulative frame timestamps instead of frame indices, preserving
+   effective loop behavior and using the persisted seed for reproducible variation.
+   For ping-pong, reflect the final composited timeline without duplicating endpoints,
+   so motion itself reverses consistently in preview, export, and GIF frame sheets.
+4. Apply `saved static effects → motion` to the combined multi-piece viewport and split
+   pieces only afterward. Use the same native recipe in editor preview, saved preview,
+   export, optimization, GIF frame sheets, and static work sheets.
+5. Show play/pause, OS reduced-motion state, frame count, duration, effective loop,
+   clipping, total encoded bytes, and piece bytes. Treat this as editor-preview
+   measurement; final export size is validated again with the selected export profile
+   and optimization settings.
+6. Snapshot render inputs and release the shared SQLite lock before GIF encoding, then
+   recheck revisions and render signatures before commit. Keep request artifacts
+   bounded and remove superseded motion artifacts only when no durable path references
+   them.
+7. Export static work sheets from the 0ms poster frame with an explicit animation-loss
+   warning and a processed-output `render_recipe_hash` stale guard; use GIF frame sheets
+   when every frame, duration, and loop must round-trip. Treat imported manifests as
+   untrusted: bound bytes/pages/cells/pixels, reject unsafe IDs and filenames, check
+   crop arithmetic, require the selected target ID to match, and reuse one decoded
+   page snapshot through validation and encoding.
+8. Preserve motion recipes when duplicating icons or collections without sharing mutable
+   preview ownership. Add no new runtime dependency.
+
+Done when: all four motion categories are non-destructive, persistent, deterministic,
+preview/export-consistent, size-measured, keyboard accessible, and safe for static and
+animated sources.
+
+Completion evidence: motion recipe/hash/migration coverage; deterministic timestamp,
+seed, inverse-sampling alpha, loop-seam, static-to-GIF, existing-GIF timing, measured
+preview/save recheck, multi-piece split, export/optimizer/static-sheet/GIF-frame-sheet,
+clone, artifact cleanup, and frontend editor/preview model regressions. Aggregate lint,
+test, build, formatting, diff, and license results are recorded in the final Stage Gate
+rather than frozen as test counts in this plan.
+
+## Stage COLLECTION_DUPLICATE_COMPLETENESS
+1. Audit and copy icon kind/readiness/placeholder, text overlay, transform/effect
+   recipes, and all newer durable visual metadata.
+2. Map cloned profile/icon/piece IDs correctly and preserve cover, alt, note, shape,
+   crop, size, loop, and ping-pong behavior.
+3. Prevent mutable preview paths or active variants from causing cross-collection edits;
+   regenerate or safely share immutable artifacts by an explicit policy.
+4. Add regression fixtures for text GIFs, working placeholders, optimized variants, and
+   horizontal/vertical multi-piece icons.
+
+Done when: the duplicate initially previews and exports identically to the source, then
+either copy can be edited without changing the other.
+
+Status: complete (2026-07-26). Collection duplication now assigns new collection,
+profile, icon, piece, preset, recipe, and variant IDs; owns independent current/piece
+preview and effective active-variant files; and recalculates variant hashes against the
+cloned IDs and profiles. Stale or missing variants fall back to the durable render
+recipe, while optimization jobs and `last_export_path` remain reset. Collection-scoped
+sheet presets and frame-sheet GIF provenance are copied, the UI prevents concurrent
+duplicate requests, and animated horizontal/vertical multi-piece exports are verified
+byte-for-byte before subsequent source artifact removal.
+## Stage RELEASE_0_2_0
+1. Audit the complete Stage 1-5 worktree as one intentional release scope and remove
+   stale future-state documentation before staging.
+2. Advance package, lock, Cargo, and Tauri metadata from the already-published 0.1.2 to
+   0.2.0; regenerate third-party notices and write user-facing release notes.
+3. Re-run Rust/frontend regression, production build, formatting, diff, and license
+   guardrails from the final versioned source state.
+4. Build the x64 release executable, MSI, and NSIS setup; verify executable/MSI metadata,
+   isolated startup, SQLite migration integrity, Authenticode state, and the NSIS SHA-256.
+5. Publish through a reviewed branch and PR, tag merged `main` as `v0.2.0`, and upload
+   only the unsigned NSIS setup plus matching checksum to GitHub Releases. Keep MSI
+   publication deferred until clean-machine install/uninstall QA.
+
+Done when: the public `v0.2.0` release resolves to merged `main`, contains the reviewed
+release notes and exactly the selected NSIS/checksum assets, and their remote metadata
+and digest match the locally verified release candidate.
+
+Status: release candidate complete (2026-07-26). Source tests, packaging, checksum,
+executable/MSI metadata, isolated launch, and database migration integrity pass. Native
+click-through automation is environment-blocked by the Windows automation sandbox ACL;
+the packaged process/window/database smoke, 154 frontend tests, and 176 Rust tests pass.
+Remote PR/merge/tag/release publication is recorded by the final Stage Gate rather than
+frozen as mutable remote state in this plan.

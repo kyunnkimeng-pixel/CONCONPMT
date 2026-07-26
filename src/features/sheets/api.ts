@@ -8,6 +8,9 @@ import type {
   ExportEditSheetRequest,
   ExportEditSheetResult,
   AutoDetectSheetGridResult,
+  FrameSheetGifCreateResult,
+  FrameSheetGifMeasurement,
+  FrameSheetGifRequest,
   GifFrameSheetExportAnalysis,
   GifFrameSheetExportResult,
   GifFrameSheetReimportResult,
@@ -69,6 +72,29 @@ export async function importSheetCells(
   }).then((result) => ({
     ...result,
     importedIcons: result.importedIcons.map(normalizeIconSummary),
+  }));
+}
+
+export async function measureFrameSheetGif(file: File, request: FrameSheetGifRequest) {
+  return invokeCommand<FrameSheetGifMeasurement>("measure_frame_sheet_gif", {
+    request: {
+      sheetFile: await fileToSheetPayload(file),
+      sheetPath: null,
+      ...request,
+    },
+  });
+}
+
+export async function createFrameSheetGif(file: File, request: FrameSheetGifRequest) {
+  return invokeCommand<FrameSheetGifCreateResult>("create_frame_sheet_gif", {
+    request: {
+      sheetFile: await fileToSheetPayload(file),
+      sheetPath: null,
+      ...request,
+    },
+  }).then((result) => ({
+    ...result,
+    icon: normalizeIconSummary(result.icon),
   }));
 }
 

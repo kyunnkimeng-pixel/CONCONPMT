@@ -123,8 +123,9 @@ pub fn duplicate_icon(
     collection_id: String,
     icon_id: String,
 ) -> AppResult<IconDto> {
+    let paths = state.paths().clone();
     let mut connection = state.connection()?;
-    icon_repository::duplicate_icon(&mut connection, &collection_id, &icon_id)
+    icon_repository::duplicate_icon(&mut connection, &paths, &collection_id, &icon_id)
 }
 
 #[tauri::command]

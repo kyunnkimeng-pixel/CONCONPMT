@@ -1,8 +1,8 @@
 {
   "name": "pmtconcon-studio",
   "private": true,
-  "version": "0.1.2",
-  "description": "PMTCONCON Studio desktop app scaffold",
+  "version": "0.2.0",
+  "description": "PMTCONCON Studio desktop app",
   "license": "MIT",
   "type": "module",
   "packageManager": "npm@11.12.1",
