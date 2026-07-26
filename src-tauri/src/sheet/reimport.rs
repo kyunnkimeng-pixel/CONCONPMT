@@ -8,15 +8,19 @@ use rusqlite::Connection;
 use serde::{Deserialize, Serialize};
 
 use crate::error::{AppError, AppResult};
-use crate::imaging::import_limits::{decode_import_image, decode_import_image_file};
+use crate::imaging::import_limits::{
+    decode_import_image, read_import_file_bytes, validate_import_file_size,
+    MAX_GIF_TOTAL_FRAME_PIXELS, MAX_IMPORT_FILE_BYTES,
+};
 use crate::paths::AppPaths;
 
+use super::exporter::current_static_sheet_render_guard;
 use super::importer::{create_icons_from_png_cells, png_bytes_from_rgba, CellImportInput};
-use super::manifest::{
-    read_static_manifest, read_static_manifest_bytes, StaticSheetManifest, StaticSheetManifestItem,
-};
+use super::manifest::{read_static_manifest_bytes, StaticSheetManifest, StaticSheetManifestItem};
 use super::path_string;
 use crate::models::ImportImageFilePayload;
+
+const MAX_REIMPORT_TOTAL_ENCODED_BYTES: usize = MAX_IMPORT_FILE_BYTES;
 
 #[derive(Debug, Clone, Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -65,22 +69,52 @@ pub fn reimport_edit_sheet(
     request: ReimportEditSheetRequest,
 ) -> AppResult<ReimportEditSheetResult> {
     let manifest_path = PathBuf::from(request.manifest_path.trim());
-    let manifest = match request.manifest_file.as_ref() {
-        Some(file) => read_static_manifest_bytes(&file.bytes)?,
-        None => read_static_manifest(&manifest_path)?,
+    let manifest_file_supplied = request.manifest_file.is_some();
+    let (manifest, manifest_payload_bytes) = match request.manifest_file.as_ref() {
+        Some(file) => (read_static_manifest_bytes(&file.bytes)?, file.bytes.len()),
+        None => {
+            let bytes = read_import_file_bytes(&manifest_path)?;
+            let byte_size = bytes.len();
+            (read_static_manifest_bytes(&bytes)?, byte_size)
+        }
     };
-    let sheet_paths = resolve_sheet_paths(&manifest, &manifest_path, &request.edited_sheet_paths);
+    let mut total_encoded_bytes = manifest_payload_bytes;
+    for file in &request.edited_sheet_files {
+        validate_import_file_size(file.bytes.len())?;
+        total_encoded_bytes = total_encoded_bytes
+            .checked_add(file.bytes.len())
+            .ok_or_else(|| {
+                AppError::new(
+                    "manifest_workload",
+                    "선택한 정적 시트 PNG의 전체 파일 크기가 너무 큽니다.",
+                )
+            })?;
+    }
+    if total_encoded_bytes > MAX_REIMPORT_TOTAL_ENCODED_BYTES {
+        return Err(AppError::new(
+            "manifest_workload",
+            "선택한 정적 시트 PNG는 합계 64MB까지 처리할 수 있습니다.",
+        ));
+    }
+    let allow_sibling_lookup = !manifest_file_supplied && request.edited_sheet_files.is_empty();
+    let sheet_paths = resolve_sheet_paths(
+        &manifest,
+        &manifest_path,
+        &request.edited_sheet_paths,
+        allow_sibling_lookup,
+    );
     let sheet_files = request
         .edited_sheet_files
         .iter()
-        .map(|file| (file.original_filename.clone(), file.bytes.clone()))
+        .map(|file| (file.original_filename.as_str(), file.bytes.as_slice()))
         .collect::<HashMap<_, _>>();
     let mut page_images = HashMap::new();
+    let mut actual_decoded_page_pixels = 0_u64;
     let mut warnings = Vec::new();
     let mut errors = Vec::new();
 
     for page in &manifest.pages {
-        let image = if let Some(bytes) = sheet_files.get(&page.clean_sheet_file) {
+        let image = if let Some(bytes) = sheet_files.get(page.clean_sheet_file.as_str()) {
             match decode_import_image(bytes, ImageFormat::Png) {
                 Ok(image) => image.to_rgba8(),
                 Err(error) => {
@@ -96,7 +130,29 @@ pub fn reimport_edit_sheet(
                 ));
                 continue;
             };
-            match decode_import_image_file(path, ImageFormat::Png) {
+            let bytes = match read_import_file_bytes(path) {
+                Ok(bytes) => bytes,
+                Err(error) => {
+                    errors.push(format!("{}: {}", path.display(), error));
+                    continue;
+                }
+            };
+            let next_total_encoded_bytes = total_encoded_bytes
+                .checked_add(bytes.len())
+                .ok_or_else(|| {
+                    AppError::new(
+                        "manifest_workload",
+                        "선택한 정적 시트 PNG의 전체 파일 크기가 너무 큽니다.",
+                    )
+                })?;
+            if next_total_encoded_bytes > MAX_REIMPORT_TOTAL_ENCODED_BYTES {
+                return Err(AppError::new(
+                    "manifest_workload",
+                    "선택한 정적 시트 PNG는 합계 64MB까지 처리할 수 있습니다.",
+                ));
+            }
+            total_encoded_bytes = next_total_encoded_bytes;
+            match decode_import_image(&bytes, ImageFormat::Png) {
                 Ok(image) => image.to_rgba8(),
                 Err(error) => {
                     errors.push(format!("{}: {}", path.display(), error));
@@ -104,6 +160,22 @@ pub fn reimport_edit_sheet(
                 }
             }
         };
+        let page_pixels = u64::from(image.width()).saturating_mul(u64::from(image.height()));
+        let next_total_page_pixels = actual_decoded_page_pixels
+            .checked_add(page_pixels)
+            .ok_or_else(|| {
+                AppError::new(
+                    "manifest_workload",
+                    "디코드한 정적 시트 페이지의 전체 픽셀 수가 너무 큽니다.",
+                )
+            })?;
+        if next_total_page_pixels > MAX_GIF_TOTAL_FRAME_PIXELS {
+            return Err(AppError::new(
+                "manifest_workload",
+                "디코드한 정적 시트 페이지의 전체 픽셀 수가 지원 범위를 벗어났습니다.",
+            ));
+        }
+        actual_decoded_page_pixels = next_total_page_pixels;
         if i64::from(image.width()) != page.width || i64::from(image.height()) != page.height {
             warnings.push(format!(
                 "{} 페이지 크기가 매니페스트와 다릅니다. 매니페스트 영역 기준으로 가능한 셀만 가져옵니다.",
@@ -127,6 +199,7 @@ pub fn reimport_edit_sheet(
     let mut updated_items = Vec::new();
     let mut created_variants = Vec::new();
     let mut new_icon_cells = Vec::new();
+    let mut warned_legacy_recipe_hash = false;
     let item_indexes = manifest
         .items
         .iter()
@@ -141,19 +214,64 @@ pub fn reimport_edit_sheet(
         request.reimport_mode.as_str(),
         "create_processed_variants" | "replace_processed_output_only"
     );
+    let should_guard_existing_output = !should_create_new_icons;
 
     for item in &manifest.items {
+        if should_guard_existing_output {
+            match current_static_sheet_render_guard(
+                connection,
+                &request.target_collection_id,
+                &item.icon_id,
+                item.piece_id.as_deref(),
+                item.w,
+                item.h,
+            ) {
+                Ok((current_source_hash, current_recipe_hash)) => {
+                    if let Some(expected_source_hash) = item.source_hash.as_deref() {
+                        if expected_source_hash != current_source_hash {
+                            skipped_items.push(skip_item(
+                                item,
+                                "작업 시트를 내보낸 뒤 원본 이미지가 변경되어 가공본을 적용하지 않았습니다.",
+                            ));
+                            continue;
+                        }
+                    }
+                    match item.render_recipe_hash.as_deref() {
+                        Some(expected) if expected != current_recipe_hash => {
+                            skipped_items.push(skip_item(
+                                item,
+                                "작업 시트를 내보낸 뒤 자르기·회전·반전·텍스트·정적 효과 또는 모션 recipe가 변경되어 가공본을 적용하지 않았습니다.",
+                            ));
+                            continue;
+                        }
+                        None if !warned_legacy_recipe_hash => {
+                            warnings.push(
+                                "이전 버전 작업 시트 manifest에는 render recipe hash가 없어 원본 해시만 확인했습니다."
+                                    .to_string(),
+                            );
+                            warned_legacy_recipe_hash = true;
+                        }
+                        _ => {}
+                    }
+                }
+                Err(error) => {
+                    skipped_items.push(skip_item(
+                        item,
+                        &format!(
+                            "현재 원본 상태를 확인할 수 없어 가공본을 적용하지 않았습니다: {}",
+                            error.message
+                        ),
+                    ));
+                    continue;
+                }
+            }
+        }
+
         let Some(page) = page_images.get(&item.page_index) else {
             skipped_items.push(skip_item(item, "대상 페이지를 읽을 수 없습니다."));
             continue;
         };
-        if item.x < 0
-            || item.y < 0
-            || item.w <= 0
-            || item.h <= 0
-            || item.x + item.w > i64::from(page.width())
-            || item.y + item.h > i64::from(page.height())
-        {
+        if !static_item_fits_image(item, page.width(), page.height()) {
             skipped_items.push(skip_item(
                 item,
                 "셀 영역이 수정된 시트 이미지 밖으로 나갑니다.",
@@ -161,14 +279,15 @@ pub fn reimport_edit_sheet(
             continue;
         }
 
-        let cropped = imageops::crop_imm(
-            page,
-            item.x as u32,
-            item.y as u32,
-            item.w as u32,
-            item.h as u32,
-        )
-        .to_image();
+        let x = u32::try_from(item.x)
+            .map_err(|_| AppError::new("validation", "셀 x 좌표가 올바르지 않습니다."))?;
+        let y = u32::try_from(item.y)
+            .map_err(|_| AppError::new("validation", "셀 y 좌표가 올바르지 않습니다."))?;
+        let width = u32::try_from(item.w)
+            .map_err(|_| AppError::new("validation", "셀 너비가 올바르지 않습니다."))?;
+        let height = u32::try_from(item.h)
+            .map_err(|_| AppError::new("validation", "셀 높이가 올바르지 않습니다."))?;
+        let cropped = imageops::crop_imm(page, x, y, width, height).to_image();
         let bytes = png_bytes_from_rgba(&cropped)?;
 
         match request.reimport_mode.as_str() {
@@ -230,10 +349,37 @@ pub fn reimport_edit_sheet(
     })
 }
 
+fn static_item_fits_image(
+    item: &StaticSheetManifestItem,
+    image_width: u32,
+    image_height: u32,
+) -> bool {
+    let Ok(x) = u32::try_from(item.x) else {
+        return false;
+    };
+    let Ok(y) = u32::try_from(item.y) else {
+        return false;
+    };
+    let Ok(width) = u32::try_from(item.w) else {
+        return false;
+    };
+    let Ok(height) = u32::try_from(item.h) else {
+        return false;
+    };
+    let Some(right) = x.checked_add(width) else {
+        return false;
+    };
+    let Some(bottom) = y.checked_add(height) else {
+        return false;
+    };
+    width > 0 && height > 0 && right <= image_width && bottom <= image_height
+}
+
 fn resolve_sheet_paths(
     manifest: &StaticSheetManifest,
     manifest_path: &Path,
     explicit_paths: &[String],
+    allow_sibling_lookup: bool,
 ) -> HashMap<i64, PathBuf> {
     let explicit_paths = explicit_paths
         .iter()
@@ -267,18 +413,30 @@ fn resolve_sheet_paths(
             continue;
         }
 
-        let same_dir = manifest_dir.join(&page.clean_sheet_file);
-        if same_dir.exists() {
-            output.insert(page.page_index, same_dir);
-            continue;
-        }
+        if allow_sibling_lookup {
+            if let Some(same_dir) =
+                contained_manifest_path(manifest_dir, Path::new(&page.clean_sheet_file))
+            {
+                output.insert(page.page_index, same_dir);
+                continue;
+            }
 
-        let clean_dir = manifest_dir.join("clean").join(&page.clean_sheet_file);
-        if clean_dir.exists() {
-            output.insert(page.page_index, clean_dir);
+            let clean_relative = Path::new("clean").join(&page.clean_sheet_file);
+            if let Some(clean_dir) = contained_manifest_path(manifest_dir, &clean_relative) {
+                output.insert(page.page_index, clean_dir);
+            }
         }
     }
     output
+}
+
+fn contained_manifest_path(manifest_dir: &Path, relative_path: &Path) -> Option<PathBuf> {
+    if relative_path.is_absolute() {
+        return None;
+    }
+    let canonical_root = fs::canonicalize(manifest_dir).ok()?;
+    let candidate = fs::canonicalize(manifest_dir.join(relative_path)).ok()?;
+    candidate.starts_with(&canonical_root).then_some(candidate)
 }
 
 fn write_reimport_variant(
@@ -286,13 +444,6 @@ fn write_reimport_variant(
     item: &StaticSheetManifestItem,
     bytes: &[u8],
 ) -> AppResult<PathBuf> {
-    let file_name = format!("{}_{}_sheet_reimport.png", item.icon_id, item.index);
-    let path = paths.sheet_reimport_variants_dir.join(file_name);
-    if let Some(parent) = path.parent() {
-        fs::create_dir_all(parent)?;
-    }
-    fs::write(&path, bytes)?;
-
     if decode_import_image(bytes, ImageFormat::Png).is_err() {
         return Err(AppError::new(
             "image",
@@ -300,6 +451,12 @@ fn write_reimport_variant(
         ));
     }
 
+    let file_name = format!("{}_{}_sheet_reimport.png", item.icon_id, item.index);
+    let path = paths.sheet_reimport_variants_dir.join(file_name);
+    if let Some(parent) = path.parent() {
+        fs::create_dir_all(parent)?;
+    }
+    fs::write(&path, bytes)?;
     Ok(path)
 }
 
@@ -325,11 +482,15 @@ mod tests {
 
     use crate::db::migrations;
     use crate::db::repositories::collections::create_collection;
+    use crate::db::repositories::imports::import_image_files;
+    use crate::db::repositories::motion::upsert_motion_recipe;
+    use crate::imaging::motion::{MotionRecipe, SpatialMotion};
     use crate::models::ImportImageFilePayload;
     use crate::paths::AppPaths;
+    use crate::sheet::exporter::{export_edit_sheet, ExportEditSheetRequest};
     use crate::sheet::manifest::{
-        StaticSheetManifest, StaticSheetManifestItem, StaticSheetPage, StaticSheetProfile,
-        APP_NAME, STATIC_SHEET_SCHEMA,
+        read_static_manifest, write_static_manifest, StaticSheetManifest, StaticSheetManifestItem,
+        StaticSheetPage, StaticSheetProfile, APP_NAME, STATIC_SHEET_SCHEMA,
     };
 
     use super::{reimport_edit_sheet, ReimportEditSheetRequest};
@@ -347,6 +508,30 @@ mod tests {
             .as_nanos();
         AppPaths::prepare(std::env::temp_dir().join(format!("pmtconcon-sheet-reimport-{suffix}")))
             .unwrap()
+    }
+
+    fn export_request(collection_id: &str, output_directory: String) -> ExportEditSheetRequest {
+        ExportEditSheetRequest {
+            collection_id: collection_id.to_string(),
+            selected_icon_ids: Vec::new(),
+            source: "current_collection".to_string(),
+            cell_width: 20,
+            cell_height: 20,
+            columns: 1,
+            gap_x: 0,
+            gap_y: 0,
+            border_x: 0,
+            border_y: 0,
+            background: "transparent".to_string(),
+            include_clean_sheet: true,
+            include_guide_sheet: false,
+            include_manifest: true,
+            label_options: None,
+            max_sheet_width: 2048,
+            max_sheet_height: 2048,
+            output_directory: Some(output_directory),
+            open_output_folder: false,
+        }
     }
 
     #[test]
@@ -403,6 +588,7 @@ mod tests {
                 format: "png".to_string(),
                 source_hash: Some("source".to_string()),
                 render_hash: Some("render".to_string()),
+                render_recipe_hash: None,
             }],
         };
         let manifest_bytes = serde_json::to_vec(&manifest).unwrap();
@@ -443,6 +629,155 @@ mod tests {
             .unwrap();
         let imported = image::open(source_path).unwrap().to_rgba8();
         assert_eq!(imported.get_pixel(0, 0).0[3], 77);
+
+        std::fs::remove_dir_all(paths.root).unwrap();
+    }
+
+    #[test]
+    fn processed_reimport_detects_motion_recipe_stale_when_zero_ms_poster_is_unchanged() {
+        let mut connection = connection();
+        let paths = temp_paths();
+        let collection =
+            create_collection(&mut connection, Some("motion stale sheet".to_string())).unwrap();
+        let image = ImageBuffer::from_fn(20, 20, |x, y| {
+            Rgba([(x * 9) as u8, (y * 11) as u8, ((x + y) * 5) as u8, 255])
+        });
+        let mut image_cursor = Cursor::new(Vec::new());
+        DynamicImage::ImageRgba8(image)
+            .write_to(&mut image_cursor, ImageFormat::Png)
+            .unwrap();
+        let imported = import_image_files(
+            &mut connection,
+            &paths,
+            &collection.id,
+            vec![ImportImageFilePayload {
+                original_filename: "motion.png".to_string(),
+                bytes: image_cursor.into_inner(),
+            }],
+        )
+        .unwrap();
+        let icon_id = imported.imported_icons[0].id.clone();
+        let first_recipe = MotionRecipe {
+            duration_ms: 1_000,
+            seed: 17,
+            spatial: Some(SpatialMotion::Shake {
+                enabled: true,
+                cycles_per_loop: 1,
+                amplitude_x: 2,
+                amplitude_y: 2,
+            }),
+            ..MotionRecipe::default()
+        };
+        let transaction = connection.transaction().unwrap();
+        upsert_motion_recipe(&transaction, &collection.id, &icon_id, 0, &first_recipe).unwrap();
+        transaction.commit().unwrap();
+
+        let first_export = export_edit_sheet(
+            &connection,
+            &paths,
+            export_request(
+                &collection.id,
+                paths
+                    .root
+                    .join("motion-sheet-first")
+                    .to_string_lossy()
+                    .to_string(),
+            ),
+        )
+        .unwrap();
+        let first_manifest_path = first_export.manifest_path.clone().unwrap();
+        let first_manifest =
+            read_static_manifest(std::path::Path::new(&first_manifest_path)).unwrap();
+        let first_recipe_hash = first_manifest.items[0]
+            .render_recipe_hash
+            .clone()
+            .expect("new static manifests must include a render recipe hash");
+        assert_eq!(first_recipe_hash.len(), 64);
+
+        let mut legacy_manifest = first_manifest.clone();
+        for item in &mut legacy_manifest.items {
+            item.render_recipe_hash = None;
+        }
+        let legacy_manifest_path = paths.root.join("legacy_static_manifest.json");
+        write_static_manifest(&legacy_manifest_path, &legacy_manifest).unwrap();
+        let legacy_result = reimport_edit_sheet(
+            &mut connection,
+            &paths,
+            ReimportEditSheetRequest {
+                manifest_path: legacy_manifest_path.to_string_lossy().to_string(),
+                manifest_file: None,
+                edited_sheet_paths: first_export.clean_sheet_paths.clone(),
+                edited_sheet_files: Vec::new(),
+                target_collection_id: collection.id.clone(),
+                reimport_mode: "create_processed_variants".to_string(),
+            },
+        )
+        .unwrap();
+        assert_eq!(legacy_result.updated_items.len(), 1);
+        assert_eq!(legacy_result.created_variants.len(), 1);
+        assert!(legacy_result.skipped_items.is_empty());
+        assert!(legacy_result
+            .warnings
+            .iter()
+            .any(|warning| warning.contains("render recipe hash")));
+
+        let second_recipe = MotionRecipe {
+            duration_ms: 2_000,
+            ..first_recipe
+        };
+        let transaction = connection.transaction().unwrap();
+        upsert_motion_recipe(&transaction, &collection.id, &icon_id, 1, &second_recipe).unwrap();
+        transaction.commit().unwrap();
+
+        let second_export = export_edit_sheet(
+            &connection,
+            &paths,
+            export_request(
+                &collection.id,
+                paths
+                    .root
+                    .join("motion-sheet-second")
+                    .to_string_lossy()
+                    .to_string(),
+            ),
+        )
+        .unwrap();
+        let first_poster = image::open(&first_export.clean_sheet_paths[0])
+            .unwrap()
+            .to_rgba8();
+        let second_poster = image::open(&second_export.clean_sheet_paths[0])
+            .unwrap()
+            .to_rgba8();
+        assert_eq!(first_poster.as_raw(), second_poster.as_raw());
+        let second_manifest = read_static_manifest(std::path::Path::new(
+            second_export.manifest_path.as_ref().unwrap(),
+        ))
+        .unwrap();
+        assert_ne!(
+            first_recipe_hash,
+            second_manifest.items[0]
+                .render_recipe_hash
+                .as_deref()
+                .unwrap()
+        );
+
+        let stale_result = reimport_edit_sheet(
+            &mut connection,
+            &paths,
+            ReimportEditSheetRequest {
+                manifest_path: first_manifest_path,
+                manifest_file: None,
+                edited_sheet_paths: first_export.clean_sheet_paths,
+                edited_sheet_files: Vec::new(),
+                target_collection_id: collection.id,
+                reimport_mode: "replace_processed_output_only".to_string(),
+            },
+        )
+        .unwrap();
+        assert!(stale_result.updated_items.is_empty());
+        assert!(stale_result.created_variants.is_empty());
+        assert_eq!(stale_result.skipped_items.len(), 1);
+        assert!(stale_result.skipped_items[0].reason.contains("모션 recipe"));
 
         std::fs::remove_dir_all(paths.root).unwrap();
     }

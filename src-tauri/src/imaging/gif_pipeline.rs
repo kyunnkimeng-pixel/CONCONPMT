@@ -74,11 +74,20 @@ pub fn is_pingpong_loop_mode(loop_mode: &str) -> bool {
     loop_mode == "pingpong"
 }
 
+pub fn pingpong_sequence_len(frame_count: usize) -> usize {
+    if frame_count <= 2 {
+        frame_count
+    } else {
+        frame_count.saturating_mul(2).saturating_sub(2)
+    }
+}
+
 pub fn pingpong_sequence<T: Clone>(frames: &mut Vec<T>) {
     if frames.len() <= 2 {
         return;
     }
 
+    frames.reserve(pingpong_sequence_len(frames.len()).saturating_sub(frames.len()));
     let reflected = frames[1..frames.len() - 1]
         .iter()
         .rev()
@@ -141,7 +150,8 @@ fn has_netscape_loop_extension(bytes: &[u8]) -> bool {
 #[cfg(test)]
 mod tests {
     use super::{
-        inspect_gif_bytes, output_repeat_for_settings, pingpong_sequence, GifOutputRepeat,
+        inspect_gif_bytes, output_repeat_for_settings, pingpong_sequence, pingpong_sequence_len,
+        GifOutputRepeat,
     };
 
     #[test]
@@ -175,6 +185,11 @@ mod tests {
 
     #[test]
     fn pingpong_sequence_reflects_middle_frames() {
+        assert_eq!(pingpong_sequence_len(0), 0);
+        assert_eq!(pingpong_sequence_len(1), 1);
+        assert_eq!(pingpong_sequence_len(2), 2);
+        assert_eq!(pingpong_sequence_len(4), 6);
+
         let mut frames = vec![0, 1, 2, 3];
         pingpong_sequence(&mut frames);
         assert_eq!(frames, vec![0, 1, 2, 3, 2, 1]);

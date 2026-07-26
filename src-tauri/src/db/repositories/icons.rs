@@ -1,14 +1,27 @@
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 use std::io::Cursor;
+use std::path::Path;
 
 use image::{DynamicImage, ImageBuffer, ImageFormat, Rgba};
 use rusqlite::{params, Connection, OptionalExtension, Row, Transaction};
 
+use crate::db::repositories::clone_artifacts::{
+    cleanup_cloned_icon_previews, clone_current_preview, clone_effective_active_variants,
+    clone_frame_sheet_gif_recipe, clone_piece_preview,
+};
+use crate::db::repositories::effects as effect_repository;
 use crate::db::repositories::source_files::{
     import_source_file_from_bytes, SourceFileImportOptions,
 };
 use crate::error::{AppError, AppResult};
 use crate::ids::create_id;
+use crate::imaging::geometry::viewport_size;
+use crate::imaging::motion::parse_motion_recipe_json;
+use crate::imaging::preview::{
+    generate_icon_preview, CropRect as PreviewCropRect, GeneratePreviewRequest,
+};
+use crate::imaging::text_overlay::text_overlay_from_fields;
+use crate::imaging::transform::ImageTransform;
 use crate::models::{CreatePlaceholderIconPayload, IconDto, IconPieceDto, ImportImageFilePayload};
 use crate::paths::AppPaths;
 
@@ -52,6 +65,9 @@ pub fn list_icons(connection: &Connection, collection_id: &str) -> AppResult<Vec
            thumbnail_path,
            thumbnail_override_path,
            current_preview_path,
+           transform_quarter_turns,
+           transform_flip_horizontal,
+           transform_flip_vertical,
            CASE WHEN gif_pingpong = 1 THEN 'pingpong' ELSE gif_loop_mode END AS gif_loop_mode,
            gif_loop_count,
            created_at,
@@ -350,22 +366,72 @@ pub fn replace_icon_source(
             exact_dimensions: None,
         },
     )?;
-    let current_preview_path = if source_file.original_extension == "gif" {
-        source_file.original_path_in_library.clone()
-    } else {
-        source_file.thumbnail_path.clone()
-    };
     let display_name = if icon.icon_kind == "placeholder" {
         display_name_from_filename(&file.original_filename)
     } else {
         icon.display_name
     };
+    let viewport = viewport_size(&icon.shape, icon.cell_width, icon.cell_height)?;
     let crop = centered_crop_rect(
         source_file.width,
         source_file.height,
-        icon.cell_width,
-        icon.cell_height,
+        viewport.width,
+        viewport.height,
     );
+    let (source_gif_loop_mode, source_gif_loop_count) = transaction.query_row(
+        "SELECT COALESCE(original_loop_mode, 'preserve'), original_loop_count
+         FROM source_files
+         WHERE id = ?1",
+        [&source_file.id],
+        |row| Ok((row.get::<_, String>(0)?, row.get::<_, Option<i64>>(1)?)),
+    )?;
+    let text_overlay = text_overlay_from_fields(
+        icon.text_overlay_enabled,
+        Some(icon.text_overlay_text.clone()),
+        icon.text_overlay_font_path.clone(),
+        Some(icon.text_overlay_font_size),
+        Some(icon.text_overlay_x),
+        Some(icon.text_overlay_y),
+        Some(icon.text_overlay_color.clone()),
+        Some(icon.text_overlay_stroke_color.clone()),
+        Some(icon.text_overlay_stroke_width),
+    )?;
+    let effects = effect_repository::effect_recipe_for_icon(&transaction, collection_id, icon_id)?;
+    let motion_json = transaction
+        .query_row(
+            "SELECT motion_json FROM icon_motion_recipes WHERE icon_id = ?1",
+            [icon_id],
+            |row| row.get::<_, String>(0),
+        )
+        .optional()?;
+    let motion = parse_motion_recipe_json(motion_json.as_deref().unwrap_or_default())?;
+    let preview = generate_icon_preview(
+        paths,
+        GeneratePreviewRequest {
+            collection_id,
+            icon_id,
+            source_path: Path::new(&source_file.original_path_in_library),
+            source_extension: &source_file.original_extension,
+            shape: &icon.shape,
+            crop: PreviewCropRect {
+                x: crop.x,
+                y: crop.y,
+                width: crop.width,
+                height: crop.height,
+            },
+            cell_width: icon.cell_width,
+            cell_height: icon.cell_height,
+            transform: ImageTransform::new(0, false, false)?,
+            gif_loop_mode: &icon.gif_loop_mode,
+            gif_loop_count: icon.gif_loop_count,
+            source_gif_loop_mode: Some(&source_gif_loop_mode),
+            source_gif_loop_count,
+            text_overlay,
+            effects: effects.recipe,
+            motion,
+        },
+    )?;
+    let current_preview_path = preview.current_preview_path.to_string_lossy().to_string();
 
     transaction.execute(
         "UPDATE icons
@@ -377,6 +443,9 @@ pub fn replace_icon_source(
              thumbnail_override_source_file_id = NULL,
              thumbnail_override_path = NULL,
              current_preview_path = ?4,
+             transform_quarter_turns = 0,
+             transform_flip_horizontal = 0,
+             transform_flip_vertical = 0,
              updated_at = strftime('%Y-%m-%dT%H:%M:%fZ', 'now')
          WHERE id = ?5
            AND collection_id = ?6
@@ -396,9 +465,32 @@ pub fn replace_icon_source(
         crop,
         source_file.width,
         source_file.height,
-        icon.cell_width,
-        icon.cell_height,
+        viewport.width,
+        viewport.height,
     )?;
+    let mut updated_piece_previews = 0;
+    for (piece_index, piece_path) in preview.piece_paths.iter().enumerate() {
+        updated_piece_previews += transaction.execute(
+            "UPDATE icon_pieces
+             SET generated_preview_path = ?1,
+                 last_export_path = NULL,
+                 export_status = 'ready',
+                 updated_at = strftime('%Y-%m-%dT%H:%M:%fZ', 'now')
+             WHERE icon_id = ?2
+               AND piece_index = ?3",
+            params![
+                piece_path.to_string_lossy().to_string(),
+                icon_id,
+                piece_index as i64,
+            ],
+        )?;
+    }
+    if updated_piece_previews != preview.piece_paths.len() {
+        return Err(AppError::new(
+            "validation",
+            "교체한 이미지의 조각 미리보기를 연결할 수 없습니다.",
+        ));
+    }
     transaction.commit()?;
 
     get_icon(connection, collection_id, icon_id)
@@ -440,97 +532,165 @@ pub fn set_icons_readiness(
 
 pub fn duplicate_icon(
     connection: &mut Connection,
+    paths: &AppPaths,
     collection_id: &str,
     icon_id: &str,
 ) -> AppResult<IconDto> {
-    let transaction = connection.transaction()?;
-    ensure_collection_exists(&transaction, collection_id)?;
-    let icon = icon_record_for_duplicate(&transaction, collection_id, icon_id)?;
     let duplicate_icon_id = create_id("icon");
-    let order_index = icon.order_index + 1;
-    transaction.execute(
-        "UPDATE icons
-         SET order_index = order_index + 1
-         WHERE collection_id = ?1
-           AND deleted_at IS NULL
-           AND order_index >= ?2",
-        params![collection_id, order_index],
-    )?;
-    let duplicate_name = format!("{} 복사본", icon.display_name);
-
-    transaction.execute(
-        "INSERT INTO icons (
-           id,
-           collection_id,
-           source_file_id,
-           display_name,
-           icon_kind,
-           readiness,
-           placeholder_text,
-           shape,
-           order_index,
-           cell_width_override,
-           cell_height_override,
-           thumbnail_path,
-           thumbnail_override_source_file_id,
-           thumbnail_override_path,
-           current_preview_path,
-           gif_loop_mode,
-           gif_loop_count,
-           gif_pingpong,
-           created_at,
-           updated_at
-         )
-         VALUES (
-           ?1,
-           ?2,
-           ?3,
-           ?4,
-           ?5,
-           ?6,
-           ?7,
-           ?8,
-           ?9,
-           ?10,
-           ?11,
-           ?12,
-           ?13,
-           ?14,
-           ?15,
-           ?16,
-           ?17,
-           ?18,
-           strftime('%Y-%m-%dT%H:%M:%fZ', 'now'),
-           strftime('%Y-%m-%dT%H:%M:%fZ', 'now')
-         )",
-        params![
-            duplicate_icon_id,
+    let duplicate_result = (|| -> AppResult<IconDto> {
+        let transaction = connection.transaction()?;
+        ensure_collection_exists(&transaction, collection_id)?;
+        let icon = icon_record_for_duplicate(&transaction, collection_id, icon_id)?;
+        let order_index = icon.order_index + 1;
+        transaction.execute(
+            "UPDATE icons
+             SET order_index = order_index + 1
+             WHERE collection_id = ?1
+               AND deleted_at IS NULL
+               AND order_index >= ?2",
+            params![collection_id, order_index],
+        )?;
+        let duplicate_name = format!("{} 복사본", icon.display_name);
+        let cloned_preview_path = clone_current_preview(
+            paths,
             collection_id,
-            icon.source_file_id,
-            duplicate_name,
-            icon.icon_kind,
-            icon.readiness,
-            icon.placeholder_text,
-            icon.shape,
-            order_index,
-            icon.cell_width_override,
-            icon.cell_height_override,
-            icon.thumbnail_path,
-            icon.thumbnail_override_source_file_id,
-            icon.thumbnail_override_path,
-            icon.current_preview_path,
-            icon.gif_loop_mode,
-            icon.gif_loop_count,
-            icon.gif_pingpong,
-        ],
-    )?;
+            &duplicate_icon_id,
+            icon.current_preview_path.as_deref(),
+        )?;
 
-    duplicate_icon_pieces(&transaction, collection_id, icon_id, &duplicate_icon_id)?;
-    duplicate_crop_settings(&transaction, icon_id, &duplicate_icon_id)?;
-    duplicate_icon_note(&transaction, icon_id, &duplicate_icon_id)?;
-    transaction.commit()?;
+        transaction.execute(
+            "INSERT INTO icons (
+               id,
+               collection_id,
+               source_file_id,
+               display_name,
+               icon_kind,
+               readiness,
+               placeholder_text,
+               shape,
+               order_index,
+               cell_width_override,
+               cell_height_override,
+               thumbnail_path,
+               thumbnail_override_source_file_id,
+               thumbnail_override_path,
+               current_preview_path,
+               text_overlay_enabled,
+               text_overlay_text,
+               text_overlay_font_path,
+               text_overlay_font_size,
+               text_overlay_x,
+               text_overlay_y,
+               text_overlay_color,
+               text_overlay_stroke_color,
+               text_overlay_stroke_width,
+               transform_quarter_turns,
+               transform_flip_horizontal,
+               transform_flip_vertical,
+               gif_loop_mode,
+               gif_loop_count,
+               gif_pingpong,
+               created_at,
+               updated_at
+             )
+             VALUES (
+               ?1,
+               ?2,
+               ?3,
+               ?4,
+               ?5,
+               ?6,
+               ?7,
+               ?8,
+               ?9,
+               ?10,
+               ?11,
+               ?12,
+               ?13,
+               ?14,
+               ?15,
+               ?16,
+               ?17,
+               ?18,
+               ?19,
+               ?20,
+               ?21,
+               ?22,
+               ?23,
+               ?24,
+               ?25,
+               ?26,
+               ?27,
+               ?28,
+               ?29,
+               ?30,
+               strftime('%Y-%m-%dT%H:%M:%fZ', 'now'),
+               strftime('%Y-%m-%dT%H:%M:%fZ', 'now')
+             )",
+            params![
+                duplicate_icon_id,
+                collection_id,
+                icon.source_file_id,
+                duplicate_name,
+                icon.icon_kind,
+                icon.readiness,
+                icon.placeholder_text,
+                icon.shape,
+                order_index,
+                icon.cell_width_override,
+                icon.cell_height_override,
+                icon.thumbnail_path,
+                icon.thumbnail_override_source_file_id,
+                icon.thumbnail_override_path,
+                cloned_preview_path,
+                icon.text_overlay_enabled,
+                icon.text_overlay_text,
+                icon.text_overlay_font_path,
+                icon.text_overlay_font_size,
+                icon.text_overlay_x,
+                icon.text_overlay_y,
+                icon.text_overlay_color,
+                icon.text_overlay_stroke_color,
+                icon.text_overlay_stroke_width,
+                icon.transform_quarter_turns,
+                icon.transform_flip_horizontal,
+                icon.transform_flip_vertical,
+                icon.gif_loop_mode,
+                icon.gif_loop_count,
+                icon.gif_pingpong,
+            ],
+        )?;
 
-    get_icon(connection, collection_id, &duplicate_icon_id)
+        let piece_id_map = duplicate_icon_pieces(
+            &transaction,
+            paths,
+            collection_id,
+            icon_id,
+            &duplicate_icon_id,
+        )?;
+        duplicate_crop_settings(&transaction, icon_id, &duplicate_icon_id)?;
+        duplicate_icon_note(&transaction, icon_id, &duplicate_icon_id)?;
+        duplicate_icon_effect_recipe(&transaction, icon_id, &duplicate_icon_id)?;
+        duplicate_icon_motion_recipe(&transaction, icon_id, &duplicate_icon_id)?;
+        clone_frame_sheet_gif_recipe(&transaction, icon_id, &duplicate_icon_id)?;
+        clone_effective_active_variants(
+            &transaction,
+            paths,
+            collection_id,
+            icon_id,
+            &duplicate_icon_id,
+            &piece_id_map,
+            None,
+        )?;
+        let duplicated = get_icon(&transaction, collection_id, &duplicate_icon_id)?;
+        transaction.commit()?;
+        Ok(duplicated)
+    })();
+
+    if duplicate_result.is_err() {
+        cleanup_cloned_icon_previews(paths, collection_id, &duplicate_icon_id);
+    }
+    duplicate_result
 }
 
 pub fn delete_icons(
@@ -674,6 +834,9 @@ fn icon_from_row(connection: &Connection, row: &Row<'_>) -> rusqlite::Result<Ico
         thumbnail_url: row.get("thumbnail_path")?,
         thumbnail_override_url: row.get("thumbnail_override_path")?,
         current_preview_url: row.get("current_preview_path")?,
+        transform_quarter_turns: row.get("transform_quarter_turns")?,
+        transform_flip_horizontal: row.get::<_, i64>("transform_flip_horizontal")? != 0,
+        transform_flip_vertical: row.get::<_, i64>("transform_flip_vertical")? != 0,
         gif_loop_mode: row.get("gif_loop_mode")?,
         gif_loop_count: row.get("gif_loop_count")?,
         created_at: row.get("created_at")?,
@@ -747,6 +910,9 @@ pub(crate) fn get_icon(
                thumbnail_path,
                thumbnail_override_path,
                current_preview_path,
+               transform_quarter_turns,
+               transform_flip_horizontal,
+               transform_flip_vertical,
                CASE WHEN gif_pingpong = 1 THEN 'pingpong' ELSE gif_loop_mode END AS gif_loop_mode,
                gif_loop_count,
                created_at,
@@ -843,7 +1009,19 @@ struct IconDuplicateRecord {
     thumbnail_path: Option<String>,
     thumbnail_override_source_file_id: Option<String>,
     thumbnail_override_path: Option<String>,
+    text_overlay_enabled: i64,
+    text_overlay_text: String,
+    text_overlay_font_path: Option<String>,
+    text_overlay_font_size: f64,
+    text_overlay_x: f64,
+    text_overlay_y: f64,
+    text_overlay_color: String,
+    text_overlay_stroke_color: String,
+    text_overlay_stroke_width: f64,
     current_preview_path: Option<String>,
+    transform_quarter_turns: i64,
+    transform_flip_horizontal: i64,
+    transform_flip_vertical: i64,
     gif_loop_mode: String,
     gif_loop_count: Option<i64>,
     gif_pingpong: i64,
@@ -859,18 +1037,29 @@ struct CollectionSizingRecord {
 struct IconReplaceRecord {
     display_name: String,
     icon_kind: String,
+    shape: String,
     cell_width: i64,
     cell_height: i64,
+    gif_loop_mode: String,
+    gif_loop_count: Option<i64>,
+    text_overlay_enabled: bool,
+    text_overlay_text: String,
+    text_overlay_font_path: Option<String>,
+    text_overlay_font_size: f64,
+    text_overlay_x: f64,
+    text_overlay_y: f64,
+    text_overlay_color: String,
+    text_overlay_stroke_color: String,
+    text_overlay_stroke_width: f64,
 }
 
 #[derive(Debug)]
 struct IconPieceRecord {
+    id: String,
     piece_index: i64,
     piece_role: String,
     alt_text: String,
     generated_preview_path: Option<String>,
-    last_export_path: Option<String>,
-    export_status: String,
 }
 
 #[derive(Debug)]
@@ -904,10 +1093,22 @@ fn icon_record_for_duplicate(
                shape,
                cell_width_override,
                cell_height_override,
+               text_overlay_enabled,
+               text_overlay_text,
+               text_overlay_font_path,
+               text_overlay_font_size,
+               text_overlay_x,
+               text_overlay_y,
+               text_overlay_color,
+               text_overlay_stroke_color,
+               text_overlay_stroke_width,
                thumbnail_path,
                thumbnail_override_source_file_id,
                thumbnail_override_path,
                current_preview_path,
+               transform_quarter_turns,
+               transform_flip_horizontal,
+               transform_flip_vertical,
                gif_loop_mode,
                gif_loop_count,
                gif_pingpong
@@ -928,10 +1129,22 @@ fn icon_record_for_duplicate(
                     cell_width_override: row.get("cell_width_override")?,
                     cell_height_override: row.get("cell_height_override")?,
                     thumbnail_path: row.get("thumbnail_path")?,
+                    text_overlay_enabled: row.get("text_overlay_enabled")?,
+                    text_overlay_text: row.get("text_overlay_text")?,
+                    text_overlay_font_path: row.get("text_overlay_font_path")?,
+                    text_overlay_font_size: row.get("text_overlay_font_size")?,
+                    text_overlay_x: row.get("text_overlay_x")?,
+                    text_overlay_y: row.get("text_overlay_y")?,
+                    text_overlay_color: row.get("text_overlay_color")?,
+                    text_overlay_stroke_color: row.get("text_overlay_stroke_color")?,
+                    text_overlay_stroke_width: row.get("text_overlay_stroke_width")?,
                     thumbnail_override_source_file_id: row
                         .get("thumbnail_override_source_file_id")?,
                     thumbnail_override_path: row.get("thumbnail_override_path")?,
                     current_preview_path: row.get("current_preview_path")?,
+                    transform_quarter_turns: row.get("transform_quarter_turns")?,
+                    transform_flip_horizontal: row.get("transform_flip_horizontal")?,
+                    transform_flip_vertical: row.get("transform_flip_vertical")?,
                     gif_loop_mode: row.get("gif_loop_mode")?,
                     gif_loop_count: row.get("gif_loop_count")?,
                     gif_pingpong: row.get("gif_pingpong")?,
@@ -974,8 +1187,20 @@ fn icon_record_for_replace(
             "SELECT
                i.display_name,
                i.icon_kind,
+               i.shape,
                COALESCE(i.cell_width_override, c.default_cell_width) AS cell_width,
-               COALESCE(i.cell_height_override, c.default_cell_height) AS cell_height
+               COALESCE(i.cell_height_override, c.default_cell_height) AS cell_height,
+               CASE WHEN i.gif_pingpong = 1 THEN 'pingpong' ELSE i.gif_loop_mode END AS gif_loop_mode,
+               i.gif_loop_count,
+               i.text_overlay_enabled,
+               i.text_overlay_text,
+               i.text_overlay_font_path,
+               i.text_overlay_font_size,
+               i.text_overlay_x,
+               i.text_overlay_y,
+               i.text_overlay_color,
+               i.text_overlay_stroke_color,
+               i.text_overlay_stroke_width
              FROM icons i
              JOIN collections c ON c.id = i.collection_id
              WHERE i.id = ?1
@@ -987,8 +1212,20 @@ fn icon_record_for_replace(
                 Ok(IconReplaceRecord {
                     display_name: row.get("display_name")?,
                     icon_kind: row.get("icon_kind")?,
+                    shape: row.get("shape")?,
                     cell_width: row.get("cell_width")?,
                     cell_height: row.get("cell_height")?,
+                    gif_loop_mode: row.get("gif_loop_mode")?,
+                    gif_loop_count: row.get("gif_loop_count")?,
+                    text_overlay_enabled: row.get::<_, i64>("text_overlay_enabled")? != 0,
+                    text_overlay_text: row.get("text_overlay_text")?,
+                    text_overlay_font_path: row.get("text_overlay_font_path")?,
+                    text_overlay_font_size: row.get("text_overlay_font_size")?,
+                    text_overlay_x: row.get("text_overlay_x")?,
+                    text_overlay_y: row.get("text_overlay_y")?,
+                    text_overlay_color: row.get("text_overlay_color")?,
+                    text_overlay_stroke_color: row.get("text_overlay_stroke_color")?,
+                    text_overlay_stroke_width: row.get("text_overlay_stroke_width")?,
                 })
             },
         )
@@ -998,19 +1235,19 @@ fn icon_record_for_replace(
 
 fn duplicate_icon_pieces(
     transaction: &Transaction<'_>,
-    _collection_id: &str,
+    paths: &AppPaths,
+    collection_id: &str,
     source_icon_id: &str,
     target_icon_id: &str,
-) -> AppResult<()> {
+) -> AppResult<HashMap<String, String>> {
     let pieces = {
         let mut statement = transaction.prepare(
             "SELECT
+               id,
                piece_index,
                piece_role,
                alt_text,
-               generated_preview_path,
-               last_export_path,
-               export_status
+               generated_preview_path
              FROM icon_pieces
              WHERE icon_id = ?1
              ORDER BY piece_index ASC",
@@ -1019,19 +1256,27 @@ fn duplicate_icon_pieces(
         let pieces = statement
             .query_map(params![source_icon_id], |row| {
                 Ok(IconPieceRecord {
+                    id: row.get("id")?,
                     piece_index: row.get("piece_index")?,
                     piece_role: row.get("piece_role")?,
                     alt_text: row.get("alt_text")?,
                     generated_preview_path: row.get("generated_preview_path")?,
-                    last_export_path: row.get("last_export_path")?,
-                    export_status: row.get("export_status")?,
                 })
             })?
             .collect::<Result<Vec<_>, _>>()?;
 
         pieces
     };
+    let mut piece_id_map = HashMap::new();
     for piece in pieces {
+        let target_piece_id = create_id("piece");
+        let cloned_preview_path = clone_piece_preview(
+            paths,
+            collection_id,
+            target_icon_id,
+            piece.piece_index,
+            piece.generated_preview_path.as_deref(),
+        )?;
         transaction.execute(
             "INSERT INTO icon_pieces (
                id,
@@ -1058,19 +1303,20 @@ fn duplicate_icon_pieces(
                strftime('%Y-%m-%dT%H:%M:%fZ', 'now')
              )",
             params![
-                create_id("piece"),
+                &target_piece_id,
                 target_icon_id,
                 piece.piece_index,
                 piece.piece_role,
                 piece.alt_text,
-                piece.generated_preview_path,
-                piece.last_export_path,
-                piece.export_status,
+                cloned_preview_path,
+                Option::<String>::None,
+                "not_exported",
             ],
         )?;
+        piece_id_map.insert(piece.id, target_piece_id);
     }
 
-    Ok(())
+    Ok(piece_id_map)
 }
 
 fn duplicate_crop_settings(
@@ -1185,6 +1431,64 @@ fn duplicate_icon_note(
             params![target_icon_id, note],
         )?;
     }
+
+    Ok(())
+}
+
+fn duplicate_icon_effect_recipe(
+    transaction: &Transaction<'_>,
+    source_icon_id: &str,
+    target_icon_id: &str,
+) -> AppResult<()> {
+    transaction.execute(
+        "INSERT INTO icon_effect_recipes (
+           icon_id,
+           recipe_schema,
+           revision,
+           effects_json,
+           created_at,
+           updated_at
+         )
+         SELECT
+           ?2,
+           recipe_schema,
+           revision,
+           effects_json,
+           strftime('%Y-%m-%dT%H:%M:%fZ', 'now'),
+           strftime('%Y-%m-%dT%H:%M:%fZ', 'now')
+         FROM icon_effect_recipes
+         WHERE icon_id = ?1",
+        params![source_icon_id, target_icon_id],
+    )?;
+
+    Ok(())
+}
+
+fn duplicate_icon_motion_recipe(
+    transaction: &Transaction<'_>,
+    source_icon_id: &str,
+    target_icon_id: &str,
+) -> AppResult<()> {
+    transaction.execute(
+        "INSERT INTO icon_motion_recipes (
+           icon_id,
+           recipe_schema,
+           revision,
+           motion_json,
+           created_at,
+           updated_at
+         )
+         SELECT
+           ?2,
+           recipe_schema,
+           revision,
+           motion_json,
+           strftime('%Y-%m-%dT%H:%M:%fZ', 'now'),
+           strftime('%Y-%m-%dT%H:%M:%fZ', 'now')
+         FROM icon_motion_recipes
+         WHERE icon_id = ?1",
+        params![source_icon_id, target_icon_id],
+    )?;
 
     Ok(())
 }
@@ -1523,6 +1827,7 @@ fn display_name_from_filename(filename: &str) -> String {
 
 #[cfg(test)]
 mod tests {
+    use std::fs;
     use std::io::Cursor;
     use std::time::{SystemTime, UNIX_EPOCH};
 
@@ -1781,6 +2086,25 @@ mod tests {
         assert_eq!(placeholder.icon_kind, "placeholder");
         assert_eq!(placeholder.readiness, "working");
         assert_eq!(placeholder.placeholder_text.as_deref(), Some("울음"));
+        connection
+            .execute(
+                "UPDATE icons
+                 SET transform_quarter_turns = 1,
+                     transform_flip_horizontal = 1
+                 WHERE id = ?1",
+                [&placeholder.id],
+            )
+            .unwrap();
+        connection
+            .execute(
+                "UPDATE icon_pieces
+                 SET generated_preview_path = 'C:/stale/old-piece.png',
+                     last_export_path = 'C:/stale/old-export.png',
+                     export_status = 'warning'
+                 WHERE icon_id = ?1",
+                [&placeholder.id],
+            )
+            .unwrap();
 
         let replaced = replace_icon_source(
             &mut connection,
@@ -1798,6 +2122,19 @@ mod tests {
         assert_eq!(replaced.readiness, "working");
         assert_eq!(replaced.placeholder_text, None);
         assert_eq!(replaced.display_name, "cry");
+        assert_eq!(replaced.transform_quarter_turns, 0);
+        assert!(!replaced.transform_flip_horizontal);
+        assert!(!replaced.transform_flip_vertical);
+        assert!(std::path::Path::new(replaced.current_preview_url.as_ref().unwrap()).is_file());
+        assert_ne!(
+            replaced.pieces[0].generated_preview_url.as_deref(),
+            Some("C:/stale/old-piece.png")
+        );
+        assert!(
+            std::path::Path::new(replaced.pieces[0].generated_preview_url.as_ref().unwrap())
+                .is_file()
+        );
+        assert!(replaced.pieces[0].last_export_url.is_none());
 
         let icons = set_icons_readiness(
             &connection,
@@ -1807,6 +2144,81 @@ mod tests {
         )
         .unwrap();
         assert_eq!(icons[0].readiness, "complete");
+
+        std::fs::remove_dir_all(paths.root).unwrap();
+    }
+
+    #[test]
+    fn replacing_double_icon_source_regenerates_piece_previews_and_composite_crop_metadata() {
+        let mut connection = connection();
+        let paths = temp_paths();
+        let collection =
+            create_collection(&mut connection, Some("2칸 교체 테스트".to_string())).unwrap();
+        let (icon_id, first_piece_id) = seed_icon(&connection, &collection.id, 0, "왼");
+        connection
+            .execute(
+                "UPDATE icons
+                 SET shape = 'horizontal_double',
+                     cell_width_override = 12,
+                     cell_height_override = 8,
+                     transform_quarter_turns = 1
+                 WHERE id = ?1",
+                [&icon_id],
+            )
+            .unwrap();
+        connection
+            .execute(
+                "UPDATE icon_pieces
+                 SET piece_role = 'left'
+                 WHERE id = ?1",
+                [&first_piece_id],
+            )
+            .unwrap();
+        connection
+            .execute(
+                "INSERT INTO icon_pieces (
+                   id, icon_id, piece_index, piece_role, alt_text, created_at, updated_at
+                 )
+                 VALUES (
+                   ?1, ?2, 1, 'right', '오른',
+                   strftime('%Y-%m-%dT%H:%M:%fZ', 'now'),
+                   strftime('%Y-%m-%dT%H:%M:%fZ', 'now')
+                 )",
+                params![create_id("piece"), icon_id],
+            )
+            .unwrap();
+
+        let replaced = replace_icon_source(
+            &mut connection,
+            &paths,
+            &collection.id,
+            &icon_id,
+            ImportImageFilePayload {
+                original_filename: "double.png".to_string(),
+                bytes: png_bytes(),
+            },
+        )
+        .unwrap();
+
+        assert_eq!(replaced.shape, "horizontal_double");
+        assert_eq!(replaced.transform_quarter_turns, 0);
+        assert_eq!(replaced.pieces.len(), 2);
+        assert!(replaced.pieces.iter().all(|piece| {
+            piece
+                .generated_preview_url
+                .as_deref()
+                .is_some_and(|path| std::path::Path::new(path).is_file())
+        }));
+        let viewport_at_apply: (i64, i64) = connection
+            .query_row(
+                "SELECT viewport_width_at_apply, viewport_height_at_apply
+                 FROM crop_settings
+                 WHERE icon_id = ?1",
+                [&icon_id],
+                |row| Ok((row.get(0)?, row.get(1)?)),
+            )
+            .unwrap();
+        assert_eq!(viewport_at_apply, (24, 8));
 
         std::fs::remove_dir_all(paths.root).unwrap();
     }
@@ -1841,16 +2253,31 @@ mod tests {
     #[test]
     fn duplicate_icon_creates_new_order_and_preserves_alt_warning_state() {
         let mut connection = connection();
+        let paths = temp_paths();
         let collection =
             create_collection(&mut connection, Some("복제 테스트".to_string())).unwrap();
         let (icon_id, _) = seed_icon(&connection, &collection.id, 0, "가");
 
-        let duplicated = duplicate_icon(&mut connection, &collection.id, &icon_id).unwrap();
+        connection
+            .execute(
+                "UPDATE icons
+                 SET transform_quarter_turns = 3,
+                     transform_flip_horizontal = 1
+                 WHERE id = ?1",
+                [&icon_id],
+            )
+            .unwrap();
+
+        let duplicated = duplicate_icon(&mut connection, &paths, &collection.id, &icon_id).unwrap();
 
         assert_ne!(duplicated.id, icon_id);
         assert_eq!(duplicated.order_index, 1);
+        assert_eq!(duplicated.transform_quarter_turns, 3);
+        assert!(duplicated.transform_flip_horizontal);
+        assert!(!duplicated.transform_flip_vertical);
         assert_eq!(duplicated.pieces[0].alt_text, "가");
         assert_eq!(list_icons(&connection, &collection.id).unwrap().len(), 2);
+        std::fs::remove_dir_all(paths.root).unwrap();
     }
 
     #[test]
@@ -1882,6 +2309,7 @@ mod tests {
     #[test]
     fn duplicate_icon_copies_note_without_mutating_source() {
         let mut connection = connection();
+        let paths = temp_paths();
         let collection =
             create_collection(&mut connection, Some("memo duplicate test".to_string())).unwrap();
         let (icon_id, _) = seed_icon(&connection, &collection.id, 0, "ga");
@@ -1893,7 +2321,7 @@ mod tests {
         )
         .unwrap();
 
-        let duplicated = duplicate_icon(&mut connection, &collection.id, &icon_id).unwrap();
+        let duplicated = duplicate_icon(&mut connection, &paths, &collection.id, &icon_id).unwrap();
 
         assert_eq!(duplicated.note.as_deref(), Some("원본 메모"));
         let original = list_icons(&connection, &collection.id)
@@ -1902,18 +2330,324 @@ mod tests {
             .find(|icon| icon.id == icon_id)
             .unwrap();
         assert_eq!(original.note.as_deref(), Some("원본 메모"));
+        std::fs::remove_dir_all(paths.root).unwrap();
+    }
+
+    #[test]
+    fn duplicate_icon_copies_effect_and_motion_recipes_independently() {
+        let mut connection = connection();
+        let paths = temp_paths();
+        let collection =
+            create_collection(&mut connection, Some("effect duplicate test".to_string())).unwrap();
+        let (icon_id, _) = seed_icon(&connection, &collection.id, 0, "ga");
+        let effects_json = r#"{"version":1,"effects":[{"kind":"pixelate","id":"pixel","enabled":true,"blockSize":6}]}"#;
+        connection
+            .execute(
+                "INSERT INTO icon_effect_recipes (
+                   icon_id, recipe_schema, revision, effects_json, created_at, updated_at
+                 )
+                 VALUES (
+                   ?1, 'pmtcon-effects-v1', 3, ?2,
+                   strftime('%Y-%m-%dT%H:%M:%fZ', 'now'),
+                   strftime('%Y-%m-%dT%H:%M:%fZ', 'now')
+                 )",
+                params![icon_id, effects_json],
+            )
+            .unwrap();
+        let motion_json = r#"{"version":1,"durationMs":1000,"fps":20,"seed":4242,"interpolation":"bilinear","edgeMode":"transparent","spatial":{"kind":"shake","enabled":true,"cyclesPerLoop":1,"amplitudeX":2,"amplitudeY":1},"displacement":null,"colorOpacity":null,"overlay":null}"#;
+        connection
+            .execute(
+                "INSERT INTO icon_motion_recipes (
+                   icon_id, recipe_schema, revision, motion_json, created_at, updated_at
+                 )
+                 VALUES (
+                   ?1, 'pmtcon-motion-v1', 5, ?2,
+                   strftime('%Y-%m-%dT%H:%M:%fZ', 'now'),
+                   strftime('%Y-%m-%dT%H:%M:%fZ', 'now')
+                 )",
+                params![icon_id, motion_json],
+            )
+            .unwrap();
+
+        let duplicated = duplicate_icon(&mut connection, &paths, &collection.id, &icon_id).unwrap();
+        let original_recipe: (String, i64, String) = connection
+            .query_row(
+                "SELECT recipe_schema, revision, effects_json
+                 FROM icon_effect_recipes
+                 WHERE icon_id = ?1",
+                [&icon_id],
+                |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
+            )
+            .unwrap();
+        let duplicated_recipe: (String, i64, String) = connection
+            .query_row(
+                "SELECT recipe_schema, revision, effects_json
+                 FROM icon_effect_recipes
+                 WHERE icon_id = ?1",
+                [&duplicated.id],
+                |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
+            )
+            .unwrap();
+
+        assert_eq!(duplicated_recipe, original_recipe);
+        let original_motion: (String, i64, String) = connection
+            .query_row(
+                "SELECT recipe_schema, revision, motion_json
+                 FROM icon_motion_recipes WHERE icon_id = ?1",
+                [&icon_id],
+                |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
+            )
+            .unwrap();
+        let duplicated_motion: (String, i64, String) = connection
+            .query_row(
+                "SELECT recipe_schema, revision, motion_json
+                 FROM icon_motion_recipes WHERE icon_id = ?1",
+                [&duplicated.id],
+                |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
+            )
+            .unwrap();
+        assert_eq!(duplicated_motion, original_motion);
+        assert!(original_motion.2.contains("\"seed\":4242"));
+
+        let changed_motion_json = motion_json.replace("\"seed\":4242", "\"seed\":7");
+        connection
+            .execute(
+                "UPDATE icon_motion_recipes
+                 SET revision = 6, motion_json = ?1
+                 WHERE icon_id = ?2",
+                params![changed_motion_json, duplicated.id],
+            )
+            .unwrap();
+        let source_after: (i64, String) = connection
+            .query_row(
+                "SELECT revision, motion_json FROM icon_motion_recipes WHERE icon_id = ?1",
+                [&icon_id],
+                |row| Ok((row.get(0)?, row.get(1)?)),
+            )
+            .unwrap();
+        let duplicate_after: (i64, String) = connection
+            .query_row(
+                "SELECT revision, motion_json FROM icon_motion_recipes WHERE icon_id = ?1",
+                [&duplicated.id],
+                |row| Ok((row.get(0)?, row.get(1)?)),
+            )
+            .unwrap();
+        assert_eq!(source_after, (5, motion_json.to_string()));
+        assert_eq!(duplicate_after.0, 6);
+        assert!(duplicate_after.1.contains("\"seed\":7"));
+        for table in ["processed_asset_variants", "optimization_jobs"] {
+            let count: i64 = connection
+                .query_row(
+                    &format!("SELECT COUNT(*) FROM {table} WHERE icon_id = ?1"),
+                    [&duplicated.id],
+                    |row| row.get(0),
+                )
+                .unwrap();
+            assert_eq!(count, 0);
+        }
+        std::fs::remove_dir_all(paths.root).unwrap();
+    }
+
+    #[test]
+    fn duplicate_icon_owns_preview_files_and_preserves_render_state() {
+        let mut connection = connection();
+        let paths = temp_paths();
+        let collection =
+            create_collection(&mut connection, Some("render clone test".to_string())).unwrap();
+        let (icon_id, piece_id) = seed_icon(&connection, &collection.id, 0, "ga");
+        let source_dir = paths
+            .collection_previews_dir
+            .join(&collection.id)
+            .join(&icon_id)
+            .join("effects")
+            .join("source-artifact");
+        fs::create_dir_all(&source_dir).unwrap();
+        let source_preview = source_dir.join("preview.png");
+        let source_piece = source_dir.join("piece-00.png");
+        fs::write(&source_preview, png_bytes()).unwrap();
+        fs::write(&source_piece, png_bytes()).unwrap();
+        let old_export = paths.root.join("old-export.png");
+
+        connection
+            .execute(
+                "UPDATE icons
+                 SET current_preview_path = ?1,
+                     text_overlay_enabled = 1,
+                     text_overlay_text = 'copy text',
+                     text_overlay_font_path = NULL,
+                     text_overlay_font_size = 24.0,
+                     text_overlay_x = 0.25,
+                     text_overlay_y = 0.75,
+                     text_overlay_color = '#12345678',
+                     text_overlay_stroke_color = '#ABCDEF',
+                     text_overlay_stroke_width = 2.5,
+                     transform_quarter_turns = 3,
+                     transform_flip_horizontal = 1,
+                     transform_flip_vertical = 1
+                 WHERE id = ?2",
+                params![source_preview.to_string_lossy(), icon_id],
+            )
+            .unwrap();
+        connection
+            .execute(
+                "UPDATE icon_pieces
+                 SET generated_preview_path = ?1,
+                     last_export_path = ?2,
+                     export_status = 'ready'
+                 WHERE id = ?3",
+                params![
+                    source_piece.to_string_lossy(),
+                    old_export.to_string_lossy(),
+                    piece_id
+                ],
+            )
+            .unwrap();
+        let effects_json = r#"{"version":1,"effects":[{"kind":"pixelate","id":"pixel","enabled":true,"blockSize":6}]}"#;
+        connection
+            .execute(
+                "INSERT INTO icon_effect_recipes (
+                   icon_id, recipe_schema, revision, effects_json, created_at, updated_at
+                 )
+                 VALUES (
+                   ?1, 'pmtcon-effects-v1', 4, ?2,
+                   strftime('%Y-%m-%dT%H:%M:%fZ', 'now'),
+                   strftime('%Y-%m-%dT%H:%M:%fZ', 'now')
+                 )",
+                params![icon_id, effects_json],
+            )
+            .unwrap();
+
+        let duplicated = duplicate_icon(&mut connection, &paths, &collection.id, &icon_id).unwrap();
+        let duplicate_preview = duplicated.current_preview_url.clone().unwrap();
+        let (duplicate_piece, last_export, export_status): (String, Option<String>, String) =
+            connection
+                .query_row(
+                    "SELECT generated_preview_path, last_export_path, export_status
+                     FROM icon_pieces
+                     WHERE icon_id = ?1 AND piece_index = 0",
+                    [&duplicated.id],
+                    |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
+                )
+                .unwrap();
+        assert_ne!(duplicate_preview, source_preview.to_string_lossy());
+        assert_ne!(duplicate_piece, source_piece.to_string_lossy());
+        assert_eq!(
+            fs::read(&duplicate_preview).unwrap(),
+            fs::read(&source_preview).unwrap()
+        );
+        assert_eq!(
+            fs::read(&duplicate_piece).unwrap(),
+            fs::read(&source_piece).unwrap()
+        );
+        assert!(std::path::Path::new(&duplicate_preview).starts_with(
+            paths
+                .collection_previews_dir
+                .join(&collection.id)
+                .join(&duplicated.id)
+                .join("cloned")
+        ));
+        assert_eq!(last_export, None);
+        assert_eq!(export_status, "not_exported");
+
+        let source_text_state: (
+            i64,
+            String,
+            Option<String>,
+            f64,
+            f64,
+            f64,
+            String,
+            String,
+            f64,
+        ) = connection
+            .query_row(
+                "SELECT text_overlay_enabled, text_overlay_text, text_overlay_font_path,
+                            text_overlay_font_size, text_overlay_x, text_overlay_y,
+                            text_overlay_color, text_overlay_stroke_color,
+                            text_overlay_stroke_width
+                     FROM icons WHERE id = ?1",
+                [&icon_id],
+                |row| {
+                    Ok((
+                        row.get(0)?,
+                        row.get(1)?,
+                        row.get(2)?,
+                        row.get(3)?,
+                        row.get(4)?,
+                        row.get(5)?,
+                        row.get(6)?,
+                        row.get(7)?,
+                        row.get(8)?,
+                    ))
+                },
+            )
+            .unwrap();
+        let duplicate_text_state = connection
+            .query_row(
+                "SELECT text_overlay_enabled, text_overlay_text, text_overlay_font_path,
+                        text_overlay_font_size, text_overlay_x, text_overlay_y,
+                        text_overlay_color, text_overlay_stroke_color,
+                        text_overlay_stroke_width
+                 FROM icons WHERE id = ?1",
+                [&duplicated.id],
+                |row| {
+                    Ok((
+                        row.get(0)?,
+                        row.get(1)?,
+                        row.get(2)?,
+                        row.get(3)?,
+                        row.get(4)?,
+                        row.get(5)?,
+                        row.get(6)?,
+                        row.get(7)?,
+                        row.get(8)?,
+                    ))
+                },
+            )
+            .unwrap();
+        assert_eq!(duplicate_text_state, source_text_state);
+        assert_eq!(duplicated.transform_quarter_turns, 3);
+        assert!(duplicated.transform_flip_horizontal);
+        assert!(duplicated.transform_flip_vertical);
+        let duplicated_recipe: (String, i64, String) = connection
+            .query_row(
+                "SELECT recipe_schema, revision, effects_json
+                 FROM icon_effect_recipes WHERE icon_id = ?1",
+                [&duplicated.id],
+                |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
+            )
+            .unwrap();
+        assert_eq!(duplicated_recipe.1, 4);
+        assert_eq!(duplicated_recipe.2, effects_json);
+        for table in ["processed_asset_variants", "optimization_jobs"] {
+            let count: i64 = connection
+                .query_row(
+                    &format!("SELECT COUNT(*) FROM {table} WHERE icon_id = ?1"),
+                    [&duplicated.id],
+                    |row| row.get(0),
+                )
+                .unwrap();
+            assert_eq!(count, 0);
+        }
+
+        fs::remove_dir_all(&source_dir).unwrap();
+        assert!(std::path::Path::new(&duplicate_preview).is_file());
+        assert!(std::path::Path::new(&duplicate_piece).is_file());
+        fs::remove_dir_all(paths.root).unwrap();
     }
 
     #[test]
     fn duplicate_icon_is_inserted_next_to_source_icon() {
         let mut connection = connection();
+        let paths = temp_paths();
         let collection =
             create_collection(&mut connection, Some("duplicate order test".to_string())).unwrap();
         let (first_icon_id, _) = seed_icon(&connection, &collection.id, 0, "ga");
         let (second_icon_id, _) = seed_icon(&connection, &collection.id, 1, "na");
         let (third_icon_id, _) = seed_icon(&connection, &collection.id, 2, "da");
 
-        let duplicated = duplicate_icon(&mut connection, &collection.id, &second_icon_id).unwrap();
+        let duplicated =
+            duplicate_icon(&mut connection, &paths, &collection.id, &second_icon_id).unwrap();
         let icons = list_icons(&connection, &collection.id).unwrap();
         let ordered_ids = icons.iter().map(|icon| icon.id.clone()).collect::<Vec<_>>();
         let ordered_indexes = icons
@@ -1926,6 +2660,7 @@ mod tests {
             vec![first_icon_id, second_icon_id, duplicated.id, third_icon_id]
         );
         assert_eq!(ordered_indexes, vec![0, 1, 2, 3]);
+        std::fs::remove_dir_all(paths.root).unwrap();
     }
 
     #[test]

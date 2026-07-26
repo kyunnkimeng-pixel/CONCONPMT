@@ -216,6 +216,45 @@ pub fn list_candidates(
     Ok(variants)
 }
 
+pub(crate) fn list_active_variants_for_icon(
+    connection: &Connection,
+    icon_id: &str,
+) -> AppResult<Vec<ProcessedAssetVariantRecord>> {
+    let mut statement = connection.prepare(
+        "SELECT
+           id,
+           icon_id,
+           piece_id,
+           profile_id,
+           source_file_id,
+           kind,
+           preset,
+           path,
+           format,
+           width,
+           height,
+           byte_size,
+           frame_count,
+           duration_ms,
+           loop_mode,
+           settings_json,
+           source_hash,
+           crop_hash,
+           profile_hash,
+           settings_hash,
+           is_active_for_export
+         FROM processed_asset_variants
+         WHERE icon_id = ?1
+           AND is_active_for_export = 1
+         ORDER BY created_at DESC, id DESC",
+    )?;
+
+    let variants = statement
+        .query_map(params![icon_id], variant_from_row)?
+        .collect::<Result<Vec<_>, _>>()?;
+
+    Ok(variants)
+}
 pub fn find_active_variant(
     connection: &Connection,
     icon_id: &str,

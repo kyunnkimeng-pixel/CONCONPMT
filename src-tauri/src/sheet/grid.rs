@@ -2,10 +2,14 @@ use image::RgbaImage;
 use serde::{Deserialize, Serialize};
 
 use crate::error::{AppError, AppResult};
-use crate::imaging::import_limits::decode_import_image;
+use crate::imaging::import_limits::{
+    decode_import_image, validate_import_dimensions, MAX_IMPORT_DIMENSION,
+};
 
 use super::{image_format_for_extension, read_sheet_image_input};
 use crate::models::ImportImageFilePayload;
+
+pub const MAX_SHEET_CELLS: i64 = 10_000;
 
 #[derive(Debug, Clone, Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -246,14 +250,32 @@ pub fn resolve_grid(
     sheet_width: i64,
     sheet_height: i64,
 ) -> AppResult<ResolvedGrid> {
+    let sheet_width_u32 = u32::try_from(sheet_width)
+        .map_err(|_| AppError::new("validation", "시트 너비가 올바르지 않습니다."))?;
+    let sheet_height_u32 = u32::try_from(sheet_height)
+        .map_err(|_| AppError::new("validation", "시트 높이가 올바르지 않습니다."))?;
+    validate_import_dimensions(sheet_width_u32, sheet_height_u32)?;
+    validate_nonnegative_extent(settings.border_left, "왼쪽 여백")?;
+    validate_nonnegative_extent(settings.border_top, "위쪽 여백")?;
+    validate_nonnegative_extent(settings.border_right, "오른쪽 여백")?;
+    validate_nonnegative_extent(settings.border_bottom, "아래쪽 여백")?;
+    validate_nonnegative_extent(settings.gap_x, "가로 간격")?;
+    validate_nonnegative_extent(settings.gap_y, "세로 간격")?;
+
     let border_left = settings.border_left.max(0);
     let border_top = settings.border_top.max(0);
     let border_right = settings.border_right.max(0);
     let border_bottom = settings.border_bottom.max(0);
     let gap_x = settings.gap_x.max(0);
     let gap_y = settings.gap_y.max(0);
-    let available_width = sheet_width - border_left - border_right;
-    let available_height = sheet_height - border_top - border_bottom;
+    let available_width = sheet_width
+        .checked_sub(border_left)
+        .and_then(|value| value.checked_sub(border_right))
+        .ok_or_else(|| AppError::new("validation", "가로 여백 계산이 지원 범위를 벗어났습니다."))?;
+    let available_height = sheet_height
+        .checked_sub(border_top)
+        .and_then(|value| value.checked_sub(border_bottom))
+        .ok_or_else(|| AppError::new("validation", "세로 여백 계산이 지원 범위를 벗어났습니다."))?;
 
     if available_width <= 0 || available_height <= 0 {
         return Err(AppError::new(
@@ -274,11 +296,13 @@ pub fn resolve_grid(
                 .rows
                 .filter(|value| *value > 0)
                 .unwrap_or_else(|| infer_count(available_height, cell_height, gap_y));
+            validate_grid_cell_count(rows, columns)?;
             (rows, columns, cell_width, cell_height)
         }
         _ => {
             let rows = positive_value(settings.rows, "행")?;
             let columns = positive_value(settings.columns, "열")?;
+            validate_grid_cell_count(rows, columns)?;
             let cell_width = settings
                 .cell_width
                 .filter(|value| *value > 0)
@@ -297,6 +321,7 @@ pub fn resolve_grid(
             "행, 열, 셀 크기는 모두 1 이상이어야 합니다.",
         ));
     }
+    validate_grid_dimensions(cell_width, cell_height)?;
 
     Ok(ResolvedGrid {
         rows,
@@ -363,6 +388,7 @@ pub fn calculate_cells(
 }
 
 pub fn split_pages(item_count: usize, settings: PageSplitSettings) -> AppResult<PageSplitPlan> {
+    validate_page_split_settings(item_count, &settings)?;
     if item_count == 0 {
         return Ok(PageSplitPlan {
             columns_per_page: 0,
@@ -404,6 +430,11 @@ pub fn split_pages(item_count: usize, settings: PageSplitSettings) -> AppResult<
         let rows = ((item_count_on_page + columns_per_page - 1) / columns_per_page).max(1);
         let width = sheet_extent(columns_per_page, cell_width, gap_x, border_x);
         let height = sheet_extent(rows, cell_height, gap_y, border_y);
+        let width_u32 = u32::try_from(width)
+            .map_err(|_| AppError::new("validation", "시트 페이지 너비가 올바르지 않습니다."))?;
+        let height_u32 = u32::try_from(height)
+            .map_err(|_| AppError::new("validation", "시트 페이지 높이가 올바르지 않습니다."))?;
+        validate_import_dimensions(width_u32, height_u32)?;
 
         pages.push(PagePlan {
             page_index,
@@ -440,6 +471,59 @@ pub fn split_pages(item_count: usize, settings: PageSplitSettings) -> AppResult<
     })
 }
 
+fn validate_grid_dimensions(width: i64, height: i64) -> AppResult<()> {
+    let width = u32::try_from(width)
+        .map_err(|_| AppError::new("validation", "셀 너비가 올바르지 않습니다."))?;
+    let height = u32::try_from(height)
+        .map_err(|_| AppError::new("validation", "셀 높이가 올바르지 않습니다."))?;
+    validate_import_dimensions(width, height)
+}
+
+fn validate_nonnegative_extent(value: i64, label: &str) -> AppResult<()> {
+    if !(0..=i64::from(MAX_IMPORT_DIMENSION)).contains(&value) {
+        return Err(AppError::new(
+            "validation",
+            format!("{label}은 0~{MAX_IMPORT_DIMENSION}px 범위여야 합니다."),
+        ));
+    }
+    Ok(())
+}
+
+fn validate_page_split_settings(item_count: usize, settings: &PageSplitSettings) -> AppResult<()> {
+    if item_count > usize::try_from(MAX_SHEET_CELLS).unwrap_or(usize::MAX) {
+        return Err(AppError::new(
+            "validation",
+            format!("시트는 최대 {MAX_SHEET_CELLS}개 셀까지 분할할 수 있습니다."),
+        ));
+    }
+    validate_grid_dimensions(settings.cell_width, settings.cell_height)?;
+    if !(1..=MAX_SHEET_CELLS).contains(&settings.columns) {
+        return Err(AppError::new(
+            "validation",
+            format!("시트 열 수는 1 이상 {MAX_SHEET_CELLS} 이하여야 합니다."),
+        ));
+    }
+    validate_nonnegative_extent(settings.gap_x, "가로 간격")?;
+    validate_nonnegative_extent(settings.gap_y, "세로 간격")?;
+    validate_nonnegative_extent(settings.border_x, "가로 테두리")?;
+    validate_nonnegative_extent(settings.border_y, "세로 테두리")?;
+    let max_width = u32::try_from(settings.max_sheet_width)
+        .map_err(|_| AppError::new("validation", "최대 시트 너비가 올바르지 않습니다."))?;
+    let max_height = u32::try_from(settings.max_sheet_height)
+        .map_err(|_| AppError::new("validation", "최대 시트 높이가 올바르지 않습니다."))?;
+    if max_width == 0
+        || max_height == 0
+        || max_width > MAX_IMPORT_DIMENSION
+        || max_height > MAX_IMPORT_DIMENSION
+    {
+        return Err(AppError::new(
+            "validation",
+            "최대 시트 크기는 한 변 1~12,000px 범위여야 합니다.",
+        ));
+    }
+    Ok(())
+}
+
 fn positive_value(value: Option<i64>, label: &str) -> AppResult<i64> {
     value
         .filter(|value| *value > 0)
@@ -450,11 +534,27 @@ fn infer_count(available: i64, cell: i64, gap: i64) -> i64 {
     if available <= 0 || cell <= 0 {
         return 0;
     }
-    ((available + gap) / (cell + gap).max(1)).max(1)
+    (available.saturating_add(gap) / cell.saturating_add(gap).max(1)).max(1)
 }
 
 fn divide_grid_extent(available: i64, count: i64, gap: i64) -> i64 {
-    ((available - gap * (count - 1).max(0)) / count.max(1)).max(1)
+    (available.saturating_sub(gap.saturating_mul((count - 1).max(0))) / count.max(1)).max(1)
+}
+
+fn validate_grid_cell_count(rows: i64, columns: i64) -> AppResult<()> {
+    let cell_count = rows.checked_mul(columns).ok_or_else(|| {
+        AppError::new(
+            "validation",
+            "시트 행·열 조합이 너무 큽니다. 분할 설정을 줄여 주세요.",
+        )
+    })?;
+    if cell_count > MAX_SHEET_CELLS {
+        return Err(AppError::new(
+            "validation",
+            format!("시트는 최대 {MAX_SHEET_CELLS}개 셀까지 분석할 수 있습니다."),
+        ));
+    }
+    Ok(())
 }
 
 fn sheet_extent(count: i64, cell: i64, gap: i64, border: i64) -> i64 {
@@ -606,6 +706,42 @@ mod tests {
     }
 
     #[test]
+    fn grid_rejects_excessive_or_overflowing_cell_counts() {
+        let settings = SheetGridSettings {
+            mode: "rows_columns".to_string(),
+            rows: Some(101),
+            columns: Some(100),
+            cell_width: Some(1),
+            cell_height: Some(1),
+            border_left: 0,
+            border_top: 0,
+            border_right: 0,
+            border_bottom: 0,
+            gap_x: 0,
+            gap_y: 0,
+            read_order: "row_major".to_string(),
+            empty_cell_threshold: None,
+        };
+        assert!(resolve_grid(&settings, 200, 200).is_err());
+
+        let overflowing = SheetGridSettings {
+            rows: Some(i64::MAX),
+            columns: Some(i64::MAX),
+            ..settings.clone()
+        };
+        assert!(resolve_grid(&overflowing, 200, 200).is_err());
+
+        let extreme_layout = SheetGridSettings {
+            rows: Some(1),
+            columns: Some(1),
+            border_left: i64::MAX,
+            gap_x: i64::MAX,
+            ..settings
+        };
+        assert!(resolve_grid(&extreme_layout, 200, 200).is_err());
+    }
+
+    #[test]
     fn alpha_empty_cells_are_detected() {
         let mut image = ImageBuffer::from_pixel(20, 10, Rgba([255, 0, 0, 255]));
         for y in 0..10 {
@@ -631,6 +767,25 @@ mod tests {
         let analysis = analyze_rgba_grid(&image, &settings, 20, 10).unwrap();
 
         assert_eq!(analysis.empty_cell_candidates, vec![1]);
+    }
+
+    #[test]
+    fn page_splitting_rejects_extreme_extents_before_planning() {
+        assert!(split_pages(
+            1,
+            PageSplitSettings {
+                cell_width: 1,
+                cell_height: 1,
+                columns: 1,
+                gap_x: i64::MAX,
+                gap_y: 0,
+                border_x: 0,
+                border_y: 0,
+                max_sheet_width: 1,
+                max_sheet_height: 1,
+            },
+        )
+        .is_err());
     }
 
     #[test]

@@ -16,11 +16,13 @@ use crate::db::repositories::source_files::{
 };
 use crate::error::{AppError, AppResult};
 use crate::ids::create_id;
-use crate::imaging::import_limits::decode_import_image;
+use crate::imaging::import_limits::{decode_import_image, validate_import_dimensions};
 use crate::models::{IconDto, ImportImageFilePayload};
 use crate::paths::AppPaths;
 
-use super::grid::{alpha_warning_for_extension, analyze_rgba_grid, SheetCell, SheetGridSettings};
+use super::grid::{
+    alpha_warning_for_extension, analyze_rgba_grid, SheetCell, SheetGridSettings, MAX_SHEET_CELLS,
+};
 use super::{image_format_for_extension, path_string, read_sheet_image_input};
 
 #[derive(Debug, Clone, Deserialize)]
@@ -151,10 +153,11 @@ pub fn import_sheet_cells(
             cell.index,
             cell_imports.len(),
         );
-        let original_filename = format!("{display_name}.png");
+        let safe_stem = safe_file_stem(&display_name, "sheet_cell");
+        let original_filename = format!("{safe_stem}.png");
         let extracted_path = paths
             .sheet_import_cells_dir
-            .join(format!("{}-{display_name}.png", create_id("cell")));
+            .join(format!("{}.png", create_id("cell")));
         if let Some(parent) = extracted_path.parent() {
             fs::create_dir_all(parent)?;
         }
@@ -199,8 +202,21 @@ pub(crate) fn create_icons_from_png_cells(
     collection_id: &str,
     cells: Vec<CellImportInput>,
 ) -> AppResult<Vec<IconDto>> {
+    if cells.len() > usize::try_from(MAX_SHEET_CELLS).unwrap_or(usize::MAX) {
+        return Err(AppError::new(
+            "validation",
+            format!("한 번에 최대 {MAX_SHEET_CELLS}개 시트 셀까지 가져올 수 있습니다."),
+        ));
+    }
     let transaction = connection.transaction()?;
     let collection = load_collection_for_sheet_import(&transaction, collection_id)?;
+    for cell in &cells {
+        let width = u32::try_from(cell.cell_width.unwrap_or(collection.default_cell_width))
+            .map_err(|_| AppError::new("validation", "시트 셀 너비가 올바르지 않습니다."))?;
+        let height = u32::try_from(cell.cell_height.unwrap_or(collection.default_cell_height))
+            .map_err(|_| AppError::new("validation", "시트 셀 높이가 올바르지 않습니다."))?;
+        validate_import_dimensions(width, height)?;
+    }
     let mut next_order = next_icon_order_index(&transaction, collection_id)?;
     let mut has_cover =
         collection.cover_icon_id.is_some() || collection.cover_source_file_id.is_some();
@@ -229,7 +245,9 @@ pub(crate) fn create_icons_from_png_cells(
             cell.cell_width,
             cell.cell_height,
         )?;
-        next_order += 1;
+        next_order = next_order.checked_add(1).ok_or_else(|| {
+            AppError::new("validation", "아이콘 정렬 순서가 지원 범위를 벗어났습니다.")
+        })?;
 
         if !has_cover {
             transaction.execute(
@@ -442,7 +460,7 @@ fn next_icon_order_index(transaction: &Transaction<'_>, collection_id: &str) -> 
     )?)
 }
 
-fn preserve_original_sheet(
+pub(crate) fn preserve_original_sheet(
     paths: &AppPaths,
     filename: &str,
     extension: &str,
@@ -481,9 +499,42 @@ fn display_name_for_cell(pattern: Option<&str>, cell_index: i64, imported_index:
         .filter(|pattern| !pattern.is_empty())
         .unwrap_or("sheet_{number}");
     let number = imported_index + 1;
-    pattern
+    let rendered = pattern
         .replace("{index}", &cell_index.to_string())
-        .replace("{number}", &format!("{number:03}"))
+        .replace("{number}", &format!("{number:03}"));
+    let display_name = rendered.trim().chars().take(80).collect::<String>();
+    if display_name.is_empty() {
+        format!("sheet_{number:03}")
+    } else {
+        display_name
+    }
+}
+
+fn safe_file_stem(value: &str, fallback: &str) -> String {
+    let safe = value
+        .chars()
+        .map(|character| {
+            if character.is_control()
+                || matches!(
+                    character,
+                    '/' | '\\' | ':' | '*' | '?' | '"' | '<' | '>' | '|'
+                )
+            {
+                '_'
+            } else {
+                character
+            }
+        })
+        .collect::<String>()
+        .trim_matches(|character: char| character.is_whitespace() || character == '.')
+        .chars()
+        .take(80)
+        .collect::<String>();
+    if safe.is_empty() || matches!(safe.as_str(), "." | "..") {
+        fallback.to_string()
+    } else {
+        safe
+    }
 }
 
 fn sanitize_name(value: &str) -> String {
@@ -525,7 +576,10 @@ mod tests {
     use crate::models::ImportImageFilePayload;
     use crate::paths::AppPaths;
 
-    use super::{import_sheet_cells, ImportSheetCellsRequest};
+    use super::{
+        create_icons_from_png_cells, display_name_for_cell, import_sheet_cells, safe_file_stem,
+        CellImportInput, ImportSheetCellsRequest,
+    };
     use crate::sheet::grid::SheetGridSettings;
 
     fn connection() -> Connection {
@@ -541,6 +595,59 @@ mod tests {
             .as_nanos();
         AppPaths::prepare(std::env::temp_dir().join(format!("pmtconcon-sheet-import-{suffix}")))
             .unwrap()
+    }
+
+    #[test]
+    fn cell_output_override_rejects_extreme_dimensions_before_files_or_db() {
+        let mut connection = connection();
+        let paths = temp_paths();
+        let collection =
+            create_collection(&mut connection, Some("override validation".to_string())).unwrap();
+        let before_files = std::fs::read_dir(&paths.originals_dir).unwrap().count();
+        let mut cursor = Cursor::new(Vec::new());
+        DynamicImage::ImageRgba8(ImageBuffer::from_pixel(1, 1, Rgba([255, 0, 0, 255])))
+            .write_to(&mut cursor, ImageFormat::Png)
+            .unwrap();
+        let error = create_icons_from_png_cells(
+            &mut connection,
+            &paths,
+            &collection.id,
+            vec![CellImportInput {
+                original_filename: "cell.png".to_string(),
+                bytes: cursor.into_inner(),
+                display_name: "cell".to_string(),
+                alt_text: String::new(),
+                cell_width: Some(i64::MAX),
+                cell_height: Some(1),
+            }],
+        )
+        .unwrap_err();
+        assert_eq!(error.code, "validation");
+        assert_eq!(
+            std::fs::read_dir(&paths.originals_dir).unwrap().count(),
+            before_files
+        );
+        let icon_count: i64 = connection
+            .query_row(
+                "SELECT COUNT(*) FROM icons WHERE collection_id = ?1",
+                [&collection.id],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert_eq!(icon_count, 0);
+        std::fs::remove_dir_all(paths.root).unwrap();
+    }
+
+    #[test]
+    fn cell_display_name_pattern_cannot_escape_output_directory() {
+        let display_name = display_name_for_cell(Some("../../밖/{number}"), 0, 0);
+        assert!(display_name.contains('밖'));
+        let safe_stem = safe_file_stem(&display_name, "sheet_cell");
+        assert!(!safe_stem.contains(['/', '\\']));
+        assert!(safe_stem.chars().count() <= 80);
+        let root = std::path::Path::new("sheet_cells");
+        let candidate = root.join("cell_safe_id.png");
+        assert_eq!(candidate.parent(), Some(root));
     }
 
     #[test]

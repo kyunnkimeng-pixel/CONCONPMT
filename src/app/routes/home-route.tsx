@@ -4,6 +4,7 @@ import { useNavigate } from "@tanstack/react-router";
 import { Copy, FileImage, FolderPlus, FolderX, Plus, Trash2, Upload } from "lucide-react";
 
 import { CollectionGrid } from "@/features/collections/components/CollectionGrid";
+import { canStartCollectionDuplicate } from "@/features/collections/collection-duplicate-model";
 import { DropImportZone } from "@/features/collections/components/DropImportZone";
 import {
   cleanupLibrary,
@@ -42,6 +43,7 @@ export function HomeRoute() {
   const fileInputRef = useRef<HTMLInputElement>(null);
   const folderInputRef = useRef<HTMLInputElement>(null);
   const didAttemptRestoreRef = useRef(false);
+  const duplicateRequestRef = useRef(false);
   const [isActionPanelOpen, setIsActionPanelOpen] = useState(false);
   const [isDragging, setIsDragging] = useState(false);
   const [selectedCollectionId, setSelectedCollectionId] = useState<string | null>(null);
@@ -49,6 +51,7 @@ export function HomeRoute() {
   const [collections, setCollections] = useState<CollectionSummary[]>([]);
   const [isLoading, setIsLoading] = useState(true);
   const [isImporting, setIsImporting] = useState(false);
+  const [isDuplicating, setIsDuplicating] = useState(false);
   const [errorMessage, setErrorMessage] = useState<string | null>(null);
 
   const reloadCollections = useCallback(async () => {
@@ -134,10 +137,20 @@ export function HomeRoute() {
   };
 
   const handleDuplicateCollection = async (collectionId = selectedCollectionId) => {
-    if (!collectionId) {
+    if (
+      !collectionId ||
+      !canStartCollectionDuplicate({
+        collectionId,
+        isDuplicating,
+        isImporting,
+      }) ||
+      duplicateRequestRef.current
+    ) {
       return;
     }
 
+    duplicateRequestRef.current = true;
+    setIsDuplicating(true);
     setErrorMessage(null);
     setImportStatus(null);
 
@@ -145,10 +158,13 @@ export function HomeRoute() {
       const duplicated = await duplicateCollection(collectionId);
       setCollections((currentCollections) => [...currentCollections, duplicated]);
       setSelectedCollectionId(duplicated.id);
-      setImportStatus("모음을 복제했습니다.");
+      setImportStatus(`모음을 “${duplicated.name}”으로 복제했습니다.`);
       notifyCollectionListChanged();
     } catch (error) {
       setErrorMessage(getCommandErrorMessage(error));
+    } finally {
+      duplicateRequestRef.current = false;
+      setIsDuplicating(false);
     }
   };
 
@@ -311,9 +327,9 @@ export function HomeRoute() {
             <h1 className="text-2xl font-semibold tracking-normal">디시콘 모음</h1>
           </div>
 
-          <div className="flex items-center gap-2">
+          <div className="flex flex-wrap items-center justify-end gap-2">
             <button
-              className="inline-flex items-center gap-2 rounded-md border border-border bg-white px-3 py-2 text-sm font-medium hover:bg-menu-hover focus-visible:outline focus-visible:outline-2 focus-visible:outline-focus disabled:cursor-not-allowed disabled:text-muted"
+              className="inline-flex shrink-0 items-center gap-2 whitespace-nowrap rounded-md border border-border bg-white px-3 py-2 text-sm font-medium hover:bg-menu-hover focus-visible:outline focus-visible:outline-2 focus-visible:outline-focus disabled:cursor-not-allowed disabled:text-muted"
               disabled={!selectedCollectionId || isImporting}
               title={
                 isImporting
@@ -329,17 +345,31 @@ export function HomeRoute() {
               선택 삭제
             </button>
             <button
-              className="inline-flex items-center gap-2 rounded-md border border-border bg-white px-3 py-2 text-sm font-medium hover:bg-menu-hover focus-visible:outline focus-visible:outline-2 focus-visible:outline-focus disabled:cursor-not-allowed disabled:text-muted"
-              disabled={!selectedCollectionId}
-              title={!selectedCollectionId ? "복제할 모음을 선택하세요." : undefined}
+              className="inline-flex shrink-0 items-center gap-2 whitespace-nowrap rounded-md border border-border bg-white px-3 py-2 text-sm font-medium hover:bg-menu-hover focus-visible:outline focus-visible:outline-2 focus-visible:outline-focus disabled:cursor-not-allowed disabled:text-muted"
+              disabled={
+                !canStartCollectionDuplicate({
+                  collectionId: selectedCollectionId,
+                  isDuplicating,
+                  isImporting,
+                })
+              }
+              title={
+                isImporting
+                  ? "이미지를 가져오는 동안에는 모음을 복제할 수 없습니다."
+                  : isDuplicating
+                    ? "모음을 독립적으로 복제하는 중입니다."
+                    : !selectedCollectionId
+                      ? "복제할 모음을 선택하세요."
+                      : "아이콘·편집 상태·내보내기 설정을 독립적인 새 모음으로 복사합니다."
+              }
               type="button"
               onClick={() => void handleDuplicateCollection()}
             >
               <Copy aria-hidden="true" />
-              선택 복제
+              모음 복제
             </button>
             <button
-              className="inline-flex items-center gap-2 rounded-md border border-border bg-white px-3 py-2 text-sm font-medium hover:bg-menu-hover focus-visible:outline focus-visible:outline-2 focus-visible:outline-focus"
+              className="inline-flex shrink-0 items-center gap-2 whitespace-nowrap rounded-md border border-border bg-white px-3 py-2 text-sm font-medium hover:bg-menu-hover focus-visible:outline focus-visible:outline-2 focus-visible:outline-focus"
               type="button"
               onClick={() => void handleCleanupLibrary()}
             >
@@ -438,6 +468,7 @@ export function HomeRoute() {
             <CollectionGrid
               collections={collections}
               isDeleteDisabled={isImporting}
+              isDuplicateDisabled={isImporting || isDuplicating}
               selectedCollectionId={selectedCollectionId}
               onOpenCollection={openCollection}
               onDuplicateCollection={(collectionId) => {

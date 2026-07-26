@@ -9,16 +9,19 @@ use serde::Serialize;
 use crate::db::repositories::export_profiles as export_profile_repository;
 use crate::db::repositories::optimization as optimization_repository;
 use crate::error::{AppError, AppResult};
+use crate::imaging::effects::{parse_effect_recipe_json, EffectRecipe};
 use crate::imaging::export_render::{
     render_icon_export, ExportCropRect, ExportRenderPiece, ExportRenderRequest,
 };
 use crate::imaging::geometry::piece_roles;
+use crate::imaging::motion::{parse_motion_recipe_json, MotionRecipe};
 use crate::imaging::text_overlay::{text_overlay_from_fields, TextOverlayRenderSpec};
+use crate::imaging::transform::ImageTransform;
 use crate::models::{
     ExportCollectionResultDto, ExportPlanItemDto, ExportProfileDto, ExportRequestPayload,
     ExportValidationIssueDto, ExportValidationResultDto,
 };
-use crate::optimization::cache::hash_text;
+use crate::optimization::cache::{hash_text, render_recipe_crop_hash};
 use crate::paths::AppPaths;
 
 pub fn validate_export_collection(
@@ -308,10 +311,13 @@ struct PlannedIcon {
     crop: ExportCropRect,
     cell_width: i64,
     cell_height: i64,
+    transform: ImageTransform,
     output_format: String,
     gif_loop_mode: String,
     gif_loop_count: Option<i64>,
     text_overlay: Option<TextOverlayRenderSpec>,
+    effects: EffectRecipe,
+    motion: MotionRecipe,
     pieces: Vec<PlannedPiece>,
 }
 
@@ -352,6 +358,9 @@ struct IconExportRecord {
     shape: String,
     cell_width_override: Option<i64>,
     cell_height_override: Option<i64>,
+    transform_quarter_turns: i64,
+    transform_flip_horizontal: bool,
+    transform_flip_vertical: bool,
     gif_loop_mode: String,
     gif_loop_count: Option<i64>,
     source_path: String,
@@ -378,6 +387,8 @@ struct IconExportRecord {
     text_overlay_color: String,
     text_overlay_stroke_color: String,
     text_overlay_stroke_width: f64,
+    effect_recipe_json: Option<String>,
+    motion_recipe_json: Option<String>,
 }
 
 #[derive(Debug)]
@@ -410,7 +421,6 @@ fn load_export_plan(
             .cell_height_override
             .unwrap_or(collection.default_cell_height)
             .max(1);
-        let output_format = output_format_for_icon(&profile.target_format, &icon.source_extension);
         let crop = ExportCropRect {
             x: icon.crop_x,
             y: icon.crop_y,
@@ -428,6 +438,20 @@ fn load_export_plan(
             Some(icon.text_overlay_stroke_color.clone()),
             Some(icon.text_overlay_stroke_width),
         )?;
+        let transform = ImageTransform::new(
+            icon.transform_quarter_turns,
+            icon.transform_flip_horizontal,
+            icon.transform_flip_vertical,
+        )?;
+        let effects =
+            parse_effect_recipe_json(icon.effect_recipe_json.as_deref().unwrap_or_default())?;
+        let motion =
+            parse_motion_recipe_json(icon.motion_recipe_json.as_deref().unwrap_or_default())?;
+        let output_format = output_format_for_icon(
+            &profile.target_format,
+            &icon.source_extension,
+            motion.has_enabled_motion(),
+        );
         let profile_hash = active_variant_profile_hash(
             &profile,
             &output_format,
@@ -439,16 +463,19 @@ fn load_export_plan(
 
         for piece in pieces {
             let piece_index = usize::try_from(piece.piece_index.max(0)).unwrap_or(0);
-            let crop_hash = active_variant_crop_hash(
+            let crop_hash = render_recipe_crop_hash(
                 &icon.shape,
                 &crop,
                 cell_width,
                 cell_height,
                 piece_index,
+                transform,
                 &icon.gif_loop_mode,
                 icon.gif_loop_count,
                 text_overlay.as_ref(),
-            );
+                &effects,
+                &motion,
+            )?;
             let active_variant = optimization_repository::find_active_variant(
                 connection,
                 &icon.id,
@@ -498,10 +525,13 @@ fn load_export_plan(
             crop,
             cell_width,
             cell_height,
+            transform,
             output_format,
             gif_loop_mode: icon.gif_loop_mode,
             gif_loop_count: icon.gif_loop_count,
             text_overlay,
+            effects,
+            motion,
             pieces: planned_pieces,
         });
     }
@@ -554,6 +584,9 @@ fn load_icons(connection: &Connection, collection_id: &str) -> AppResult<Vec<Ico
            i.shape,
            i.cell_width_override,
            i.cell_height_override,
+           i.transform_quarter_turns,
+           i.transform_flip_horizontal,
+           i.transform_flip_vertical,
            CASE WHEN i.gif_pingpong = 1 THEN 'pingpong' ELSE i.gif_loop_mode END AS gif_loop_mode,
            i.gif_loop_count,
            i.thumbnail_override_path,
@@ -579,10 +612,14 @@ fn load_icons(connection: &Connection, collection_id: &str) -> AppResult<Vec<Ico
            i.text_overlay_y,
            i.text_overlay_color,
            i.text_overlay_stroke_color,
-           i.text_overlay_stroke_width
+           i.text_overlay_stroke_width,
+           er.effects_json AS effect_recipe_json,
+           mr.motion_json AS motion_recipe_json
          FROM icons i
          JOIN source_files s ON s.id = i.source_file_id
          JOIN crop_settings cs ON cs.icon_id = i.id
+         LEFT JOIN icon_effect_recipes er ON er.icon_id = i.id
+         LEFT JOIN icon_motion_recipes mr ON mr.icon_id = i.id
          WHERE i.collection_id = ?1
            AND i.deleted_at IS NULL
            AND i.icon_kind = 'image'
@@ -598,6 +635,9 @@ fn load_icons(connection: &Connection, collection_id: &str) -> AppResult<Vec<Ico
                 shape: row.get("shape")?,
                 cell_width_override: row.get("cell_width_override")?,
                 cell_height_override: row.get("cell_height_override")?,
+                transform_quarter_turns: row.get("transform_quarter_turns")?,
+                transform_flip_horizontal: row.get::<_, i64>("transform_flip_horizontal")? != 0,
+                transform_flip_vertical: row.get::<_, i64>("transform_flip_vertical")? != 0,
                 gif_loop_mode: row.get("gif_loop_mode")?,
                 gif_loop_count: row.get("gif_loop_count")?,
                 thumbnail_override_path: row.get("thumbnail_override_path")?,
@@ -624,6 +664,8 @@ fn load_icons(connection: &Connection, collection_id: &str) -> AppResult<Vec<Ico
                 text_overlay_color: row.get("text_overlay_color")?,
                 text_overlay_stroke_color: row.get("text_overlay_stroke_color")?,
                 text_overlay_stroke_width: row.get("text_overlay_stroke_width")?,
+                effect_recipe_json: row.get("effect_recipe_json")?,
+                motion_recipe_json: row.get("motion_recipe_json")?,
             })
         })?
         .collect::<Result<Vec<_>, _>>()?;
@@ -777,15 +819,25 @@ fn validate_plan_before_render(plan: &ExportPlan) -> Vec<ExportValidationIssueDt
         }
 
         if !allowed_formats.contains(&icon.output_format) {
-            issues.push(non_blocking_error_issue(
-                "unsupported_format",
-                format!(
-                    "{} 형식은 현재 프로필에서 허용되지 않습니다.",
-                    icon.output_format
-                ),
-                Some(icon.icon_id.clone()),
-                None,
-            ));
+            let issue = if icon.motion.has_enabled_motion() {
+                error_issue(
+                    "motion_gif_not_allowed",
+                    "모션 효과가 켜진 아이콘은 GIF가 허용된 프로필에서만 내보낼 수 있습니다.",
+                    Some(icon.icon_id.clone()),
+                    None,
+                )
+            } else {
+                non_blocking_error_issue(
+                    "unsupported_format",
+                    format!(
+                        "{} 형식은 현재 프로필에서 허용되지 않습니다.",
+                        icon.output_format
+                    ),
+                    Some(icon.icon_id.clone()),
+                    None,
+                )
+            };
+            issues.push(issue);
         }
 
         if plan.profile.profile_type == "dcinside"
@@ -1046,6 +1098,7 @@ fn render_plan(plan: &ExportPlan, output_dir: &Path) -> RenderPlanResult {
             crop: icon.crop,
             cell_width: icon.cell_width,
             cell_height: icon.cell_height,
+            transform: icon.transform,
             output_format: &icon.output_format,
             resize_filter: &plan.resize_filter,
             gif_loop_mode: &icon.gif_loop_mode,
@@ -1053,6 +1106,8 @@ fn render_plan(plan: &ExportPlan, output_dir: &Path) -> RenderPlanResult {
             source_gif_loop_mode: &icon.source_gif_loop_mode,
             source_gif_loop_count: icon.source_gif_loop_count,
             text_overlay: icon.text_overlay.clone(),
+            effects: icon.effects.clone(),
+            motion: icon.motion.clone(),
             output_dir,
             pieces: &render_pieces,
         }) {
@@ -1172,6 +1227,7 @@ fn render_plan_selected(
             crop: icon.crop,
             cell_width: icon.cell_width,
             cell_height: icon.cell_height,
+            transform: icon.transform,
             output_format: &icon.output_format,
             resize_filter: &plan.resize_filter,
             gif_loop_mode: &icon.gif_loop_mode,
@@ -1179,6 +1235,8 @@ fn render_plan_selected(
             source_gif_loop_mode: &icon.source_gif_loop_mode,
             source_gif_loop_count: icon.source_gif_loop_count,
             text_overlay: icon.text_overlay.clone(),
+            effects: icon.effects.clone(),
+            motion: icon.motion.clone(),
             output_dir,
             pieces: &render_pieces,
         }) {
@@ -1962,9 +2020,13 @@ fn slugify(value: &str) -> String {
     }
 }
 
-fn output_format_for_icon(profile_format: &str, source_extension: &str) -> String {
+fn output_format_for_icon(
+    profile_format: &str,
+    source_extension: &str,
+    motion_enabled: bool,
+) -> String {
     let source_format = normalize_format(source_extension);
-    if source_format == "gif" {
+    if source_format == "gif" || motion_enabled {
         return "gif".to_string();
     }
 
@@ -1974,34 +2036,6 @@ fn output_format_for_icon(profile_format: &str, source_extension: &str) -> Strin
         "gif" => "gif".to_string(),
         _ => "png".to_string(),
     }
-}
-
-fn active_variant_crop_hash(
-    shape: &str,
-    crop: &ExportCropRect,
-    cell_width: i64,
-    cell_height: i64,
-    piece_index: usize,
-    gif_loop_mode: &str,
-    gif_loop_count: Option<i64>,
-    text_overlay: Option<&TextOverlayRenderSpec>,
-) -> String {
-    let mut parts = vec![
-        shape.to_string(),
-        format!("{:.3}", crop.x),
-        format!("{:.3}", crop.y),
-        format!("{:.3}", crop.width),
-        format!("{:.3}", crop.height),
-        cell_width.to_string(),
-        cell_height.to_string(),
-        piece_index.to_string(),
-        gif_loop_mode.to_string(),
-        gif_loop_count.unwrap_or_default().to_string(),
-    ];
-    if let Some(text_overlay) = text_overlay {
-        parts.extend(text_overlay.normalized_hash_parts());
-    }
-    hash_text(&parts)
 }
 
 fn active_variant_profile_hash(
@@ -2384,6 +2418,7 @@ mod tests {
     use crate::db::repositories::editor::apply_icon_crop;
     use crate::db::repositories::export_profiles::list_export_profiles;
     use crate::db::repositories::imports::import_image_files;
+    use crate::imaging::transform::ImageTransform;
     use crate::models::{ApplyIconCropPayload, ExportRequestPayload, ImportImageFilePayload};
     use crate::paths::AppPaths;
 
@@ -2436,10 +2471,13 @@ mod tests {
                 },
                 cell_width: 200,
                 cell_height: 200,
+                transform: ImageTransform::new(0, false, false).unwrap(),
                 output_format: "png".to_string(),
                 gif_loop_mode: "preserve".to_string(),
                 gif_loop_count: None,
                 text_overlay: None,
+                effects: crate::imaging::effects::EffectRecipe::default(),
+                motion: crate::imaging::motion::MotionRecipe::default(),
                 pieces: (0..count)
                     .map(|index| PlannedPiece {
                         piece_id: format!("piece-{index}"),
@@ -2520,6 +2558,10 @@ mod tests {
                 preset_position: "center".to_string(),
                 cell_width: 20,
                 cell_height: 20,
+                transform_quarter_turns: 0,
+                transform_flip_horizontal: false,
+                transform_flip_vertical: false,
+                piece_ids: Vec::new(),
                 gif_loop_mode: "preserve".to_string(),
                 gif_loop_count: None,
             },
@@ -2747,6 +2789,10 @@ mod tests {
                 preset_position: "center".to_string(),
                 cell_width: 8,
                 cell_height: 8,
+                transform_quarter_turns: 0,
+                transform_flip_horizontal: false,
+                transform_flip_vertical: false,
+                piece_ids: Vec::new(),
                 gif_loop_mode: "preserve".to_string(),
                 gif_loop_count: None,
             },
@@ -3144,6 +3190,103 @@ mod tests {
     }
 
     #[test]
+    fn final_export_uses_persisted_non_destructive_transform_recipe() {
+        let mut connection = connection();
+        let paths = temp_paths("pmtconcon-export-transform");
+        let collection =
+            create_collection(&mut connection, Some("변형 내보내기".to_string())).unwrap();
+        let source_bytes = asymmetric_png_bytes();
+        let imported = import_image_files(
+            &mut connection,
+            &paths,
+            &collection.id,
+            vec![ImportImageFilePayload {
+                original_filename: "asymmetric.png".to_string(),
+                bytes: source_bytes.clone(),
+            }],
+        )
+        .unwrap();
+        let icon = &imported.imported_icons[0];
+
+        apply_icon_crop(
+            &mut connection,
+            &paths,
+            &collection.id,
+            ApplyIconCropPayload {
+                icon_id: icon.id.clone(),
+                shape: "single".to_string(),
+                crop_mode: "fixed".to_string(),
+                crop_x: 0.0,
+                crop_y: 0.0,
+                crop_w: 3.0,
+                crop_h: 2.0,
+                preset_position: "center".to_string(),
+                cell_width: 2,
+                cell_height: 3,
+                transform_quarter_turns: 1,
+                transform_flip_horizontal: false,
+                transform_flip_vertical: false,
+                piece_ids: vec![icon.pieces[0].id.clone()],
+                gif_loop_mode: "preserve".to_string(),
+                gif_loop_count: None,
+            },
+        )
+        .unwrap();
+
+        let profile_id = custom_profile_id(&connection, &collection.id);
+        let result = export_collection(
+            &mut connection,
+            &paths,
+            &collection.id,
+            &ExportRequestPayload {
+                profile_id,
+                target_format: "png".to_string(),
+                target_cell_width: 2,
+                target_cell_height: 3,
+                max_bytes: 10_000_000,
+                filename_mode: "sequence".to_string(),
+                include_alt_txt: false,
+                strict_warnings: false,
+                output_directory: Some(
+                    paths
+                        .root
+                        .join("transformed-export")
+                        .to_string_lossy()
+                        .to_string(),
+                ),
+                open_folder_after_export: false,
+                open_alt_txt_after_export: false,
+                excluded_piece_ids: Vec::new(),
+                resize_filter: "nearest".to_string(),
+            },
+        )
+        .unwrap();
+
+        assert!(result.validation.can_export);
+        let output_path = Path::new(result.export_directory.as_ref().unwrap())
+            .join("files")
+            .join("001.png");
+        let output = image::open(output_path).unwrap().to_rgba8();
+        assert_eq!((output.width(), output.height()), (2, 3));
+        let values = output.pixels().map(|pixel| pixel.0[0]).collect::<Vec<_>>();
+        assert_eq!(values, vec![3, 0, 4, 1, 5, 2]);
+
+        let original_path: String = connection
+            .query_row(
+                "SELECT s.original_path_in_library
+                 FROM source_files s
+                 JOIN icons i ON i.source_file_id = s.id
+                 WHERE i.id = ?1",
+                [&icon.id],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert_eq!(std::fs::read(original_path).unwrap(), source_bytes);
+
+        std::fs::remove_dir_all(paths.root).unwrap();
+    }
+
+    #[test]
     fn copy_dir_recursive_copies_nested_export_tree() {
         let paths = temp_paths("pmtconcon-export-copy-dir");
         let source = paths.root.join("source");
@@ -3191,6 +3334,15 @@ mod tests {
 
     fn png_bytes(width: u32, height: u32) -> Vec<u8> {
         png_bytes_with_color(width, height, Rgba([0, 255, 0, 255]))
+    }
+
+    fn asymmetric_png_bytes() -> Vec<u8> {
+        let image = ImageBuffer::from_fn(3, 2, |x, y| Rgba([(y * 3 + x) as u8, 0, 0, 255]));
+        let mut cursor = Cursor::new(Vec::new());
+        DynamicImage::ImageRgba8(image)
+            .write_to(&mut cursor, ImageFormat::Png)
+            .unwrap();
+        cursor.into_inner()
     }
 
     fn png_bytes_with_color(width: u32, height: u32, color: Rgba<u8>) -> Vec<u8> {

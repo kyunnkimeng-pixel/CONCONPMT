@@ -79,6 +79,47 @@ export interface ImportSheetCellsResult {
   importedCount: number;
 }
 
+export type FrameSheetGifDirection = "forward" | "reverse" | "pingpong";
+export type FrameSheetGifLoopMode = "once" | "infinite" | "count";
+
+export interface FrameSheetGifFrameInput {
+  sourceCellIndex: number;
+  durationMs: number;
+}
+
+export interface FrameSheetGifRequest {
+  targetCollectionId: string;
+  gridSettings: SheetGridSettings;
+  frames: FrameSheetGifFrameInput[];
+  direction: FrameSheetGifDirection;
+  loopMode: FrameSheetGifLoopMode;
+  loopCount: number | null;
+  displayName: string;
+  expectedRenderHash: string | null;
+}
+
+export interface FrameSheetGifMeasurement {
+  previewPath: string;
+  renderHash: string;
+  byteSize: number;
+  maxBytes: number;
+  passesByteLimit: boolean;
+  sourceFrameCount: number;
+  generatedFrameCount: number;
+  durationMs: number;
+  width: number;
+  height: number;
+  normalizedFrameDurationsMs: number[];
+  warnings: string[];
+}
+
+export interface FrameSheetGifCreateResult {
+  icon: IconSummary;
+  measurement: FrameSheetGifMeasurement;
+  preservedSheetPath: string;
+  recipeId: string;
+}
+
 export interface ManualSlice {
   sliceId: string;
   name: string;

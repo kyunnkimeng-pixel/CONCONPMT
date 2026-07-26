@@ -8,6 +8,7 @@ import type { CollectionSummary } from "@/features/collections/types";
 interface CollectionGridProps {
   collections: CollectionSummary[];
   isDeleteDisabled?: boolean;
+  isDuplicateDisabled?: boolean;
   selectedCollectionId: string | null;
   onOpenCollection: (collectionId: string) => void;
   onDuplicateCollection: (collectionId: string) => void;
@@ -19,6 +20,7 @@ interface CollectionGridProps {
 export function CollectionGrid({
   collections,
   isDeleteDisabled = false,
+  isDuplicateDisabled = false,
   selectedCollectionId,
   onOpenCollection,
   onDuplicateCollection,
@@ -79,6 +81,7 @@ export function CollectionGrid({
             setContextMenu(null);
           }}
           isDeleteDisabled={isDeleteDisabled}
+          isDuplicateDisabled={isDuplicateDisabled}
         />
       ) : null}
     </>
@@ -93,6 +96,7 @@ function CollectionContextMenu({
   onDelete,
   onDuplicate,
   isDeleteDisabled,
+  isDuplicateDisabled,
 }: {
   collectionName: string;
   x: number;
@@ -101,6 +105,7 @@ function CollectionContextMenu({
   onDelete: () => void;
   onDuplicate: () => void;
   isDeleteDisabled: boolean;
+  isDuplicateDisabled: boolean;
 }) {
   const menuRef = useRef<HTMLDivElement>(null);
   const [position, setPosition] = useState({ left: x, top: y, measured: false });
@@ -158,14 +163,20 @@ function CollectionContextMenu({
       }}
     >
       <button
-        className="flex w-full items-center gap-2 rounded px-3 py-2 text-left text-sm hover:bg-menu-hover focus-visible:outline focus-visible:outline-2 focus-visible:outline-focus"
+        className="flex w-full items-center gap-2 rounded px-3 py-2 text-left text-sm hover:bg-menu-hover focus-visible:outline focus-visible:outline-2 focus-visible:outline-focus disabled:cursor-not-allowed disabled:text-muted"
         data-testid="collection-context-duplicate"
+        disabled={isDuplicateDisabled}
         role="menuitem"
+        title={
+          isDuplicateDisabled
+            ? "이미지를 가져오거나 모음을 복제하는 동안에는 다시 복제할 수 없습니다."
+            : "아이콘·편집 상태·내보내기 설정을 독립적인 새 모음으로 복사합니다."
+        }
         type="button"
         onClick={onDuplicate}
       >
         <Copy aria-hidden="true" className="size-4" />
-        모음 복제하기
+        모음 복제
       </button>
       <button
         className="flex w-full items-center gap-2 rounded px-3 py-2 text-left text-sm text-danger hover:bg-menu-hover focus-visible:outline focus-visible:outline-2 focus-visible:outline-focus disabled:cursor-not-allowed disabled:text-muted"

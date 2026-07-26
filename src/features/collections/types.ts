@@ -44,6 +44,9 @@ export interface IconSummary {
   thumbnailUrl: string | null;
   thumbnailOverrideUrl: string | null;
   currentPreviewUrl: string | null;
+  transformQuarterTurns: 0 | 1 | 2 | 3;
+  transformFlipHorizontal: boolean;
+  transformFlipVertical: boolean;
   gifLoopMode: "preserve" | "infinite" | "once" | "count" | "pingpong";
   gifLoopCount: number | null;
   createdAt: string;

@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useRef, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { Grid3X3, X } from "lucide-react";
 
 import type { CollectionSummary } from "@/features/collections/types";
@@ -40,6 +40,8 @@ export function SheetImportWizard({
   onImported: () => Promise<void>;
 }) {
   const dialogRef = useRef<HTMLDivElement>(null);
+  const previewRequestIdRef = useRef(0);
+  const autoDetectRequestIdRef = useRef(0);
   useModalFocus(dialogRef, onClose);
   const [step, setStep] = useState<Step>("source");
   const [file, setFile] = useState<File | null>(null);
@@ -63,16 +65,32 @@ export function SheetImportWizard({
     [analysis, selectedIndexes],
   );
 
+  const changeGridSettings = useCallback((nextSettings: SheetGridSettings) => {
+    previewRequestIdRef.current += 1;
+    setIsRunning(false);
+    setSettings(nextSettings);
+    setAnalysis(null);
+    setSelectedIndexes(new Set());
+    setStep((current) => (current === "review" ? "grid" : current));
+    setMessage("분할 설정이 변경되었습니다. 미리보기를 갱신하세요.");
+    setErrorMessage(null);
+  }, []);
+
   const runPreview = async (overrideSettings?: SheetGridSettings) => {
     if (!file) {
       return;
     }
+    const requestId = previewRequestIdRef.current + 1;
+    previewRequestIdRef.current = requestId;
     const previewSettings = overrideSettings ?? settings;
     setIsRunning(true);
     setErrorMessage(null);
     setMessage(null);
     try {
       const nextAnalysis = await analyzeSheetGrid(file, previewSettings);
+      if (previewRequestIdRef.current !== requestId) {
+        return;
+      }
       if (overrideSettings) {
         setSettings(overrideSettings);
       }
@@ -86,9 +104,13 @@ export function SheetImportWizard({
       );
       setStep("grid");
     } catch (error) {
-      setErrorMessage(getCommandErrorMessage(error));
+      if (previewRequestIdRef.current === requestId) {
+        setErrorMessage(getCommandErrorMessage(error));
+      }
     } finally {
-      setIsRunning(false);
+      if (previewRequestIdRef.current === requestId) {
+        setIsRunning(false);
+      }
     }
   };
 
@@ -96,22 +118,54 @@ export function SheetImportWizard({
     if (!file) {
       return;
     }
+    const requestId = autoDetectRequestIdRef.current + 1;
+    autoDetectRequestIdRef.current = requestId;
     setIsRunning(true);
     setErrorMessage(null);
     setMessage(null);
     try {
       const result = await autoDetectSheetGrid(file);
+      if (autoDetectRequestIdRef.current !== requestId) {
+        return;
+      }
       setAutoDetectResult(result);
       setStep("auto");
     } catch (error) {
-      setErrorMessage(getCommandErrorMessage(error));
+      if (autoDetectRequestIdRef.current === requestId) {
+        setErrorMessage(getCommandErrorMessage(error));
+      }
     } finally {
-      setIsRunning(false);
+      if (autoDetectRequestIdRef.current === requestId) {
+        setIsRunning(false);
+      }
     }
   };
 
   const applyAutoDetectProposal = (proposal: AutoDetectSheetGridProposal) => {
     void runPreview(proposal.gridSettings);
+  };
+
+  const changeSourceFile = (nextFile: File | null) => {
+    previewRequestIdRef.current += 1;
+    autoDetectRequestIdRef.current += 1;
+    setIsRunning(false);
+    setFile(nextFile);
+    setAnalysis(null);
+    setAutoDetectResult(null);
+    setSelectedIndexes(new Set());
+    setMessage(null);
+    setErrorMessage(null);
+  };
+
+  const resetGridSettings = () => {
+    previewRequestIdRef.current += 1;
+    setIsRunning(false);
+    setSettings(defaultSheetGridSettings());
+    setAnalysis(null);
+    setSelectedIndexes(new Set());
+    setStep("grid");
+    setMessage("분할 설정을 앱 초기값으로 되돌렸습니다. 미리보기를 갱신하세요.");
+    setErrorMessage(null);
   };
 
   const runImport = async () => {
@@ -173,8 +227,14 @@ export function SheetImportWizard({
 
         <div className="flex min-h-0 flex-1 flex-col overflow-hidden lg:flex-row">
           <main className="flex min-w-0 flex-1 flex-col gap-4 overflow-auto p-5">
-            <StepTabs step={step} onStepChange={setStep} />
+            <StepTabs
+              isBusy={isRunning}
+              reviewAvailable={Boolean(analysis) && !isRunning}
+              step={step}
+              onStepChange={setStep}
+            />
             <SheetGridPresetSelect
+              disabled={isRunning}
               collectionId={collection.id}
               compatibleKinds={["static_import", "static_import_export", "static_export"]}
               currentSummary={`${settings.cellWidth ?? 200}x${settings.cellHeight ?? 200} · ${
@@ -188,12 +248,12 @@ export function SheetImportWizard({
                 presetInputFromImportSettings(name, collection.id, settings)
               }
               onApplyPreset={(preset) =>
-                setSettings((current) => applyPresetToImportSettings(current, preset))
+                changeGridSettings(applyPresetToImportSettings(settings, preset))
               }
             />
             {step === "source" ? (
               <div className="grid gap-4 lg:grid-cols-[1fr_320px]">
-                <SheetImagePicker file={file} onFileChange={setFile} />
+                <SheetImagePicker file={file} onFileChange={changeSourceFile} />
                 <div className="rounded-md border border-border bg-white p-4 text-sm text-muted">
                   {file ? (
                     <div className="flex flex-col gap-2">
@@ -211,23 +271,26 @@ export function SheetImportWizard({
             {step === "mode" ? (
               <div className="grid gap-3 md:grid-cols-2 xl:grid-cols-3">
                 <ModeButton
+                  disabled={isRunning}
                   label="Grid로 자르기"
                   selected={settings.mode === "rows_columns"}
                   onClick={() => {
-                    setSettingsForMode("rows_columns", settings, setSettings);
+                    setSettingsForMode("rows_columns", settings, changeGridSettings);
                     setStep("grid");
                   }}
                 />
                 <ModeButton
+                  disabled={isRunning}
                   label="셀 크기로 자르기"
                   selected={settings.mode === "cell_size"}
                   onClick={() => {
-                    setSettingsForMode("cell_size", settings, setSettings);
+                    setSettingsForMode("cell_size", settings, changeGridSettings);
                     setStep("grid");
                   }}
                 />
                 <button
-                  className="rounded-md border border-border bg-white p-4 text-left hover:bg-menu-hover"
+                  className="rounded-md border border-border bg-white p-4 text-left hover:bg-menu-hover disabled:cursor-not-allowed disabled:text-muted"
+                  disabled={isRunning}
                   type="button"
                   onClick={() => setStep("manifest")}
                 >
@@ -236,7 +299,7 @@ export function SheetImportWizard({
                 </button>
                 <button
                   className="rounded-md border border-border bg-white p-4 text-left hover:bg-menu-hover disabled:cursor-not-allowed disabled:text-muted"
-                  disabled={!file}
+                  disabled={!file || isRunning}
                   type="button"
                   onClick={() => setStep("manual")}
                 >
@@ -344,7 +407,11 @@ export function SheetImportWizard({
                 {analysis.warnings.join(" / ")}
               </div>
             ) : null}
-            {message ? <p className="text-sm text-muted">{message}</p> : null}
+            {message ? (
+              <p className="text-sm text-muted" role="status">
+                {message}
+              </p>
+            ) : null}
             {errorMessage ? (
               <p className="text-sm text-danger" role="alert">
                 {errorMessage}
@@ -354,10 +421,11 @@ export function SheetImportWizard({
 
           {(step === "mode" || step === "grid" || step === "review") && file ? (
             <SheetGridSettingsPanel
+              disabled={isRunning}
               settings={settings}
-              onChange={setSettings}
+              onChange={changeGridSettings}
               onPreview={() => void runPreview()}
-              onReset={() => setSettings(defaultSheetGridSettings())}
+              onReset={resetGridSettings}
             />
           ) : null}
         </div>
@@ -381,9 +449,10 @@ export function SheetImportWizard({
               </button>
             ) : null}
             {step === "grid" ? (
-              <button className="rounded-md bg-accent px-3 py-2 text-sm font-semibold text-accent-foreground hover:bg-accent-strong" type="button" onClick={() => setStep("review")}>
-                셀 검토
-              </button>
+              <SheetReviewButton
+                hasAnalysis={Boolean(analysis) && !isRunning}
+                onReview={() => setStep("review")}
+              />
             ) : null}
             {step === "review" ? (
               <button className="rounded-md bg-accent px-3 py-2 text-sm font-semibold text-accent-foreground hover:bg-accent-strong disabled:opacity-60" disabled={selectedImportableCount === 0 || isRunning} type="button" onClick={() => void runImport()}>
@@ -397,7 +466,37 @@ export function SheetImportWizard({
   );
 }
 
-function StepTabs({ step, onStepChange }: { step: Step; onStepChange: (step: Step) => void }) {
+export function SheetReviewButton({
+  hasAnalysis,
+  onReview,
+}: {
+  hasAnalysis: boolean;
+  onReview: () => void;
+}) {
+  return (
+    <button
+      className="rounded-md bg-accent px-3 py-2 text-sm font-semibold text-accent-foreground hover:bg-accent-strong disabled:cursor-not-allowed disabled:opacity-60"
+      disabled={!hasAnalysis}
+      title={!hasAnalysis ? "분할 미리보기를 먼저 갱신하세요." : undefined}
+      type="button"
+      onClick={onReview}
+    >
+      셀 검토
+    </button>
+  );
+}
+
+function StepTabs({
+  isBusy,
+  reviewAvailable,
+  step,
+  onStepChange,
+}: {
+  isBusy: boolean;
+  reviewAvailable: boolean;
+  step: Step;
+  onStepChange: (step: Step) => void;
+}) {
   const tabs: Array<{ id: Step; label: string }> = [
     { id: "source", label: "1. 파일" },
     { id: "mode", label: "2. 방식" },
@@ -410,29 +509,41 @@ function StepTabs({ step, onStepChange }: { step: Step; onStepChange: (step: Ste
   return (
     <div className="-mx-1 overflow-x-auto pb-1" data-testid="sheet-step-tabs-scroll">
       <div className="flex w-max min-w-full gap-1 px-1">
-        {tabs.map((tab) => (
-          <button
-            key={tab.id}
-            className={cn(
-              "flex-none whitespace-nowrap rounded-md px-3 py-2 text-sm font-medium hover:bg-menu-hover",
-              step === tab.id ? "bg-selected text-foreground" : "text-muted",
-            )}
-            type="button"
-            onClick={() => onStepChange(tab.id)}
-          >
-            {tab.label}
-          </button>
-        ))}
+        {tabs.map((tab) => {
+          const isDisabled =
+            (isBusy && tab.id !== step) || (tab.id === "review" && !reviewAvailable);
+          return (
+            <button
+              key={tab.id}
+              className={cn(
+                "flex-none whitespace-nowrap rounded-md px-3 py-2 text-sm font-medium hover:bg-menu-hover disabled:cursor-not-allowed disabled:text-muted",
+                step === tab.id ? "bg-selected text-foreground" : "text-muted",
+              )}
+              disabled={isDisabled}
+              title={
+                tab.id === "review" && !reviewAvailable
+                  ? "분할 미리보기를 먼저 갱신하세요."
+                  : undefined
+              }
+              type="button"
+              onClick={() => onStepChange(tab.id)}
+            >
+              {tab.label}
+            </button>
+          );
+        })}
       </div>
     </div>
   );
 }
 
 function ModeButton({
+  disabled = false,
   label,
   selected,
   onClick,
 }: {
+  disabled?: boolean;
   label: string;
   selected: boolean;
   onClick: () => void;
@@ -440,9 +551,10 @@ function ModeButton({
   return (
     <button
       className={cn(
-        "rounded-md border border-border bg-white p-4 text-left hover:bg-menu-hover",
+        "rounded-md border border-border bg-white p-4 text-left hover:bg-menu-hover disabled:cursor-not-allowed disabled:text-muted",
         selected ? "outline outline-2 outline-focus" : "",
       )}
+      disabled={disabled}
       type="button"
       onClick={onClick}
     >

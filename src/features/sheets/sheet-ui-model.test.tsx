@@ -5,6 +5,9 @@ import { SheetImagePicker } from "@/features/sheets/components/SheetImagePicker"
 import { SheetExportPreview } from "@/features/sheets/components/SheetExportPreview";
 import { SheetExportDialog } from "@/features/sheets/components/SheetExportDialog";
 import { SheetAutoDetectPanel } from "@/features/sheets/components/SheetAutoDetectPanel";
+import { FrameSheetToGifDialog } from "@/features/sheets/components/FrameSheetToGifDialog";
+import { SheetGridSettingsPanel } from "@/features/sheets/components/SheetGridSettingsPanel";
+import { SheetReviewButton } from "@/features/sheets/components/SheetImportWizard";
 import { ManualSliceCanvas } from "@/features/sheets/components/ManualSliceCanvas";
 import { SheetReimportDialog } from "@/features/sheets/components/SheetReimportDialog";
 import {
@@ -69,6 +72,33 @@ describe("sheet-ui-model", () => {
     expect(defaultSheetGridSettings().emptyCellThreshold).toBe(0.98);
   });
 
+  it("names the grid reset action after the settings it affects", () => {
+    const html = renderToString(
+      <SheetGridSettingsPanel
+        settings={defaultSheetGridSettings()}
+        onChange={() => {}}
+        onPreview={() => {}}
+        onReset={() => {}}
+      />,
+    );
+
+    expect(html).toContain("분할 설정 초기값");
+    expect(html).not.toContain(">Reset<");
+  });
+
+  it("keeps cell review disabled until a fresh grid analysis exists", () => {
+    const unavailable = renderToString(
+      <SheetReviewButton hasAnalysis={false} onReview={() => {}} />,
+    );
+    const available = renderToString(
+      <SheetReviewButton hasAnalysis onReview={() => {}} />,
+    );
+
+    expect(unavailable).toContain('disabled=""');
+    expect(unavailable).toContain("분할 미리보기를 먼저 갱신하세요.");
+    expect(available).not.toContain('disabled=""');
+  });
+
   it("warns when a JPG sheet cannot preserve alpha", () => {
     const html = renderToString(
       <SheetImagePicker
@@ -80,6 +110,23 @@ describe("sheet-ui-model", () => {
     expect(html).toContain("JPG/JPEG");
     expect(html).toContain("alpha");
     expect(html).toContain("드래그");
+  });
+
+  it("renders the complete frame-sheet-to-GIF workflow without a dead action", () => {
+    const html = renderToString(
+      <FrameSheetToGifDialog
+        collection={collection()}
+        onClose={() => {}}
+        onCreated={async () => {}}
+      />,
+    );
+
+    expect(html).toContain("프레임 시트로 새 GIF 만들기");
+    expect(html).toContain("프레임 스트립");
+    expect(html).toContain("GIF 미리 생성 및 용량 측정");
+    expect(html).toContain("새 GIF 아이콘 만들기");
+    expect(html).toContain("핑퐁");
+    expect(html).toContain("FPS");
   });
 
   it("renders drag-drop guidance for manifest reimport", () => {
@@ -264,6 +311,9 @@ function iconWithPreview(currentPreviewUrl: string): IconSummary {
     currentPreviewUrl,
     gifLoopMode: "preserve",
     gifLoopCount: null,
+    transformQuarterTurns: 0,
+    transformFlipHorizontal: false,
+    transformFlipVertical: false,
     createdAt: "now",
     updatedAt: "now",
     pieces: [],

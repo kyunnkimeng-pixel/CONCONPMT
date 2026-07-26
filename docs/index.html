@@ -459,6 +459,7 @@
               <span class="tag">가로 2칸</span>
               <span class="tag">작업 시트</span>
               <span class="tag">GIF 프레임 시트</span>
+              <span class="tag">모션 효과</span>
               <span class="tag">내보내기 검증</span>
             </div>
             <div class="hero-actions">
@@ -485,7 +486,7 @@
             <a href="#placeholder">3. 빈 디시콘과 작업중 상태</a>
             <a href="#edit">4. 단일콘 crop 편집</a>
             <a href="#horizontal">5. 가로 2칸 디시콘</a>
-            <a href="#advanced">6. GIF와 텍스트 고급 편집</a>
+            <a href="#advanced">6. 정적 효과·모션·GIF·텍스트 고급 편집</a>
             <a href="#preview">7. 사용 미리보기</a>
             <a href="#export">8. 내보내기 작업공간</a>
             <a href="#sheets">9. 스프라이트 시트 / 작업 시트</a>
@@ -638,6 +639,14 @@
               <strong>고정 모드</strong>
               <p>선택한 셀 크기에 맞춰 crop 박스 크기를 고정하고, 위치만 움직입니다. 정렬 버튼으로 모서리와 중앙에 빠르게 배치할 수 있습니다.</p>
             </div>
+            <div class="panel">
+              <strong>회전·반전</strong>
+              <p>좌우 반전, 상하 반전, 왼쪽 90°, 오른쪽 90°를 현재 결과에 이어서 적용합니다. GIF는 모든 frame이 함께 변형됩니다.</p>
+            </div>
+            <div class="panel">
+              <strong>비정사각·2칸 아이콘</strong>
+              <p>90° 회전하면 셀 너비와 높이가 교환되고 가로 2칸과 세로 2칸도 함께 전환됩니다. alt는 화면에서 이동한 조각 내용을 따라갑니다.</p>
+            </div>
           </div>
 
           <ol class="steps">
@@ -645,7 +654,8 @@
             <li>모양에서 <strong>단일</strong>을 선택합니다.</li>
             <li>셀 크기 입력칸에서 너비와 높이를 조정합니다. 기본값은 DCInside 기준 200×200입니다.</li>
             <li>crop 박스를 움직이거나 크기 조절 핸들을 드래그합니다.</li>
-            <li><strong>적용</strong>을 누르면 preview와 export 후보가 갱신됩니다.</li>
+            <li>필요하면 변형에서 회전·반전을 누르고 출력 미리보기를 확인합니다.</li>
+            <li><strong>적용</strong>을 누르면 crop·변형 metadata, preview와 export 후보가 함께 갱신됩니다. 원본 파일은 바뀌지 않습니다.</li>
           </ol>
         </section>
 
@@ -682,9 +692,10 @@
         </section>
 
         <section id="advanced" class="section">
-          <h2>6. GIF와 텍스트 고급 편집</h2>
+          <h2>6. 정적 효과·모션·GIF·텍스트 고급 편집</h2>
           <p>
-            고급 편집에서는 GIF 재생 FPS, 색상 수, 실제 export 후보 생성, 텍스트 추가, 글자색과 외곽선, 폰트 파일을 다룹니다.
+            고급 편집은 <strong>정적 효과</strong>, <strong>모션</strong>, <strong>텍스트·용량</strong> 탭으로 나뉩니다.
+            픽셀 효과와 움직임, GIF 재생·용량 후보, 텍스트와 폰트 설정을 같은 아이콘의 비파괴 recipe로 관리합니다.
             GIF는 preview와 export에서 애니메이션을 유지해야 하므로, 반복 방식과 frame 처리 결과를 확인하는 것이 중요합니다.
           </p>
           <figure class="shot">
@@ -693,7 +704,7 @@
               alt="디시콘 모음 3의 고급 편집 화면. GIF 재생 FPS, 최대 색상 수, 텍스트 추가, 글자색과 외곽선 설정이 보인다."
             />
             <figcaption>
-              고급 편집은 용량 추정, GIF 옵션, 텍스트 오버레이를 한 화면에서 확인하는 작업 패널입니다.
+              이 화면의 GIF·텍스트 설정은 현재 <strong>텍스트·용량</strong> 탭에서 사용하고, 정적 효과와 모션은 나란한 전용 탭에서 편집합니다.
             </figcaption>
           </figure>
 
@@ -710,6 +721,31 @@
               <strong>텍스트 추가</strong>
               <p>문구, 크기, 위치, 글자색, 외곽선색, 외곽선 두께를 조정해 이미지 위에 자막을 얹습니다.</p>
             </div>
+          </div>
+
+          <div class="callout">
+            <strong>사용 가능 — 정적 내장 효과:</strong>
+            픽셀화, 색상 조정, 흑백/세피아, 블러, 선명화, 윤곽선, 그림자를
+            고급 편집에서 비파괴 순서형 recipe로 추가·정렬·저장할 수 있습니다. 효과는 crop과 변형 뒤의
+            결합 이미지에 적용한 다음 2칸 조각을 나누며, GIF에서는 모든 frame에 동일하게 적용됩니다.
+            현재 셀의 native preview는 효과 합성을 정확히 보여 주지만 최종 export의 형식·resize filter·
+            용량 최적화에 따라 색과 파일 크기는 달라질 수 있습니다. 저장 충돌이 나면 최신 저장값을
+            다시 불러온 뒤 적용해 주세요.
+          </div>
+
+          <div class="callout">
+            <strong>사용 가능 — 16가지 모션 프리셋:</strong>
+            고급 편집의 <strong>모션</strong> 탭에서 공간 변형, 일렁임·변위, 색상·불투명도,
+            오버레이를 범주별 최대 하나씩 선택합니다. 흔들기·통통 튀기·두근/호흡·회전,
+            사인파 물결·젤리 일렁임·방사형 리플·글리치 밴드, 색조 순환·지정색/밝기 박동·번쩍임,
+            집중선·반짝이·확산 링을 `공간 → 일렁임 → 색상 → 장식` 순서로 합성합니다.
+            정적 효과에 저장 전 변경이 있으면 먼저 저장하거나 되돌린 뒤
+            <strong>GIF 미리보기·용량 측정</strong>을 실행하고, frame 수·총 시간·반복·잘림·전체 및
+            조각별 실제 인코딩 용량을 확인한 다음 <strong>모션 저장</strong>을 누릅니다. 정적 원본은
+            모션을 켜면 GIF로 처리되고, 기존 GIF는 실제 누적 frame timestamp를 기준으로 움직입니다.
+            재생/일시정지와 시스템 동작 줄이기를 지원합니다. 표시 용량은 현재 편집 미리보기 기준이며,
+            최종 용량은 선택한 내보내기 프로필과 최적화를 적용한 뒤 다시 검증됩니다. displacement map,
+            자유 liquify, shader와 실행형 plugin은 포함하지 않습니다.
           </div>
         </section>
 
@@ -807,15 +843,16 @@
         <section id="sheets" class="section">
           <h2>9. 스프라이트 시트 / 작업 시트</h2>
           <p>
-            <strong>시트 가져오기</strong>는 큰 PNG/JPG 시트를 고정 격자로 잘라 새 아이콘으로 가져오는 도구입니다.
-            <strong>작업 시트로 내보내기</strong>는 여러 아이콘을 같은 크기의 셀에 배치한 PNG와 manifest JSON으로 내보내 외부 편집 후 다시 가져오는 워크플로우입니다.
+            <strong>시트에서 가져오기</strong>는 큰 PNG/JPG 시트를 고정 격자로 잘라 새 아이콘으로 가져오는 도구입니다.
+            <strong>시트로 내보내기</strong>는 여러 아이콘을 같은 크기의 셀에 배치한 PNG와 manifest JSON으로 내보내 외부 편집 후 다시 가져오는 워크플로우입니다.
             clean sheet에는 라벨과 격자가 없고, guide sheet는 사람 확인용 안내선과 이름을 포함합니다.
+            GIF 또는 모션 적용 아이콘은 정적 작업 시트에 0ms 포스터 프레임 한 장만 들어가며, 내보낼 때 애니메이션 손실 경고가 표시됩니다.
           </p>
 
           <figure class="shot">
             <img
               src="manual-assets/manual-12-sheet-import-grid-overlay.png"
-              alt="시트 가져오기 화면에서 간격과 여백이 있는 PNG 시트 위에 격자 오버레이가 정렬된 모습."
+              alt="시트에서 가져오기 화면에서 간격과 여백이 있는 PNG 시트 위에 격자 오버레이가 정렬된 모습."
             />
             <figcaption>
               행/열 또는 셀 크기 기준으로 자를 수 있고, 여백과 간격을 숫자로 조정하면 격자 오버레이가 다시 계산됩니다.
@@ -826,7 +863,7 @@
           <figure class="shot">
             <img
               src="manual-assets/manual-13-sheet-cell-review.png"
-              alt="시트 가져오기 셀 검토 화면. 각 셀 썸네일과 포함 여부를 확인한다."
+              alt="시트에서 가져오기 셀 검토 화면. 각 셀 썸네일과 포함 여부를 확인한다."
             />
             <figcaption>
               가져오기 전에 셀 번호, 썸네일, 포함 여부, 빈 셀 후보 상태를 검토합니다. 선택한 셀만 새 아이콘으로 생성되고 원본 시트 파일은 보존됩니다.
@@ -857,11 +894,25 @@
           <div class="callout">
             <strong>왕복 편집 규칙:</strong> clean sheet는 PNG 알파를 보존하고 라벨, 격자, trim, rotate, packing을 넣지 않습니다.
             guide sheet는 참고용이며, 재가져오기는 manifest와 clean sheet 파일을 기준으로 진행합니다.
+            manifest의 <code>render_recipe_hash</code>에는 crop·변형·텍스트·정적 효과·모션이 포함됩니다.
+            시트를 내보낸 뒤 recipe가 바뀌면 가공본 적용·교체 모드에서 해당 셀을 건너뛰고 결과에 보고합니다.
+            원본 아이콘은 바뀌지 않으며, 애니메이션 전체를 수정하려면 정적 작업 시트가 아니라 GIF 프레임 작업 시트를 사용하세요.
           </div>
         </section>
 
         <section id="gif-sheets" class="section">
-          <h2>10. GIF 프레임 작업 시트</h2>
+          <h2>10. GIF 만들기와 프레임 작업 시트</h2>
+          <p>
+            모음 도구의 <strong>시트로 GIF 만들기</strong>에서는 매니페스트가 없는 PNG/JPG 프레임 시트를
+            기존 시트 가져오기와 같은 grid, gap, border, 읽기 순서로 나눕니다. 셀을 검토한 뒤 한 줄
+            프레임 스트립에서 Ctrl/Shift 선택, 드래그·키보드 정렬, 복제·삭제, 프레임별 시간과 FPS 편의 입력,
+            정방향·역방향·핑퐁, 반복을 편집할 수 있습니다.
+          </p>
+          <div class="callout">
+            <strong>생성 전 확인:</strong> 동작 미리보기와 총 시간을 즉시 확인하고, 실제 GIF를 먼저 인코딩해
+            모음의 파일 크기 제한과 비교합니다. 설정이 바뀌면 측정값이 만료되며, 원본 시트와 생성 recipe는
+            보존되고 결과는 새 애니메이션 아이콘으로 등록됩니다.
+          </div>
           <p>
             GIF 아이콘을 우클릭하면 <strong>GIF 프레임 작업시트로 내보내기</strong>와
             <strong>GIF 프레임 작업시트로 교체하기</strong>를 사용할 수 있습니다. 내보내기는 모든 프레임을 PNG frame sheet로 펼치고,
@@ -890,14 +941,19 @@
               </thead>
               <tbody>
                 <tr>
+                  <td>정적 프레임 시트로 새 GIF 만들기</td>
+                  <td>실측된 animated source와 새 아이콘, 원본 시트 provenance 생성</td>
+                  <td>GIF의 1비트 alpha·256색 한계와 모음 byte 제한을 경고합니다.</td>
+                </tr>
+                <tr>
                   <td>정적 작업 시트에 GIF 포함</td>
-                  <td>첫 프레임만 contact sheet에 포함</td>
-                  <td>애니메이션 재구성에는 사용하지 않습니다.</td>
+                  <td>0ms 포스터 프레임 한 장만 contact sheet에 포함</td>
+                  <td>애니메이션 손실 경고가 표시되며, 재구성에는 사용하지 않습니다.</td>
                 </tr>
                 <tr>
                   <td>GIF 프레임 시트 내보내기</td>
                   <td>모든 프레임 PNG sheet, guide sheet, GIF manifest 생성</td>
-                  <td>duration과 loop mode가 manifest에 저장됩니다.</td>
+                  <td>duration·loop와 motion을 포함한 source/render recipe hash가 manifest에 저장됩니다.</td>
                 </tr>
                 <tr>
                   <td>GIF 프레임 시트 교체하기</td>
@@ -924,14 +980,14 @@
                 alt="아이콘 이름 옆 메모 아이콘에 마우스를 올려 여러 줄 메모가 표시된 모습."
               />
               <figcaption>
-                <strong>메모하기</strong>로 저장한 내용은 아이콘 이름 옆 작은 메모 표시로 보입니다.
-                마우스를 올리면 줄바꿈이 유지된 메모가 근처에 표시되고, alt나 export 파일명에는 영향을 주지 않습니다.
+                아이콘 이름 옆 메모 버튼에서 <strong>메모 추가</strong> 또는 <strong>메모 수정</strong>을 바로 열 수 있습니다.
+                마우스를 올리거나 키보드로 초점을 옮기면 줄바꿈이 유지된 메모가 표시되고, alt나 export 파일명에는 영향을 주지 않습니다.
               </figcaption>
             </figure>
             <figure class="shot compact">
               <img
                 src="manual-assets/manual-18-grid-preset-applied.png"
-                alt="시트 가져오기에서 DCInside 200x200 프리셋을 적용한 화면."
+                alt="시트에서 가져오기에서 DCInside 200x200 프리셋을 적용한 화면."
               />
               <figcaption>
                 시트 grid 프리셋은 가져오기, 작업 시트 내보내기, GIF frame sheet에 공유됩니다.
@@ -947,7 +1003,7 @@
             </div>
             <div class="panel">
               <strong>메모 관리</strong>
-              <p>메모하기, 메모 수정, 메모 삭제가 우클릭 메뉴에 나타납니다. 공백만 입력하면 메모 없음으로 처리됩니다.</p>
+              <p>메모 추가, 메모 수정, 메모 삭제가 tile과 우클릭 메뉴에 나타납니다. 공백만 입력하면 메모 없음으로 처리됩니다.</p>
             </div>
             <div class="panel">
               <strong>공유 프리셋</strong>

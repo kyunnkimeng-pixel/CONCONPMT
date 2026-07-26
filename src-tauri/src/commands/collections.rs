@@ -41,8 +41,9 @@ pub fn duplicate_collection(
     state: State<'_, AppState>,
     collection_id: String,
 ) -> AppResult<CollectionDto> {
+    let paths = state.paths().clone();
     let mut connection = state.connection()?;
-    collection_repository::duplicate_collection(&mut connection, &collection_id)
+    collection_repository::duplicate_collection(&mut connection, &paths, &collection_id)
 }
 
 #[tauri::command]

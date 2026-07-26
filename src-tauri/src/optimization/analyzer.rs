@@ -8,12 +8,15 @@ use rusqlite::{params, Connection, OptionalExtension};
 use crate::db::repositories::optimization::{insert_variant, NewProcessedAssetVariant};
 use crate::error::{AppError, AppResult};
 use crate::ids::create_id;
+use crate::imaging::effects::{parse_effect_recipe_json, EffectRecipe};
 use crate::imaging::export_render::{
     render_icon_export, ExportCropRect, ExportRenderPiece, ExportRenderRequest,
 };
+use crate::imaging::motion::{parse_motion_recipe_json, MotionRecipe};
 use crate::imaging::text_overlay::{text_overlay_from_fields, TextOverlayRenderSpec};
+use crate::imaging::transform::ImageTransform;
 use crate::models::{ExportAssetAnalysisDto, ExportProfileDto};
-use crate::optimization::cache::hash_text;
+use crate::optimization::cache::{hash_text, render_recipe_crop_hash};
 use crate::paths::AppPaths;
 
 #[derive(Debug, Clone)]
@@ -32,10 +35,13 @@ pub struct OptimizationTarget {
     pub crop: ExportCropRect,
     pub cell_width: i64,
     pub cell_height: i64,
+    pub transform: ImageTransform,
     pub output_format: String,
     pub gif_loop_mode: String,
     pub gif_loop_count: Option<i64>,
     pub text_overlay: Option<TextOverlayRenderSpec>,
+    pub effects: EffectRecipe,
+    pub motion: MotionRecipe,
     pub crop_hash: String,
     pub profile_hash: String,
 }
@@ -92,10 +98,17 @@ pub fn load_target(
                i.text_overlay_y,
                i.text_overlay_color,
                i.text_overlay_stroke_color,
-               i.text_overlay_stroke_width
+               i.text_overlay_stroke_width,
+               i.transform_quarter_turns,
+               i.transform_flip_horizontal,
+               i.transform_flip_vertical,
+               er.effects_json AS effect_recipe_json,
+               mr.motion_json AS motion_recipe_json
              FROM icons i
              JOIN source_files s ON s.id = i.source_file_id
              JOIN crop_settings cs ON cs.icon_id = i.id
+             LEFT JOIN icon_effect_recipes er ON er.icon_id = i.id
+             LEFT JOIN icon_motion_recipes mr ON mr.icon_id = i.id
              WHERE i.id = ?1
                AND i.collection_id = ?2
                AND i.deleted_at IS NULL",
@@ -129,6 +142,11 @@ pub fn load_target(
                     row.get::<_, String>("text_overlay_color")?,
                     row.get::<_, String>("text_overlay_stroke_color")?,
                     row.get::<_, f64>("text_overlay_stroke_width")?,
+                    row.get::<_, i64>("transform_quarter_turns")?,
+                    row.get::<_, i64>("transform_flip_horizontal")? != 0,
+                    row.get::<_, i64>("transform_flip_vertical")? != 0,
+                    row.get::<_, Option<String>>("effect_recipe_json")?,
+                    row.get::<_, Option<String>>("motion_recipe_json")?,
                 ))
             },
         )
@@ -137,8 +155,6 @@ pub fn load_target(
 
     let piece = load_piece(connection, icon_id, piece_id)?;
     let source_extension = normalize_format(&icon.9);
-    let output_format =
-        output_format_for_icon(&raw_profile.profile.target_format, &source_extension);
     let cell_width = icon
         .4
         .unwrap_or(raw_profile.collection_default_width)
@@ -164,16 +180,27 @@ pub fn load_target(
         Some(icon.25.clone()),
         Some(icon.26),
     )?;
-    let crop_hash = crop_hash(
+    let transform = ImageTransform::new(icon.27, icon.28, icon.29)?;
+    let effects = parse_effect_recipe_json(icon.30.as_deref().unwrap_or_default())?;
+    let motion = parse_motion_recipe_json(icon.31.as_deref().unwrap_or_default())?;
+    let output_format = output_format_for_icon(
+        &raw_profile.profile.target_format,
+        &source_extension,
+        motion.has_enabled_motion(),
+    );
+    let crop_hash = render_recipe_crop_hash(
         &icon.3,
         &crop,
         cell_width,
         cell_height,
         piece.1,
+        transform,
         &icon.6,
         icon.7,
         text_overlay.as_ref(),
-    );
+        &effects,
+        &motion,
+    )?;
     let profile_hash = profile_hash(
         &raw_profile.profile,
         &output_format,
@@ -197,10 +224,13 @@ pub fn load_target(
         crop,
         cell_width,
         cell_height,
+        transform,
         output_format,
         gif_loop_mode: icon.6,
         gif_loop_count: icon.7,
         text_overlay,
+        effects,
+        motion,
         crop_hash,
         profile_hash,
     })
@@ -231,6 +261,7 @@ pub fn render_baseline(
         crop: target.crop,
         cell_width: target.cell_width,
         cell_height: target.cell_height,
+        transform: target.transform,
         output_format: &target.output_format,
         resize_filter: "lanczos3",
         gif_loop_mode: &target.gif_loop_mode,
@@ -238,6 +269,8 @@ pub fn render_baseline(
         source_gif_loop_mode: &target.source_gif_loop_mode,
         source_gif_loop_count: target.source_gif_loop_count,
         text_overlay: target.text_overlay.clone(),
+        effects: target.effects.clone(),
+        motion: target.motion.clone(),
         output_dir: &temp_dir,
         pieces: &[ExportRenderPiece {
             piece_index: target.piece_index,
@@ -603,34 +636,6 @@ fn load_piece(
         .ok_or_else(|| AppError::not_found("최적화할 export 조각을 찾을 수 없습니다."))
 }
 
-fn crop_hash(
-    shape: &str,
-    crop: &ExportCropRect,
-    cell_width: i64,
-    cell_height: i64,
-    piece_index: usize,
-    gif_loop_mode: &str,
-    gif_loop_count: Option<i64>,
-    text_overlay: Option<&TextOverlayRenderSpec>,
-) -> String {
-    let mut parts = vec![
-        shape.to_string(),
-        format!("{:.3}", crop.x),
-        format!("{:.3}", crop.y),
-        format!("{:.3}", crop.width),
-        format!("{:.3}", crop.height),
-        cell_width.to_string(),
-        cell_height.to_string(),
-        piece_index.to_string(),
-        gif_loop_mode.to_string(),
-        gif_loop_count.unwrap_or_default().to_string(),
-    ];
-    if let Some(text_overlay) = text_overlay {
-        parts.extend(text_overlay.normalized_hash_parts());
-    }
-    hash_text(&parts)
-}
-
 fn profile_hash(
     profile: &ExportProfileDto,
     output_format: &str,
@@ -656,9 +661,13 @@ fn allowed_formats_from_json(value: &str) -> Vec<String> {
         .collect()
 }
 
-fn output_format_for_icon(profile_format: &str, source_extension: &str) -> String {
+fn output_format_for_icon(
+    profile_format: &str,
+    source_extension: &str,
+    motion_enabled: bool,
+) -> String {
     let source_format = normalize_format(source_extension);
-    if source_format == "gif" {
+    if source_format == "gif" || motion_enabled {
         return "gif".to_string();
     }
 

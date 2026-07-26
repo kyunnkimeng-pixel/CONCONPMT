@@ -219,7 +219,7 @@ export function IconContextMenu({
       </MenuButton>
       <MenuButton testId="icon-context-note-edit" onClick={() => runAction(onEditNote)}>
         <NotebookPen aria-hidden="true" />
-        {hasNote ? "메모 수정" : "메모하기"}
+        {hasNote ? "메모 수정" : "메모 추가"}
       </MenuButton>
       {hasNote ? (
         <MenuButton testId="icon-context-note-clear" onClick={() => runAction(onClearNote)}>

@@ -1,5 +1,6 @@
 pub mod auto_detect;
 pub mod exporter;
+pub mod frame_sheet_gif;
 pub mod gif_frames;
 pub mod grid;
 pub mod importer;
@@ -12,13 +13,12 @@ pub mod slices;
 #[cfg(test)]
 mod real_qa;
 
-use std::fs;
 use std::path::{Path, PathBuf};
 
 use image::ImageFormat;
 
 use crate::error::{AppError, AppResult};
-use crate::imaging::import_limits::validate_import_file_size;
+use crate::imaging::import_limits::{read_import_file_bytes, validate_import_file_size};
 use crate::models::ImportImageFilePayload;
 
 #[derive(Debug, Clone)]
@@ -51,11 +51,7 @@ pub(crate) fn read_sheet_image_input(
                 .ok_or_else(|| AppError::new("validation", "시트 파일 이름을 확인할 수 없습니다."))?
                 .to_string();
             let extension = normalized_extension(&filename, allow_gif)?;
-            let metadata = fs::metadata(&source_path)?;
-            let byte_size = usize::try_from(metadata.len())
-                .map_err(|_| AppError::new("validation", "시트 파일 크기를 확인할 수 없습니다."))?;
-            validate_import_file_size(byte_size)?;
-            let bytes = fs::read(&source_path)?;
+            let bytes = read_import_file_bytes(&source_path)?;
             Ok(SheetImageInput {
                 original_filename: filename,
                 bytes,

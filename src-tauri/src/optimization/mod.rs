@@ -138,6 +138,8 @@ pub fn apply_optimization_candidate(
     connection: &Connection,
     candidate_id: &str,
 ) -> AppResult<ApplyOptimizationResultDto> {
+    let candidate = optimization_repository::get_variant(connection, candidate_id)?;
+    ensure_candidate_matches_current_target(connection, &candidate)?;
     let variant = optimization_repository::set_active_variant(connection, candidate_id)?;
     let target_max_bytes = variant
         .profile_id
@@ -159,6 +161,8 @@ pub fn apply_optimization_candidate_to_preview(
     connection: &Connection,
     candidate_id: &str,
 ) -> AppResult<ApplyOptimizationResultDto> {
+    let candidate = optimization_repository::get_variant(connection, candidate_id)?;
+    ensure_candidate_matches_current_target(connection, &candidate)?;
     let variant = optimization_repository::set_active_variant(connection, candidate_id)?;
     let variant = optimization_repository::promote_variant_to_preview(connection, &variant.id)?;
     let target_max_bytes = variant
@@ -172,6 +176,41 @@ pub fn apply_optimization_candidate_to_preview(
         message: "GIF 재생 FPS를 실제 미리보기와 내보내기 결과에 적용했습니다.".to_string(),
         candidate,
     })
+}
+
+fn ensure_candidate_matches_current_target(
+    connection: &Connection,
+    candidate: &optimization_repository::ProcessedAssetVariantRecord,
+) -> AppResult<()> {
+    let profile_id = candidate.profile_id.as_deref().ok_or_else(|| {
+        AppError::new(
+            "optimization",
+            "프로필 정보가 없는 후보는 적용할 수 없습니다.",
+        )
+    })?;
+    let piece_id = candidate.piece_id.as_deref().ok_or_else(|| {
+        AppError::new(
+            "optimization",
+            "조각 정보가 없는 후보는 적용할 수 없습니다.",
+        )
+    })?;
+    let target = analyzer::load_target(connection, &candidate.icon_id, profile_id, Some(piece_id))?;
+
+    let matches_current_target = target.icon_id == candidate.icon_id
+        && target.profile.id == profile_id
+        && target.piece_id == piece_id
+        && target.source_hash == candidate.source_hash
+        && target.crop_hash == candidate.crop_hash
+        && target.profile_hash == candidate.profile_hash
+        && target.output_format == candidate.format;
+    if !matches_current_target {
+        return Err(AppError::new(
+            "conflict",
+            "현재 아이콘, 효과 또는 export 프로필과 맞지 않는 오래된 최적화 후보입니다. 후보를 다시 생성해 주세요.",
+        ));
+    }
+
+    Ok(())
 }
 
 pub fn preview_gif_playback_fps(
@@ -365,10 +404,13 @@ mod tests {
         list_export_profiles, update_export_profile_settings,
     };
     use crate::db::repositories::imports::import_image_files;
+    use crate::db::repositories::optimization::{insert_variant, NewProcessedAssetVariant};
     use crate::export::export_collection;
+    use crate::ids::create_id;
     use crate::models::{
         ExportRequestPayload, ImportImageFilePayload, OptimizationAdvancedSettingsPayload,
     };
+    use crate::optimization::analyzer::OptimizationTarget;
     use crate::paths::AppPaths;
 
     #[test]
@@ -632,10 +674,210 @@ mod tests {
         std::fs::remove_dir_all(paths.root).unwrap();
     }
 
+    #[test]
+    fn apply_optimization_candidate_rejects_each_stale_target_identity_field() {
+        let mut connection = connection();
+        let paths = temp_paths("pmtconcon-stale-export-candidate");
+        let collection =
+            create_collection(&mut connection, Some("stale export candidate".to_string())).unwrap();
+        let imported = import_image_files(
+            &mut connection,
+            &paths,
+            &collection.id,
+            vec![ImportImageFilePayload {
+                original_filename: "source.png".to_string(),
+                bytes: png_bytes(32, 32),
+            }],
+        )
+        .unwrap();
+        let icon_id = imported.imported_icons[0].id.clone();
+        let piece_id = imported.imported_icons[0].pieces[0].id.clone();
+        let profile_id = custom_profile_id(&connection, &collection.id);
+        let target =
+            super::analyzer::load_target(&connection, &icon_id, &profile_id, Some(&piece_id))
+                .unwrap();
+        let stale_format = if target.output_format == "png" {
+            "jpg".to_string()
+        } else {
+            "png".to_string()
+        };
+        let stale_identities = [
+            (
+                "source_hash",
+                "stale-source-hash".to_string(),
+                target.crop_hash.clone(),
+                target.profile_hash.clone(),
+                target.output_format.clone(),
+            ),
+            (
+                "crop_hash",
+                target.source_hash.clone(),
+                "stale-crop-hash".to_string(),
+                target.profile_hash.clone(),
+                target.output_format.clone(),
+            ),
+            (
+                "profile_hash",
+                target.source_hash.clone(),
+                target.crop_hash.clone(),
+                "stale-profile-hash".to_string(),
+                target.output_format.clone(),
+            ),
+            (
+                "format",
+                target.source_hash.clone(),
+                target.crop_hash.clone(),
+                target.profile_hash.clone(),
+                stale_format,
+            ),
+        ];
+
+        for (label, source_hash, crop_hash, profile_hash, format) in stale_identities {
+            let candidate_id = insert_test_candidate(
+                &connection,
+                &target,
+                label,
+                &source_hash,
+                &crop_hash,
+                &profile_hash,
+                &format,
+            );
+            let error = apply_optimization_candidate(&connection, &candidate_id).unwrap_err();
+            assert_eq!(error.code, "conflict", "{label}");
+            let active: i64 = connection
+                .query_row(
+                    "SELECT is_active_for_export
+                     FROM processed_asset_variants
+                     WHERE id = ?1",
+                    [&candidate_id],
+                    |row| row.get(0),
+                )
+                .unwrap();
+            assert_eq!(active, 0, "{label}");
+        }
+
+        std::fs::remove_dir_all(paths.root).unwrap();
+    }
+
+    #[test]
+    fn apply_optimization_candidate_to_preview_rejects_stale_before_mutation() {
+        let mut connection = connection();
+        let paths = temp_paths("pmtconcon-stale-preview-candidate");
+        let collection =
+            create_collection(&mut connection, Some("stale preview candidate".to_string()))
+                .unwrap();
+        let imported = import_image_files(
+            &mut connection,
+            &paths,
+            &collection.id,
+            vec![ImportImageFilePayload {
+                original_filename: "source.png".to_string(),
+                bytes: png_bytes(32, 32),
+            }],
+        )
+        .unwrap();
+        let icon_id = imported.imported_icons[0].id.clone();
+        let piece_id = imported.imported_icons[0].pieces[0].id.clone();
+        let profile_id = custom_profile_id(&connection, &collection.id);
+        let target =
+            super::analyzer::load_target(&connection, &icon_id, &profile_id, Some(&piece_id))
+                .unwrap();
+        let candidate_id = insert_test_candidate(
+            &connection,
+            &target,
+            "preview-crop-hash",
+            &target.source_hash,
+            "stale-preview-crop-hash",
+            &target.profile_hash,
+            &target.output_format,
+        );
+        let before: (Option<String>, Option<String>) = connection
+            .query_row(
+                "SELECT i.current_preview_path, p.generated_preview_path
+                 FROM icons i
+                 JOIN icon_pieces p ON p.icon_id = i.id
+                 WHERE i.id = ?1
+                   AND p.id = ?2",
+                [&icon_id, &piece_id],
+                |row| Ok((row.get(0)?, row.get(1)?)),
+            )
+            .unwrap();
+
+        let error =
+            apply_optimization_candidate_to_preview(&connection, &candidate_id).unwrap_err();
+        assert_eq!(error.code, "conflict");
+        let after: (Option<String>, Option<String>, i64) = connection
+            .query_row(
+                "SELECT i.current_preview_path, p.generated_preview_path,
+                        v.is_active_for_export
+                 FROM icons i
+                 JOIN icon_pieces p ON p.icon_id = i.id
+                 JOIN processed_asset_variants v ON v.id = ?3
+                 WHERE i.id = ?1
+                   AND p.id = ?2",
+                [&icon_id, &piece_id, &candidate_id],
+                |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
+            )
+            .unwrap();
+        assert_eq!((after.0, after.1), before);
+        assert_eq!(after.2, 0);
+
+        std::fs::remove_dir_all(paths.root).unwrap();
+    }
+
     fn connection() -> Connection {
         let mut connection = Connection::open_in_memory().unwrap();
         migrations::run(&mut connection).unwrap();
         connection
+    }
+
+    fn insert_test_candidate(
+        connection: &Connection,
+        target: &OptimizationTarget,
+        label: &str,
+        source_hash: &str,
+        crop_hash: &str,
+        profile_hash: &str,
+        format: &str,
+    ) -> String {
+        let candidate_id = create_id("variant");
+        let byte_size = std::fs::metadata(&target.source_path)
+            .unwrap()
+            .len()
+            .try_into()
+            .unwrap();
+        let kind = match format {
+            "gif" => "optimized_gif",
+            "jpg" | "jpeg" => "optimized_jpg",
+            _ => "optimized_png",
+        };
+        insert_variant(
+            connection,
+            &NewProcessedAssetVariant {
+                id: candidate_id.clone(),
+                icon_id: target.icon_id.clone(),
+                piece_id: Some(target.piece_id.clone()),
+                profile_id: Some(target.profile.id.clone()),
+                source_file_id: Some(target.source_file_id.clone()),
+                kind: kind.to_string(),
+                preset: Some("custom".to_string()),
+                path: target.source_path.to_string_lossy().to_string(),
+                format: format.to_string(),
+                width: target.cell_width,
+                height: target.cell_height,
+                byte_size,
+                frame_count: None,
+                duration_ms: None,
+                loop_mode: None,
+                settings_json: format!(r#"{{"test":"{label}"}}"#),
+                source_hash: source_hash.to_string(),
+                crop_hash: crop_hash.to_string(),
+                profile_hash: profile_hash.to_string(),
+                settings_hash: format!("settings-{label}"),
+            },
+        )
+        .unwrap();
+        candidate_id
     }
 
     fn temp_paths(prefix: &str) -> AppPaths {

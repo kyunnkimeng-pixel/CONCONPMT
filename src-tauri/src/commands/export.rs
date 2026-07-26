@@ -15,7 +15,7 @@ pub fn list_export_profiles(
     state: State<'_, AppState>,
     collection_id: String,
 ) -> AppResult<Vec<ExportProfileDto>> {
-    let connection = state.connection()?;
+    let connection = state.render_connection()?;
     export_profile_repository::list_export_profiles(&connection, &collection_id)
 }
 
@@ -25,7 +25,7 @@ pub fn save_export_profile_settings(
     collection_id: String,
     payload: ExportRequestPayload,
 ) -> AppResult<ExportProfileDto> {
-    let connection = state.connection()?;
+    let connection = state.render_connection()?;
     export_profile_repository::update_export_profile_settings(&connection, &collection_id, &payload)
 }
 
@@ -36,7 +36,7 @@ pub fn validate_export_collection(
     payload: ExportRequestPayload,
 ) -> AppResult<ExportValidationResultDto> {
     let paths = state.paths().clone();
-    let connection = state.connection()?;
+    let connection = state.render_connection()?;
     crate::export::validate_export_collection(&connection, &paths, &collection_id, &payload)
 }
 
@@ -47,7 +47,7 @@ pub fn export_collection(
     payload: ExportRequestPayload,
 ) -> AppResult<ExportCollectionResultDto> {
     let paths = state.paths().clone();
-    let mut connection = state.connection()?;
+    let mut connection = state.render_connection()?;
     crate::export::export_collection(&mut connection, &paths, &collection_id, &payload)
 }
 
@@ -60,7 +60,7 @@ pub fn export_selected_collection_items(
     export_directory: String,
 ) -> AppResult<ExportCollectionResultDto> {
     let paths = state.paths().clone();
-    let mut connection = state.connection()?;
+    let mut connection = state.render_connection()?;
     crate::export::export_selected_collection_items(
         &mut connection,
         &paths,
@@ -98,7 +98,7 @@ pub fn analyze_export_asset_candidate(
     piece_id: Option<String>,
 ) -> AppResult<ExportAssetAnalysisDto> {
     let paths = state.paths().clone();
-    let connection = state.connection()?;
+    let connection = state.render_connection()?;
     crate::optimization::analyze_export_asset_candidate(
         &connection,
         &paths,
@@ -118,7 +118,7 @@ pub fn generate_gif_optimization_candidates(
     advanced_settings: Option<OptimizationAdvancedSettingsPayload>,
 ) -> AppResult<OptimizationResultDto> {
     let paths = state.paths().clone();
-    let connection = state.connection()?;
+    let connection = state.render_connection()?;
     crate::optimization::generate_gif_optimization_candidates(
         &connection,
         &paths,
@@ -140,7 +140,7 @@ pub fn generate_static_optimization_candidates(
     advanced_settings: Option<OptimizationAdvancedSettingsPayload>,
 ) -> AppResult<OptimizationResultDto> {
     let paths = state.paths().clone();
-    let connection = state.connection()?;
+    let connection = state.render_connection()?;
     crate::optimization::generate_static_optimization_candidates(
         &connection,
         &paths,
@@ -159,7 +159,7 @@ pub fn list_optimization_candidates(
     profile_id: String,
     piece_id: Option<String>,
 ) -> AppResult<Vec<OptimizationCandidateDto>> {
-    let connection = state.connection()?;
+    let connection = state.render_connection()?;
     crate::optimization::list_optimization_candidates(
         &connection,
         &icon_id,
@@ -173,7 +173,7 @@ pub fn apply_optimization_candidate(
     state: State<'_, AppState>,
     candidate_id: String,
 ) -> AppResult<ApplyOptimizationResultDto> {
-    let connection = state.connection()?;
+    let connection = state.render_connection()?;
     crate::optimization::apply_optimization_candidate(&connection, &candidate_id)
 }
 
@@ -182,7 +182,7 @@ pub fn apply_optimization_candidate_to_preview(
     state: State<'_, AppState>,
     candidate_id: String,
 ) -> AppResult<ApplyOptimizationResultDto> {
-    let connection = state.connection()?;
+    let connection = state.render_connection()?;
     crate::optimization::apply_optimization_candidate_to_preview(&connection, &candidate_id)
 }
 
@@ -193,7 +193,7 @@ pub fn preview_gif_playback_fps(
     playback_fps: i64,
 ) -> AppResult<GifPlaybackPreviewResultDto> {
     let paths = state.paths().clone();
-    let connection = state.connection()?;
+    let connection = state.render_connection()?;
     crate::optimization::preview_gif_playback_fps(&connection, &paths, &icon_id, playback_fps)
 }
 
@@ -205,7 +205,7 @@ pub fn apply_gif_original_playback_to_preview(
     piece_id: Option<String>,
 ) -> AppResult<ApplyOptimizationResultDto> {
     let paths = state.paths().clone();
-    let connection = state.connection()?;
+    let connection = state.render_connection()?;
     crate::optimization::apply_gif_original_playback_to_preview(
         &connection,
         &paths,
@@ -222,7 +222,7 @@ pub fn clear_optimization_candidate(
     profile_id: String,
     piece_id: Option<String>,
 ) -> AppResult<ClearOptimizationResultDto> {
-    let connection = state.connection()?;
+    let connection = state.render_connection()?;
     crate::optimization::clear_optimization_candidate(
         &connection,
         &icon_id,
@@ -239,7 +239,7 @@ pub fn revalidate_export_item(
     piece_id: Option<String>,
 ) -> AppResult<ExportAssetAnalysisDto> {
     let paths = state.paths().clone();
-    let connection = state.connection()?;
+    let connection = state.render_connection()?;
     crate::optimization::revalidate_export_item(
         &connection,
         &paths,
@@ -256,7 +256,7 @@ pub fn get_active_export_variant(
     profile_id: String,
     piece_id: Option<String>,
 ) -> AppResult<Option<ActiveVariantDto>> {
-    let connection = state.connection()?;
+    let connection = state.render_connection()?;
     crate::optimization::get_active_export_variant(
         &connection,
         &icon_id,

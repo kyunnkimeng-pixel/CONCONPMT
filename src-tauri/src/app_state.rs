@@ -4,7 +4,7 @@ use std::sync::{Mutex, MutexGuard};
 use rusqlite::Connection;
 use tauri::{AppHandle, Manager, Runtime};
 
-use crate::db::connection::open_database;
+use crate::db::connection::{open_database, open_existing_database};
 use crate::error::{AppError, AppResult};
 use crate::paths::AppPaths;
 
@@ -27,6 +27,10 @@ impl AppState {
 
     pub fn connection(&self) -> AppResult<MutexGuard<'_, Connection>> {
         self.connection.lock().map_err(|_| AppError::lock_failed())
+    }
+
+    pub fn render_connection(&self) -> AppResult<Connection> {
+        open_existing_database(&self.paths.database_path)
     }
 
     pub fn paths(&self) -> &AppPaths {

@@ -21,6 +21,7 @@ interface IconTileProps {
   validateCurrentAlt: (piece: IconPieceSummary) => string | null;
   onAltCommit: (pieceId: string, value: string) => Promise<boolean>;
   onContextMenu: (event: MouseEvent, iconId: string) => void;
+  onEditNote: (iconId: string) => void;
   onOpenEditor: (iconId: string) => void;
   onRename: (iconId: string, displayName: string) => Promise<boolean>;
   onSelect: (event: MouseEvent, iconId: string) => void;
@@ -44,6 +45,7 @@ export function IconTile({
   validateCurrentAlt,
   onAltCommit,
   onContextMenu,
+  onEditNote,
   onOpenEditor,
   onRename,
   onSelect,
@@ -130,7 +132,11 @@ export function IconTile({
                 void onRename(icon.id, value);
               }}
             />
-            <MemoIndicator note={icon.note} />
+            <IconMemoButton
+              displayName={icon.displayName}
+              note={icon.note}
+              onEdit={() => onEditNote(icon.id)}
+            />
           </div>
           <div
             className={cn(
@@ -243,25 +249,49 @@ function PreviewImage({ src }: { src: string | null }) {
   );
 }
 
-function MemoIndicator({ note }: { note: string | null }) {
+export function IconMemoButton({
+  displayName,
+  note,
+  onEdit,
+}: {
+  displayName: string;
+  note: string | null;
+  onEdit: () => void;
+}) {
   const trimmed = note?.trim();
-  if (!trimmed) {
-    return null;
-  }
+  const hasNote = Boolean(trimmed);
+  const actionLabel = `${displayName} 메모 ${hasNote ? "수정" : "추가"}`;
 
   return (
-    <span
-      className="group/memo relative inline-flex shrink-0 text-muted"
-      data-testid="icon-memo-indicator"
-      title="메모 있음"
-      onClick={(event) => event.stopPropagation()}
+    <button
+      aria-label={actionLabel}
+      className={cn(
+        "group/memo relative inline-flex size-6 shrink-0 items-center justify-center rounded text-muted hover:bg-menu-hover hover:text-foreground focus-visible:outline focus-visible:outline-2 focus-visible:outline-focus",
+        hasNote
+          ? "opacity-100"
+          : "opacity-45 group-hover:opacity-100 focus-visible:opacity-100",
+      )}
+      data-testid={hasNote ? "icon-memo-indicator" : "icon-memo-add"}
+      title={actionLabel}
+      type="button"
+      onClick={(event) => {
+        event.stopPropagation();
+        onEdit();
+      }}
+      onDoubleClick={(event) => event.stopPropagation()}
+      onKeyDown={(event) => event.stopPropagation()}
       onPointerDown={(event) => event.stopPropagation()}
     >
       <NotebookText aria-hidden="true" className="size-3.5" />
-      <span className="pointer-events-none absolute left-1/2 top-full z-20 mt-2 hidden w-64 -translate-x-1/2 whitespace-pre-wrap rounded-md border border-border bg-white px-3 py-2 text-left text-xs leading-5 text-foreground shadow-lg group-hover/memo:inline-block">
-        {trimmed}
+      <span
+        className={cn(
+          "pointer-events-none absolute left-1/2 top-full z-20 mt-2 hidden -translate-x-1/2 rounded-md border border-border bg-white px-3 py-2 text-left text-xs leading-5 text-foreground shadow-lg group-hover/memo:inline-block group-focus/memo:inline-block",
+          trimmed ? "w-64 whitespace-pre-wrap" : "whitespace-nowrap",
+        )}
+      >
+        {trimmed || "메모 추가"}
       </span>
-    </span>
+    </button>
   );
 }
 

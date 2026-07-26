@@ -7,15 +7,31 @@ use std::time::{SystemTime, UNIX_EPOCH};
 
 use image::codecs::gif::GifDecoder;
 use image::imageops::{self, FilterType};
-use image::{AnimationDecoder, DynamicImage, ImageFormat, Rgba, RgbaImage};
-use rusqlite::{params, Connection, OptionalExtension};
+use image::{AnimationDecoder, ImageFormat, Rgba, RgbaImage};
+use rusqlite::{params, Connection, OptionalExtension, Row};
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 
 use crate::error::{AppError, AppResult};
+use crate::imaging::effects::{apply_effect_recipe, parse_effect_recipe_json, EffectRecipe};
+use crate::imaging::export_render::ExportCropRect;
+use crate::imaging::import_limits::{
+    validate_crop_rect, validate_import_dimensions, ValidatedCropRect, MAX_GIF_TOTAL_FRAME_PIXELS,
+    MAX_IMPORT_DIMENSION,
+};
+use crate::imaging::motion::{
+    apply_motion_recipe, parse_motion_recipe_json, MotionFrameContext, MotionRecipe,
+};
+use crate::imaging::text_overlay::{
+    apply_text_overlay, text_overlay_from_fields, TextOverlayRenderSpec,
+};
+use crate::imaging::transform::{apply_image_transform, source_viewport_geometry, ImageTransform};
+use crate::optimization::cache::{hash_text, render_recipe_crop_hash};
 use crate::paths::AppPaths;
 
-use super::grid::{split_pages, PageCellPlacement, PageSplitSettings};
+use super::grid::{
+    split_pages, PageCellPlacement, PageSplitPlan, PageSplitSettings, MAX_SHEET_CELLS,
+};
 use super::importer::png_bytes_from_rgba;
 use super::manifest::{
     write_static_manifest, StaticSheetManifest, StaticSheetManifestItem, StaticSheetPage,
@@ -104,6 +120,10 @@ struct IconRecord {
     crop_y: f64,
     crop_w: f64,
     crop_h: f64,
+    transform: ImageTransform,
+    text_overlay: Option<TextOverlayRenderSpec>,
+    effects: EffectRecipe,
+    motion: MotionRecipe,
 }
 
 #[derive(Debug)]
@@ -122,6 +142,7 @@ struct RenderedSheetItem {
     icon_type: String,
     source_hash: Option<String>,
     render_hash: String,
+    render_recipe_hash: String,
     image: RgbaImage,
 }
 
@@ -130,12 +151,7 @@ pub fn export_edit_sheet(
     paths: &AppPaths,
     request: ExportEditSheetRequest,
 ) -> AppResult<ExportEditSheetResult> {
-    if request.cell_width <= 0 || request.cell_height <= 0 || request.columns <= 0 {
-        return Err(AppError::new(
-            "validation",
-            "작업 시트 셀 크기와 열 수는 1 이상이어야 합니다.",
-        ));
-    }
+    validate_export_settings(&request)?;
     if !request.include_clean_sheet && !request.include_guide_sheet && !request.include_manifest {
         return Err(AppError::new(
             "validation",
@@ -151,6 +167,17 @@ pub fn export_edit_sheet(
             "작업 시트로 내보낼 아이콘이 없습니다.",
         ));
     }
+    let expected_item_count = icons.iter().try_fold(0_usize, |count, icon| {
+        count
+            .checked_add(if icon.shape == "single" { 1 } else { 2 })
+            .ok_or_else(|| {
+                AppError::new(
+                    "validation",
+                    "작업 시트 아이콘 조각 수가 지원 범위를 벗어났습니다.",
+                )
+            })
+    })?;
+    let _ = validated_page_plan(expected_item_count, &request)?;
 
     let mut warnings = Vec::new();
     let mut rendered_items = Vec::new();
@@ -158,6 +185,12 @@ pub fn export_edit_sheet(
         if icon.source_is_animated {
             warnings.push(format!(
                 "{}: GIF 첫 프레임만 정적 작업 시트에 포함했습니다.",
+                icon.display_name
+            ));
+        }
+        if icon.motion.has_enabled_motion() {
+            warnings.push(format!(
+                "{}: 모션 효과의 0ms 포스터 프레임만 정적 작업 시트에 포함했습니다.",
                 icon.display_name
             ));
         }
@@ -174,20 +207,7 @@ pub fn export_edit_sheet(
         ));
     }
 
-    let split = split_pages(
-        rendered_items.len(),
-        PageSplitSettings {
-            cell_width: request.cell_width,
-            cell_height: request.cell_height,
-            columns: request.columns,
-            gap_x: request.gap_x,
-            gap_y: request.gap_y,
-            border_x: request.border_x,
-            border_y: request.border_y,
-            max_sheet_width: request.max_sheet_width,
-            max_sheet_height: request.max_sheet_height,
-        },
-    )?;
+    let split = validated_page_plan(rendered_items.len(), &request)?;
     let _rows_per_page = split.rows_per_page;
     warnings.extend(split.warnings);
 
@@ -271,6 +291,7 @@ pub fn export_edit_sheet(
             format: "png".to_string(),
             source_hash: item.source_hash.clone(),
             render_hash: Some(item.render_hash.clone()),
+            render_recipe_hash: Some(item.render_recipe_hash.clone()),
         });
     }
 
@@ -317,6 +338,110 @@ pub fn export_edit_sheet(
     })
 }
 
+fn validate_export_settings(request: &ExportEditSheetRequest) -> AppResult<()> {
+    let cell_width = u32::try_from(request.cell_width)
+        .map_err(|_| AppError::new("validation", "작업 시트 셀 너비가 올바르지 않습니다."))?;
+    let cell_height = u32::try_from(request.cell_height)
+        .map_err(|_| AppError::new("validation", "작업 시트 셀 높이가 올바르지 않습니다."))?;
+    validate_import_dimensions(cell_width, cell_height)?;
+
+    if !(1..=MAX_SHEET_CELLS).contains(&request.columns) {
+        return Err(AppError::new(
+            "validation",
+            format!("작업 시트 열 수는 1 이상 {MAX_SHEET_CELLS} 이하여야 합니다."),
+        ));
+    }
+    if request.gap_x < 0
+        || request.gap_y < 0
+        || request.border_x < 0
+        || request.border_y < 0
+        || request.gap_x > i64::from(MAX_IMPORT_DIMENSION)
+        || request.gap_y > i64::from(MAX_IMPORT_DIMENSION)
+        || request.border_x > i64::from(MAX_IMPORT_DIMENSION)
+        || request.border_y > i64::from(MAX_IMPORT_DIMENSION)
+    {
+        return Err(AppError::new(
+            "validation",
+            "작업 시트 간격과 테두리는 0~12,000px 범위여야 합니다.",
+        ));
+    }
+    if !(1..=i64::from(MAX_IMPORT_DIMENSION)).contains(&request.max_sheet_width)
+        || !(1..=i64::from(MAX_IMPORT_DIMENSION)).contains(&request.max_sheet_height)
+    {
+        return Err(AppError::new(
+            "validation",
+            "작업 시트의 최대 가로·세로 크기는 1~12,000px 범위여야 합니다.",
+        ));
+    }
+    Ok(())
+}
+
+fn validated_page_plan(
+    item_count: usize,
+    request: &ExportEditSheetRequest,
+) -> AppResult<PageSplitPlan> {
+    if item_count > usize::try_from(MAX_SHEET_CELLS).unwrap_or(usize::MAX) {
+        return Err(AppError::new(
+            "validation",
+            format!("작업 시트는 최대 {MAX_SHEET_CELLS}개 셀까지 내보낼 수 있습니다."),
+        ));
+    }
+    let plan = split_pages(
+        item_count,
+        PageSplitSettings {
+            cell_width: request.cell_width,
+            cell_height: request.cell_height,
+            columns: request.columns,
+            gap_x: request.gap_x,
+            gap_y: request.gap_y,
+            border_x: request.border_x,
+            border_y: request.border_y,
+            max_sheet_width: request.max_sheet_width,
+            max_sheet_height: request.max_sheet_height,
+        },
+    )?;
+    validate_page_plan_workload(&plan)?;
+    Ok(plan)
+}
+
+fn validate_page_plan_workload(plan: &PageSplitPlan) -> AppResult<()> {
+    if plan.pages.len() > usize::try_from(MAX_SHEET_CELLS).unwrap_or(usize::MAX)
+        || plan.placements.len() > usize::try_from(MAX_SHEET_CELLS).unwrap_or(usize::MAX)
+    {
+        return Err(AppError::new(
+            "validation",
+            "작업 시트 페이지 또는 셀 수가 지원 범위를 벗어났습니다.",
+        ));
+    }
+
+    let mut total_page_pixels = 0_u64;
+    for page in &plan.pages {
+        let width = u32::try_from(page.width)
+            .map_err(|_| AppError::new("validation", "작업 시트 너비가 올바르지 않습니다."))?;
+        let height = u32::try_from(page.height)
+            .map_err(|_| AppError::new("validation", "작업 시트 높이가 올바르지 않습니다."))?;
+        validate_import_dimensions(width, height)?;
+        let page_pixels = u64::from(width)
+            .checked_mul(u64::from(height))
+            .ok_or_else(|| {
+                AppError::new("validation", "작업 시트 페이지의 픽셀 수가 너무 큽니다.")
+            })?;
+        total_page_pixels = total_page_pixels.checked_add(page_pixels).ok_or_else(|| {
+            AppError::new(
+                "validation",
+                "작업 시트 페이지의 전체 픽셀 수가 너무 큽니다.",
+            )
+        })?;
+        if total_page_pixels > MAX_GIF_TOTAL_FRAME_PIXELS {
+            return Err(AppError::new(
+                "validation",
+                "작업 시트 페이지의 전체 픽셀 수가 지원 범위를 벗어났습니다.",
+            ));
+        }
+    }
+    Ok(())
+}
+
 fn load_collection(connection: &Connection, collection_id: &str) -> AppResult<CollectionRecord> {
     connection
         .query_row(
@@ -336,6 +461,38 @@ fn load_collection(connection: &Connection, collection_id: &str) -> AppResult<Co
         .ok_or_else(|| AppError::not_found("작업 시트로 내보낼 모음을 찾을 수 없습니다."))
 }
 
+const ICON_RECORD_SELECT: &str = "SELECT
+   i.id,
+   i.display_name,
+   i.shape,
+   s.original_path_in_library,
+   s.original_extension,
+   s.sha256,
+   s.is_animated,
+   cs.crop_x,
+   cs.crop_y,
+   cs.crop_w,
+   cs.crop_h,
+   i.transform_quarter_turns,
+   i.transform_flip_horizontal,
+   i.transform_flip_vertical,
+   i.text_overlay_enabled,
+   i.text_overlay_text,
+   i.text_overlay_font_path,
+   i.text_overlay_font_size,
+   i.text_overlay_x,
+   i.text_overlay_y,
+   i.text_overlay_color,
+   i.text_overlay_stroke_color,
+   i.text_overlay_stroke_width,
+   er.effects_json AS effect_recipe_json,
+   mr.motion_json AS motion_recipe_json
+ FROM icons i
+ JOIN source_files s ON s.id = i.source_file_id
+ JOIN crop_settings cs ON cs.icon_id = i.id
+ LEFT JOIN icon_effect_recipes er ON er.icon_id = i.id
+ LEFT JOIN icon_motion_recipes mr ON mr.icon_id = i.id";
+
 fn load_icons(
     connection: &Connection,
     request: &ExportEditSheetRequest,
@@ -345,43 +502,16 @@ fn load_icons(
         .iter()
         .map(String::as_str)
         .collect::<HashSet<_>>();
-    let mut statement = connection.prepare(
-        "SELECT
-           i.id,
-           i.display_name,
-           i.shape,
-           s.original_path_in_library,
-           s.original_extension,
-           s.sha256,
-           s.is_animated,
-           cs.crop_x,
-           cs.crop_y,
-           cs.crop_w,
-           cs.crop_h
-         FROM icons i
-         JOIN source_files s ON s.id = i.source_file_id
-         JOIN crop_settings cs ON cs.icon_id = i.id
+    let query = format!(
+        "{ICON_RECORD_SELECT}
          WHERE i.collection_id = ?1
            AND i.deleted_at IS NULL
            AND i.icon_kind = 'image'
-         ORDER BY i.order_index ASC, i.created_at ASC",
-    )?;
+         ORDER BY i.order_index ASC, i.created_at ASC"
+    );
+    let mut statement = connection.prepare(&query)?;
     let icons = statement
-        .query_map(params![request.collection_id], |row| {
-            Ok(IconRecord {
-                id: row.get("id")?,
-                display_name: row.get("display_name")?,
-                shape: row.get("shape")?,
-                source_path: row.get("original_path_in_library")?,
-                source_extension: row.get("original_extension")?,
-                source_hash: row.get("sha256")?,
-                source_is_animated: row.get::<_, i64>("is_animated")? == 1,
-                crop_x: row.get("crop_x")?,
-                crop_y: row.get("crop_y")?,
-                crop_w: row.get("crop_w")?,
-                crop_h: row.get("crop_h")?,
-            })
-        })?
+        .query_map(params![request.collection_id], icon_record_from_row)?
         .collect::<Result<Vec<_>, _>>()?;
 
     if request.source == "selected_icons" && !selected_ids.is_empty() {
@@ -392,6 +522,151 @@ fn load_icons(
     } else {
         Ok(icons)
     }
+}
+
+fn icon_record_from_row(row: &Row<'_>) -> rusqlite::Result<IconRecord> {
+    Ok(IconRecord {
+        id: row.get("id")?,
+        display_name: row.get("display_name")?,
+        shape: row.get("shape")?,
+        source_path: row.get("original_path_in_library")?,
+        source_extension: row.get("original_extension")?,
+        source_hash: row.get("sha256")?,
+        source_is_animated: row.get::<_, i64>("is_animated")? == 1,
+        crop_x: row.get("crop_x")?,
+        crop_y: row.get("crop_y")?,
+        crop_w: row.get("crop_w")?,
+        crop_h: row.get("crop_h")?,
+        transform: ImageTransform {
+            quarter_turns: row.get("transform_quarter_turns")?,
+            flip_horizontal: row.get::<_, i64>("transform_flip_horizontal")? != 0,
+            flip_vertical: row.get::<_, i64>("transform_flip_vertical")? != 0,
+        },
+        text_overlay: text_overlay_from_fields(
+            row.get::<_, i64>("text_overlay_enabled")? != 0,
+            row.get("text_overlay_text")?,
+            row.get("text_overlay_font_path")?,
+            row.get("text_overlay_font_size")?,
+            row.get("text_overlay_x")?,
+            row.get("text_overlay_y")?,
+            row.get("text_overlay_color")?,
+            row.get("text_overlay_stroke_color")?,
+            row.get("text_overlay_stroke_width")?,
+        )
+        .map_err(sql_conversion_error)?,
+        effects: parse_effect_recipe_json(
+            row.get::<_, Option<String>>("effect_recipe_json")?
+                .as_deref()
+                .unwrap_or_default(),
+        )
+        .map_err(sql_conversion_error)?,
+        motion: parse_motion_recipe_json(
+            row.get::<_, Option<String>>("motion_recipe_json")?
+                .as_deref()
+                .unwrap_or_default(),
+        )
+        .map_err(sql_conversion_error)?,
+    })
+}
+
+fn sql_conversion_error(error: AppError) -> rusqlite::Error {
+    rusqlite::Error::FromSqlConversionFailure(0, rusqlite::types::Type::Text, Box::new(error))
+}
+
+pub(super) fn current_static_sheet_render_guard(
+    connection: &Connection,
+    collection_id: &str,
+    icon_id: &str,
+    piece_id: Option<&str>,
+    cell_width: i64,
+    cell_height: i64,
+) -> AppResult<(String, String)> {
+    if cell_width <= 0 || cell_height <= 0 {
+        return Err(AppError::new(
+            "validation",
+            "작업 시트 셀 크기는 1 이상이어야 합니다.",
+        ));
+    }
+    let query = format!(
+        "{ICON_RECORD_SELECT}
+         WHERE i.id = ?1
+           AND i.collection_id = ?2
+           AND i.deleted_at IS NULL
+           AND i.icon_kind = 'image'"
+    );
+    let icon = connection
+        .query_row(
+            &query,
+            params![icon_id, collection_id],
+            icon_record_from_row,
+        )
+        .optional()?
+        .ok_or_else(|| AppError::not_found("작업 시트 원본 아이콘을 찾을 수 없습니다."))?;
+    let piece_index = match piece_id {
+        Some(piece_id) => connection
+            .query_row(
+                "SELECT piece_index
+                 FROM icon_pieces
+                 WHERE id = ?1
+                   AND icon_id = ?2",
+                params![piece_id, icon_id],
+                |row| row.get::<_, i64>(0),
+            )
+            .optional()?
+            .ok_or_else(|| AppError::not_found("작업 시트 원본 조각을 찾을 수 없습니다."))?,
+        None => connection
+            .query_row(
+                "SELECT piece_index
+                 FROM icon_pieces
+                 WHERE icon_id = ?1
+                 ORDER BY piece_index ASC
+                 LIMIT 1",
+                params![icon_id],
+                |row| row.get::<_, i64>(0),
+            )
+            .optional()?
+            .ok_or_else(|| AppError::not_found("작업 시트 원본 조각을 찾을 수 없습니다."))?,
+    };
+    let piece_index = usize::try_from(piece_index)
+        .map_err(|_| AppError::new("validation", "작업 시트 조각 번호가 올바르지 않습니다."))?;
+    let render_recipe_hash =
+        static_sheet_render_recipe_hash(&icon, piece_index, cell_width, cell_height)?;
+    Ok((icon.source_hash, render_recipe_hash))
+}
+
+fn static_sheet_render_recipe_hash(
+    icon: &IconRecord,
+    piece_index: usize,
+    cell_width: i64,
+    cell_height: i64,
+) -> AppResult<String> {
+    let recipe_hash = render_recipe_crop_hash(
+        &icon.shape,
+        &ExportCropRect {
+            x: icon.crop_x,
+            y: icon.crop_y,
+            width: icon.crop_w,
+            height: icon.crop_h,
+        },
+        cell_width,
+        cell_height,
+        piece_index,
+        icon.transform,
+        "static_sheet_poster",
+        None,
+        icon.text_overlay.as_ref(),
+        &icon.effects,
+        &icon.motion,
+    )?;
+    Ok(hash_text(&[
+        "static_sheet_render_guard_v1".to_string(),
+        icon.source_hash.clone(),
+        icon.source_extension.to_ascii_lowercase(),
+        "source_frame:0".to_string(),
+        "motion_elapsed_ms:0".to_string(),
+        "resize_filter:lanczos3".to_string(),
+        recipe_hash,
+    ]))
 }
 
 fn load_pieces(connection: &Connection, icon_id: &str) -> AppResult<Vec<PieceRecord>> {
@@ -419,16 +694,39 @@ fn render_icon_items(
     cell_width: i64,
     cell_height: i64,
 ) -> AppResult<Vec<RenderedSheetItem>> {
-    let source = load_source_first_frame(Path::new(&icon.source_path), &icon.source_extension)?;
+    let mut source = load_source_first_frame(Path::new(&icon.source_path), &icon.source_extension)?;
+    apply_text_overlay(&mut source, icon.text_overlay.as_ref())?;
+    let source_geometry =
+        source_viewport_geometry(&icon.shape, cell_width, cell_height, icon.transform)?;
     let viewport = crop_and_resize(
         &source,
         icon.crop_x,
         icon.crop_y,
         icon.crop_w,
         icon.crop_h,
-        viewport_width(&icon.shape, cell_width),
-        viewport_height(&icon.shape, cell_height),
+        source_geometry.viewport.width,
+        source_geometry.viewport.height,
     )?;
+    let viewport = apply_image_transform(viewport, icon.transform)?;
+    let mut viewport = viewport;
+    apply_effect_recipe(&mut viewport, &icon.effects)?;
+    let motion_result = apply_motion_recipe(
+        &viewport,
+        &icon.motion,
+        MotionFrameContext {
+            elapsed_ms: 0,
+            total_duration_ms: u64::try_from(icon.motion.duration_ms).unwrap_or(1).max(1),
+        },
+    )?;
+    let viewport = motion_result.image;
+    if i64::from(viewport.width()) != viewport_width(&icon.shape, cell_width)
+        || i64::from(viewport.height()) != viewport_height(&icon.shape, cell_height)
+    {
+        return Err(AppError::new(
+            "validation",
+            "회전 후 작업 시트 조각 크기가 아이콘 모양과 일치하지 않습니다.",
+        ));
+    }
     let split = split_viewport(&viewport, &icon.shape, cell_width, cell_height)?;
     let pieces = load_pieces(connection, &icon.id)?;
     let mut items = Vec::new();
@@ -438,6 +736,8 @@ fn render_icon_items(
             .iter()
             .find(|piece| piece.piece_index as usize == piece_position);
         let render_hash = sha256_hex(&png_bytes_from_rgba(&piece_image)?);
+        let render_recipe_hash =
+            static_sheet_render_recipe_hash(icon, piece_position, cell_width, cell_height)?;
         items.push(RenderedSheetItem {
             icon_id: icon.id.clone(),
             piece_id: piece.map(|piece| piece.id.clone()),
@@ -448,6 +748,7 @@ fn render_icon_items(
             icon_type: icon.shape.clone(),
             source_hash: Some(icon.source_hash.clone()),
             render_hash,
+            render_recipe_hash,
             image: piece_image,
         });
     }
@@ -479,38 +780,33 @@ fn crop_and_resize(
     width: i64,
     height: i64,
 ) -> AppResult<RgbaImage> {
-    if crop_w <= 0.0 || crop_h <= 0.0 {
-        return Err(AppError::new("validation", "잘못된 crop 영역입니다."));
-    }
-    let source = DynamicImage::ImageRgba8(image.clone());
-    let cropped = crop_with_padding(&source, crop_x, crop_y, crop_w, crop_h);
+    let crop = validate_crop_rect(crop_x, crop_y, crop_w, crop_h)?;
+    let cropped = crop_with_padding(image, crop);
+    let width = u32::try_from(width)
+        .map_err(|_| AppError::new("validation", "작업 시트 조각 너비가 올바르지 않습니다."))?;
+    let height = u32::try_from(height)
+        .map_err(|_| AppError::new("validation", "작업 시트 조각 높이가 올바르지 않습니다."))?;
+    validate_import_dimensions(width, height)?;
     Ok(imageops::resize(
         &cropped,
-        width.max(1) as u32,
-        height.max(1) as u32,
+        width,
+        height,
         FilterType::Lanczos3,
     ))
 }
 
-fn crop_with_padding(
-    image: &DynamicImage,
-    crop_x: f64,
-    crop_y: f64,
-    crop_w: f64,
-    crop_h: f64,
-) -> RgbaImage {
-    let source = image.to_rgba8();
-    let crop_x = crop_x.round() as i64;
-    let crop_y = crop_y.round() as i64;
-    let crop_width = crop_w.round().max(1.0) as u32;
-    let crop_height = crop_h.round().max(1.0) as u32;
+fn crop_with_padding(source: &RgbaImage, crop: ValidatedCropRect) -> RgbaImage {
+    let crop_x = crop.x;
+    let crop_y = crop.y;
+    let crop_width = crop.width;
+    let crop_height = crop.height;
     let mut output = RgbaImage::from_pixel(crop_width, crop_height, Rgba([0, 0, 0, 0]));
     let source_width = i64::from(source.width());
     let source_height = i64::from(source.height());
     let src_x = crop_x.max(0);
     let src_y = crop_y.max(0);
-    let dst_x = (-crop_x).max(0);
-    let dst_y = (-crop_y).max(0);
+    let dst_x = crop_x.saturating_neg().max(0);
+    let dst_y = crop_y.saturating_neg().max(0);
     let copy_width = (source_width - src_x)
         .min(i64::from(crop_width) - dst_x)
         .max(0) as u32;
@@ -536,8 +832,11 @@ fn split_viewport(
     cell_width: i64,
     cell_height: i64,
 ) -> AppResult<Vec<RgbaImage>> {
-    let width = cell_width.max(1) as u32;
-    let height = cell_height.max(1) as u32;
+    let width = u32::try_from(cell_width)
+        .map_err(|_| AppError::new("validation", "작업 시트 조각 너비가 올바르지 않습니다."))?;
+    let height = u32::try_from(cell_height)
+        .map_err(|_| AppError::new("validation", "작업 시트 조각 높이가 올바르지 않습니다."))?;
+    validate_import_dimensions(width, height)?;
     match shape {
         "horizontal_double" => Ok(vec![
             imageops::crop_imm(viewport, 0, 0, width, height).to_image(),
@@ -564,7 +863,12 @@ fn render_sheet_page(
     guide: bool,
     labels: Option<&GuideLabelOptions>,
 ) -> AppResult<RgbaImage> {
-    let mut sheet = background_image(width.max(1) as u32, height.max(1) as u32, background, guide);
+    let width = u32::try_from(width)
+        .map_err(|_| AppError::new("validation", "작업 시트 너비가 올바르지 않습니다."))?;
+    let height = u32::try_from(height)
+        .map_err(|_| AppError::new("validation", "작업 시트 높이가 올바르지 않습니다."))?;
+    validate_import_dimensions(width, height)?;
+    let mut sheet = background_image(width, height, background, guide);
     for placement in placements {
         let item = &items[placement.item_index];
         imageops::overlay(&mut sheet, &item.image, placement.x, placement.y);
@@ -795,6 +1099,7 @@ fn default_max_sheet_size() -> i64 {
 #[cfg(test)]
 mod tests {
     use std::io::Cursor;
+    use std::path::Path;
     use std::time::{SystemTime, UNIX_EPOCH};
 
     use image::{DynamicImage, ImageBuffer, ImageFormat, Rgba};
@@ -802,11 +1107,27 @@ mod tests {
 
     use crate::db::migrations;
     use crate::db::repositories::collections::create_collection;
+    use crate::db::repositories::editor::{
+        apply_icon_crop, update_icon_effects, update_icon_text_overlay,
+    };
     use crate::db::repositories::imports::import_image_files;
-    use crate::models::ImportImageFilePayload;
+    use crate::imaging::effects::{EffectRecipe, EffectStep, ToneMode, EFFECT_RECIPE_VERSION};
+    use crate::imaging::export_render::{
+        render_icon_export, ExportCropRect, ExportRenderPiece, ExportRenderRequest,
+    };
+    use crate::imaging::text_overlay::text_overlay_from_fields;
+    use crate::imaging::transform::ImageTransform;
+    use crate::models::{
+        ApplyIconCropPayload, ImportImageFilePayload, UpdateIconEffectsPayload,
+        UpdateIconTextOverlayPayload,
+    };
     use crate::paths::AppPaths;
+    use crate::sheet::manifest::read_static_manifest;
 
-    use super::{export_edit_sheet, ExportEditSheetRequest, GuideLabelOptions};
+    use super::{
+        crop_and_resize, export_edit_sheet, png_bytes_from_rgba, sha256_hex,
+        ExportEditSheetRequest, GuideLabelOptions,
+    };
 
     fn connection() -> Connection {
         let mut connection = Connection::open_in_memory().unwrap();
@@ -830,6 +1151,90 @@ mod tests {
             .write_to(&mut cursor, ImageFormat::Png)
             .unwrap();
         cursor.into_inner()
+    }
+
+    fn asymmetric_png_bytes() -> Vec<u8> {
+        let image = ImageBuffer::from_fn(3, 2, |x, y| Rgba([(y * 3 + x) as u8, 0, 0, 255]));
+        let mut cursor = Cursor::new(Vec::new());
+        DynamicImage::ImageRgba8(image)
+            .write_to(&mut cursor, ImageFormat::Png)
+            .unwrap();
+        cursor.into_inner()
+    }
+
+    fn text_effect_png_bytes() -> Vec<u8> {
+        let image = ImageBuffer::from_fn(64, 64, |x, y| {
+            if ((x / 8) + (y / 8)) % 2 == 0 {
+                Rgba([30, 120, 230, 255])
+            } else {
+                Rgba([230, 80, 40, 255])
+            }
+        });
+        let mut cursor = Cursor::new(Vec::new());
+        DynamicImage::ImageRgba8(image)
+            .write_to(&mut cursor, ImageFormat::Png)
+            .unwrap();
+        cursor.into_inner()
+    }
+
+    #[test]
+    fn static_sheet_crop_rejects_extreme_geometry_before_allocation() {
+        let source = ImageBuffer::from_pixel(10, 10, Rgba([255, 0, 0, 255]));
+        assert!(crop_and_resize(&source, 0.0, 0.0, f64::MAX, 20.0, 20, 20).is_err());
+        assert!(crop_and_resize(&source, f64::MIN, 0.0, 20.0, 20.0, 20, 20).is_err());
+        assert!(crop_and_resize(&source, 0.0, 0.0, 20.0, 20.0, i64::MAX, 20).is_err());
+    }
+
+    #[test]
+    fn edit_sheet_export_rejects_oversized_layout_before_output() {
+        let mut connection = connection();
+        let paths = temp_paths();
+        let collection =
+            create_collection(&mut connection, Some("oversized sheet export".to_string())).unwrap();
+        import_image_files(
+            &mut connection,
+            &paths,
+            &collection.id,
+            vec![ImportImageFilePayload {
+                original_filename: "cell.png".to_string(),
+                bytes: png_bytes(),
+            }],
+        )
+        .unwrap();
+        let output_parent = paths.root.join("oversized-output");
+        let request = |gap_x, border_x, border_y| ExportEditSheetRequest {
+            collection_id: collection.id.clone(),
+            selected_icon_ids: Vec::new(),
+            source: "current_collection".to_string(),
+            cell_width: 1,
+            cell_height: 1,
+            columns: 1,
+            gap_x,
+            gap_y: 0,
+            border_x,
+            border_y,
+            background: "transparent".to_string(),
+            include_clean_sheet: true,
+            include_guide_sheet: false,
+            include_manifest: false,
+            label_options: None,
+            max_sheet_width: 1,
+            max_sheet_height: 1,
+            output_directory: Some(output_parent.to_string_lossy().to_string()),
+            open_output_folder: false,
+        };
+
+        let huge_border_error =
+            export_edit_sheet(&connection, &paths, request(0, 6_000, 6_000)).unwrap_err();
+        assert_eq!(huge_border_error.code, "validation");
+        assert!(!output_parent.exists());
+
+        let overflow_error =
+            export_edit_sheet(&connection, &paths, request(i64::MAX, 0, 0)).unwrap_err();
+        assert_eq!(overflow_error.code, "validation");
+        assert!(!output_parent.exists());
+
+        std::fs::remove_dir_all(paths.root).unwrap();
     }
 
     #[test]
@@ -894,6 +1299,301 @@ mod tests {
             .unwrap()
             .to_rgba8();
         assert_ne!(guide.get_pixel(16, 16), clean.get_pixel(16, 16));
+
+        std::fs::remove_dir_all(paths.root).unwrap();
+    }
+
+    #[test]
+    fn edit_sheet_export_uses_the_same_transform_recipe_as_preview_and_export() {
+        let mut connection = connection();
+        let paths = temp_paths();
+        let collection =
+            create_collection(&mut connection, Some("transform sheet".to_string())).unwrap();
+        let imported = import_image_files(
+            &mut connection,
+            &paths,
+            &collection.id,
+            vec![ImportImageFilePayload {
+                original_filename: "asymmetric.png".to_string(),
+                bytes: asymmetric_png_bytes(),
+            }],
+        )
+        .unwrap();
+        let icon = &imported.imported_icons[0];
+        apply_icon_crop(
+            &mut connection,
+            &paths,
+            &collection.id,
+            ApplyIconCropPayload {
+                icon_id: icon.id.clone(),
+                shape: "single".to_string(),
+                crop_mode: "fixed".to_string(),
+                crop_x: 0.0,
+                crop_y: 0.0,
+                crop_w: 3.0,
+                crop_h: 2.0,
+                preset_position: "center".to_string(),
+                cell_width: 2,
+                cell_height: 3,
+                transform_quarter_turns: 1,
+                transform_flip_horizontal: false,
+                transform_flip_vertical: false,
+                piece_ids: vec![icon.pieces[0].id.clone()],
+                gif_loop_mode: "preserve".to_string(),
+                gif_loop_count: None,
+            },
+        )
+        .unwrap();
+
+        let result = export_edit_sheet(
+            &connection,
+            &paths,
+            ExportEditSheetRequest {
+                collection_id: collection.id,
+                selected_icon_ids: Vec::new(),
+                source: "current_collection".to_string(),
+                cell_width: 2,
+                cell_height: 3,
+                columns: 1,
+                gap_x: 0,
+                gap_y: 0,
+                border_x: 0,
+                border_y: 0,
+                background: "transparent".to_string(),
+                include_clean_sheet: true,
+                include_guide_sheet: false,
+                include_manifest: true,
+                label_options: None,
+                max_sheet_width: 2048,
+                max_sheet_height: 2048,
+                output_directory: None,
+                open_output_folder: false,
+            },
+        )
+        .unwrap();
+
+        let clean = image::open(&result.clean_sheet_paths[0])
+            .unwrap()
+            .to_rgba8();
+        assert_eq!((clean.width(), clean.height()), (2, 3));
+        let values = clean.pixels().map(|pixel| pixel.0[0]).collect::<Vec<_>>();
+        assert_eq!(values, vec![3, 0, 4, 1, 5, 2]);
+
+        std::fs::remove_dir_all(paths.root).unwrap();
+    }
+
+    #[cfg(target_os = "windows")]
+    #[test]
+    fn edit_sheet_text_and_effect_pixels_match_shared_preview_export_and_manifest() {
+        let mut connection = connection();
+        let paths = temp_paths();
+        let collection =
+            create_collection(&mut connection, Some("text effect sheet".to_string())).unwrap();
+        let imported = import_image_files(
+            &mut connection,
+            &paths,
+            &collection.id,
+            vec![ImportImageFilePayload {
+                original_filename: "text-effect.png".to_string(),
+                bytes: text_effect_png_bytes(),
+            }],
+        )
+        .unwrap();
+        let icon = &imported.imported_icons[0];
+
+        apply_icon_crop(
+            &mut connection,
+            &paths,
+            &collection.id,
+            ApplyIconCropPayload {
+                icon_id: icon.id.clone(),
+                shape: "single".to_string(),
+                crop_mode: "fixed".to_string(),
+                crop_x: 0.0,
+                crop_y: 0.0,
+                crop_w: 64.0,
+                crop_h: 64.0,
+                preset_position: "center".to_string(),
+                cell_width: 64,
+                cell_height: 64,
+                transform_quarter_turns: 0,
+                transform_flip_horizontal: false,
+                transform_flip_vertical: false,
+                piece_ids: vec![icon.pieces[0].id.clone()],
+                gif_loop_mode: "preserve".to_string(),
+                gif_loop_count: None,
+            },
+        )
+        .unwrap();
+
+        let font_path = [
+            r"C:\Windows\Fonts\NotoSansKR-Regular.otf",
+            r"C:\Windows\Fonts\NotoSansKR-Regular.ttf",
+            r"C:\Windows\Fonts\NotoSansCJKkr-Regular.otf",
+            r"C:\Windows\Fonts\NanumGothic.ttf",
+            r"C:\Windows\Fonts\D2Coding.ttf",
+        ]
+        .iter()
+        .find(|candidate| Path::new(candidate).is_file())
+        .expect("text overlay regression test requires a supported Windows font")
+        .to_string();
+        let text_overlay = text_overlay_from_fields(
+            true,
+            Some("A".to_string()),
+            Some(font_path.clone()),
+            Some(36.0),
+            Some(0.5),
+            Some(0.55),
+            Some("#FFE800".to_string()),
+            Some("#000000".to_string()),
+            Some(1.0),
+        )
+        .unwrap();
+        let text_saved = update_icon_text_overlay(
+            &mut connection,
+            &paths,
+            &collection.id,
+            UpdateIconTextOverlayPayload {
+                icon_id: icon.id.clone(),
+                enabled: true,
+                text: "A".to_string(),
+                font_path: Some(font_path),
+                font_size: 36.0,
+                x: 0.5,
+                y: 0.55,
+                color: "#FFE800".to_string(),
+                stroke_color: "#000000".to_string(),
+                stroke_width: 1.0,
+            },
+        )
+        .unwrap();
+        let text_only = image::open(text_saved.icon.current_preview_url.as_ref().unwrap())
+            .unwrap()
+            .to_rgba8();
+
+        let recipe = EffectRecipe {
+            version: EFFECT_RECIPE_VERSION,
+            effects: vec![EffectStep::Tone {
+                id: "grayscale-sheet-test".to_string(),
+                enabled: true,
+                mode: ToneMode::Grayscale,
+                amount: 100,
+            }],
+        };
+        let effect_saved = update_icon_effects(
+            &mut connection,
+            &paths,
+            &collection.id,
+            UpdateIconEffectsPayload {
+                icon_id: icon.id.clone(),
+                expected_revision: 0,
+                recipe: recipe.clone(),
+            },
+        )
+        .unwrap();
+        let shared_preview = image::open(effect_saved.icon.current_preview_url.as_ref().unwrap())
+            .unwrap()
+            .to_rgba8();
+        assert_ne!(shared_preview.as_raw(), text_only.as_raw());
+
+        let source_path: String = connection
+            .query_row(
+                "SELECT s.original_path_in_library
+                 FROM source_files s
+                 JOIN icons i ON i.source_file_id = s.id
+                 WHERE i.id = ?1",
+                [&icon.id],
+                |row| row.get(0),
+            )
+            .unwrap();
+        let source_hash: String = connection
+            .query_row(
+                "SELECT s.sha256
+                 FROM source_files s
+                 JOIN icons i ON i.source_file_id = s.id
+                 WHERE i.id = ?1",
+                [&icon.id],
+                |row| row.get(0),
+            )
+            .unwrap();
+        let shared_export_dir = paths.root.join("shared-export");
+        let shared_export_paths = render_icon_export(ExportRenderRequest {
+            source_path: Path::new(&source_path),
+            source_extension: "png",
+            shape: "single",
+            crop: ExportCropRect {
+                x: 0.0,
+                y: 0.0,
+                width: 64.0,
+                height: 64.0,
+            },
+            cell_width: 64,
+            cell_height: 64,
+            transform: ImageTransform::new(0, false, false).unwrap(),
+            output_format: "png",
+            resize_filter: "lanczos3",
+            gif_loop_mode: "preserve",
+            gif_loop_count: None,
+            source_gif_loop_mode: "preserve",
+            source_gif_loop_count: None,
+            text_overlay,
+            effects: recipe,
+            motion: crate::imaging::motion::MotionRecipe::default(),
+            output_dir: &shared_export_dir,
+            pieces: &[ExportRenderPiece {
+                piece_index: 0,
+                file_name: "piece.png".to_string(),
+            }],
+        })
+        .unwrap();
+        let shared_export = image::open(&shared_export_paths[0]).unwrap().to_rgba8();
+        assert_eq!(shared_export.as_raw(), shared_preview.as_raw());
+
+        let result = export_edit_sheet(
+            &connection,
+            &paths,
+            ExportEditSheetRequest {
+                collection_id: collection.id,
+                selected_icon_ids: Vec::new(),
+                source: "current_collection".to_string(),
+                cell_width: 64,
+                cell_height: 64,
+                columns: 1,
+                gap_x: 0,
+                gap_y: 0,
+                border_x: 0,
+                border_y: 0,
+                background: "transparent".to_string(),
+                include_clean_sheet: true,
+                include_guide_sheet: false,
+                include_manifest: true,
+                label_options: None,
+                max_sheet_width: 2048,
+                max_sheet_height: 2048,
+                output_directory: None,
+                open_output_folder: false,
+            },
+        )
+        .unwrap();
+
+        let sheet = image::open(&result.clean_sheet_paths[0])
+            .unwrap()
+            .to_rgba8();
+        assert_eq!(sheet.as_raw(), shared_preview.as_raw());
+        assert_eq!(sheet.as_raw(), shared_export.as_raw());
+
+        let manifest =
+            read_static_manifest(Path::new(result.manifest_path.as_ref().unwrap())).unwrap();
+        assert_eq!(manifest.items.len(), 1);
+        assert_eq!(
+            manifest.items[0].source_hash.as_deref(),
+            Some(source_hash.as_str())
+        );
+        let sheet_hash = sha256_hex(&png_bytes_from_rgba(&sheet).unwrap());
+        assert_eq!(
+            manifest.items[0].render_hash.as_deref(),
+            Some(sheet_hash.as_str())
+        );
 
         std::fs::remove_dir_all(paths.root).unwrap();
     }

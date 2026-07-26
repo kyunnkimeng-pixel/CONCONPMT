@@ -62,11 +62,12 @@ export function PreviewComposer({
             <button
               className="inline-flex items-center gap-2 rounded-md border border-border bg-white px-3 py-2 text-sm font-medium hover:bg-menu-hover focus-visible:outline focus-visible:outline-2 focus-visible:outline-focus disabled:cursor-not-allowed disabled:text-muted"
               disabled={!hasPreviewContent}
+              title="입력한 댓글과 미리보기 아이콘만 비웁니다."
               type="button"
               onClick={onClear}
             >
               <RotateCcw aria-hidden="true" />
-              초기화
+              미리보기 비우기
             </button>
           </div>
         </header>

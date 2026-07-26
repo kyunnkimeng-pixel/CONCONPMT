@@ -1,6 +1,6 @@
 ﻿# Third-Party Licenses
 
-Generated: 2026-07-22T17:55:49Z
+Generated: 2026-07-26T09:07:16Z
 
 This file is a best-effort notice index for PMTCONCON Studio. It does not replace legal review. Preserve upstream copyright and license notices when distributing binaries.
 
@@ -223,7 +223,7 @@ PMTCONCON Studio is MIT licensed. Built-in optimization must not bundle or link 
 - phf_shared 0.13.1: MIT; from local cargo registry Cargo.toml.
 - pin-project-lite 0.2.17: Apache-2.0 OR MIT; from local cargo registry Cargo.toml.
 - plist 1.9.0: MIT; from local cargo registry Cargo.toml.
-- pmtconcon-studio 0.1.2: MIT; from workspace Cargo.toml.
+- pmtconcon-studio 0.2.0: MIT; from workspace Cargo.toml.
 - png 0.17.16: MIT OR Apache-2.0; from local cargo registry Cargo.toml.
 - png 0.18.1: MIT OR Apache-2.0; from local cargo registry Cargo.toml.
 - potential_utf 0.1.5: Unicode-3.0; from local cargo registry Cargo.toml.

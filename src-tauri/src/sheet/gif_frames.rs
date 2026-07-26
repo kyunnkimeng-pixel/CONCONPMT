@@ -1,8 +1,10 @@
+use std::borrow::Cow;
 use std::collections::{HashMap, HashSet};
 use std::fmt::Write as FmtWrite;
 use std::fs::{self, File};
 use std::io::{BufReader, BufWriter, Cursor};
 use std::path::{Path, PathBuf};
+use std::sync::Arc;
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use image::codecs::gif::{GifDecoder, GifEncoder, Repeat as ImageGifRepeat};
@@ -15,22 +17,38 @@ use sha2::{Digest, Sha256};
 use crate::db::repositories::optimization::{insert_variant, NewProcessedAssetVariant};
 use crate::error::{AppError, AppResult};
 use crate::ids::create_id;
+use crate::imaging::effects::{apply_effect_recipe, parse_effect_recipe_json, EffectRecipe};
+use crate::imaging::export_render::ExportCropRect;
 use crate::imaging::gif_pipeline::{
-    is_pingpong_loop_mode, output_repeat_for_settings, GifOutputRepeat,
+    is_pingpong_loop_mode, output_repeat_for_settings, pingpong_sequence, pingpong_sequence_len,
+    GifOutputRepeat,
 };
-use crate::imaging::import_limits::{decode_import_image, decode_import_image_file};
+use crate::imaging::import_limits::{
+    decode_import_image, read_import_file_bytes, validate_crop_rect, validate_gif_workload,
+    validate_import_dimensions, validate_import_file_size, ValidatedCropRect, MAX_GIF_FRAMES,
+    MAX_GIF_TOTAL_FRAME_PIXELS, MAX_IMPORT_DIMENSION, MAX_IMPORT_FILE_BYTES,
+};
+use crate::imaging::motion::{
+    apply_motion_recipe, parse_motion_recipe_json, static_motion_schedule, MotionFrameContext,
+    MotionFrameTiming, MotionRecipe,
+};
+use crate::imaging::text_overlay::{
+    apply_text_overlay, text_overlay_from_fields, TextOverlayRenderSpec,
+};
+use crate::imaging::transform::{apply_image_transform, source_viewport_geometry, ImageTransform};
 use crate::models::ImportImageFilePayload;
 use crate::optimization::analyzer::{analyze_file, load_target, move_temp_file};
-use crate::optimization::cache::hash_text;
+use crate::optimization::cache::{hash_text, render_recipe_crop_hash};
 use crate::paths::AppPaths;
 
 use super::grid::{split_pages, PageCellPlacement, PageSplitSettings};
 use super::manifest::{
-    read_gif_manifest, read_gif_manifest_bytes, validate_gif_manifest, write_gif_manifest,
-    GifFrameManifestItem, GifFrameSheetManifest, GifFrameSheetPage, APP_NAME,
-    GIF_FRAME_SHEET_SCHEMA,
+    read_gif_manifest_bytes, validate_gif_manifest, write_gif_manifest, GifFrameManifestItem,
+    GifFrameSheetManifest, GifFrameSheetPage, APP_NAME, GIF_FRAME_SHEET_SCHEMA,
 };
 use super::path_string;
+
+const MAX_REIMPORT_TOTAL_ENCODED_BYTES: usize = MAX_IMPORT_FILE_BYTES;
 
 #[derive(Debug, Clone, Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -189,6 +207,18 @@ struct GifIconRecord {
     crop_h: f64,
     gif_loop_mode: String,
     gif_loop_count: Option<i64>,
+    transform: ImageTransform,
+    text_overlay_enabled: bool,
+    text_overlay_text: String,
+    text_overlay_font_path: Option<String>,
+    text_overlay_font_size: f64,
+    text_overlay_x: f64,
+    text_overlay_y: f64,
+    text_overlay_color: String,
+    text_overlay_stroke_color: String,
+    text_overlay_stroke_width: f64,
+    effects: EffectRecipe,
+    motion: MotionRecipe,
 }
 
 #[derive(Debug, Clone)]
@@ -198,10 +228,16 @@ struct DecodedFrame {
     source_frame_hash: String,
 }
 
+#[derive(Debug, Clone)]
+struct SourceTimelineFrame {
+    image: Arc<RgbaImage>,
+    duration_ms: i64,
+}
+
 #[derive(Debug)]
 struct ReimportValidationInternal {
     manifest: GifFrameSheetManifest,
-    page_sources: HashMap<i64, PageImageSource>,
+    page_images: HashMap<i64, RgbaImage>,
     public: GifFrameSheetReimportValidation,
 }
 
@@ -215,6 +251,7 @@ pub fn analyze_gif_frame_sheet_export(
     connection: &Connection,
     request: AnalyzeGifFrameSheetExportRequest,
 ) -> AppResult<GifFrameSheetExportAnalysis> {
+    validate_export_settings(&request.settings)?;
     let icon = load_gif_icon(connection, &request.icon_id)?;
     let decoded = decode_rendered_frames(&icon, &request.settings)?;
     let split = page_split_for_settings(decoded.len(), &request.settings)?;
@@ -374,33 +411,32 @@ pub fn reimport_gif_frame_sheet(
     }
 
     if request.target_icon_id != validation.manifest.icon_id {
+        return Ok(GifFrameSheetReimportResult {
+            variant_id: None,
+            output_path: None,
+            frame_count: validation.manifest.frame_count,
+            duration_ms: validation.manifest.duration_ms,
+            active_variant_set: false,
+            warnings,
+            errors: vec![
+                "선택한 대상 GIF 아이콘과 매니페스트의 icon_id가 달라 다시 가져오기를 중단했습니다."
+                    .to_string(),
+            ],
+        });
+    }
+
+    let target_icon = load_gif_icon(connection, &request.target_icon_id)?;
+    if validation.manifest.source_file_id.as_deref() != Some(target_icon.source_file_id.as_str()) {
         warnings.push(
-            "선택한 대상 GIF 아이콘과 매니페스트의 icon_id가 다릅니다. 매니페스트 매핑을 기준으로 처리했습니다."
+            "매니페스트의 원본 파일 ID가 현재 대상과 달라 DB의 현재 원본 관계를 사용했습니다."
                 .to_string(),
         );
     }
 
-    let frames = crop_reimport_frames(&validation.manifest, &validation.page_sources)?;
-    let variant_id = create_id("variant");
-    let output_dir = paths
-        .processed_variants_dir
-        .join("gif_frame_reimports")
-        .join(&validation.manifest.icon_id);
-    fs::create_dir_all(&output_dir)?;
-    let output_path = output_dir.join(format!("{variant_id}.gif"));
-    let temp_path = output_path.with_extension("gif.tmp");
-    write_gif_atomic(
-        &temp_path,
-        &output_path,
-        frames,
-        repeat_from_manifest(&validation.manifest)?,
-    )?;
-
-    let file_analysis = analyze_file(&output_path, "gif")?;
-    let metadata = fs::metadata(&output_path)?;
     let settings_json = serde_json::json!({
         "source": "gif_frame_sheet_reimport",
         "schema": validation.manifest.schema,
+        "renderRecipeHash": validation.manifest.render_recipe_hash,
         "frameCellWidth": validation.manifest.frame_cell_width,
         "frameCellHeight": validation.manifest.frame_cell_height,
         "frameCount": validation.manifest.frame_count,
@@ -411,7 +447,7 @@ pub fn reimport_gif_frame_sheet(
     let mut piece_id = None;
     let mut crop_hash = hash_text(&[
         "gif_frame_sheet_reimport".to_string(),
-        validation.manifest.icon_id.clone(),
+        target_icon.id.clone(),
         validation.manifest.frame_count.to_string(),
     ]);
     let mut profile_hash = "gif_frame_sheet_reimport".to_string();
@@ -419,18 +455,13 @@ pub fn reimport_gif_frame_sheet(
         .manifest
         .source_hash
         .clone()
-        .unwrap_or_else(|| sha256_hex(settings_json.as_bytes()));
-    let mut source_file_id = validation.manifest.source_file_id.clone();
+        .unwrap_or_else(|| target_icon.source_hash.clone());
+    let source_file_id = Some(target_icon.source_file_id.clone());
     let mut active_variant_set = false;
 
     if request.set_active_variant {
         if let Some(target_profile_id) = request.target_profile_id.as_deref() {
-            match load_target(
-                connection,
-                &validation.manifest.icon_id,
-                target_profile_id,
-                None,
-            ) {
+            match load_target(connection, &target_icon.id, target_profile_id, None) {
                 Ok(target) => {
                     if target.shape != "single" {
                         warnings.push(
@@ -444,13 +475,21 @@ pub fn reimport_gif_frame_sheet(
                             "선택한 export profile의 셀 크기와 프레임 시트 셀 크기가 달라 active variant로 설정하지 않았습니다."
                                 .to_string(),
                         );
+                    } else if validation.manifest.source_hash.as_deref()
+                        != Some(target.source_hash.as_str())
+                        || validation.manifest.render_recipe_hash.as_deref()
+                            != Some(target.crop_hash.as_str())
+                    {
+                        warnings.push(
+                            "프레임 시트를 내보낸 뒤 원본 또는 crop·회전·반전·텍스트·효과·반복 recipe가 바뀌어 active variant로 설정하지 않았습니다. 파일 variant만 만들었습니다."
+                                .to_string(),
+                        );
                     } else {
                         profile_id = Some(target.profile.id.clone());
                         piece_id = Some(target.piece_id.clone());
                         crop_hash = target.crop_hash;
                         profile_hash = target.profile_hash;
                         source_hash = target.source_hash;
-                        source_file_id = Some(target.source_file_id);
                     }
                 }
                 Err(error) => warnings.push(format!(
@@ -466,33 +505,59 @@ pub fn reimport_gif_frame_sheet(
         }
     }
 
-    let variant = insert_variant(
-        connection,
-        &NewProcessedAssetVariant {
-            id: variant_id.clone(),
-            icon_id: validation.manifest.icon_id.clone(),
-            piece_id: piece_id.clone(),
-            profile_id: profile_id.clone(),
-            source_file_id,
-            kind: "optimized_gif".to_string(),
-            preset: Some("custom".to_string()),
-            path: path_string(&output_path),
-            format: "gif".to_string(),
-            width: file_analysis.width,
-            height: file_analysis.height,
-            byte_size: i64::try_from(metadata.len()).unwrap_or(i64::MAX),
-            frame_count: file_analysis.frame_count,
-            duration_ms: file_analysis.duration_ms,
-            loop_mode: file_analysis
-                .loop_mode
-                .or_else(|| Some(validation.manifest.loop_mode.clone())),
-            settings_json: settings_json.clone(),
-            source_hash,
-            crop_hash,
-            profile_hash,
-            settings_hash: hash_text(&[settings_json]),
-        },
-    )?;
+    let frames = crop_reimport_frames(&validation.manifest, &validation.page_images)?;
+    let repeat = repeat_from_manifest(&validation.manifest)?;
+    let variant_id = create_id("variant");
+    let output_dir = paths
+        .processed_variants_dir
+        .join("gif_frame_reimports")
+        .join(&target_icon.id);
+    fs::create_dir_all(&output_dir)?;
+    let output_path = output_dir.join(format!("{variant_id}.gif"));
+    let temp_path = output_path.with_extension("gif.tmp");
+    if let Err(error) = write_gif_atomic(&temp_path, &output_path, frames, repeat) {
+        cleanup_failed_gif_variant(&temp_path, &output_path, &output_dir);
+        return Err(error);
+    }
+
+    let persisted_variant = (|| {
+        let file_analysis = analyze_file(&output_path, "gif")?;
+        let metadata = fs::metadata(&output_path)?;
+        insert_variant(
+            connection,
+            &NewProcessedAssetVariant {
+                id: variant_id.clone(),
+                icon_id: target_icon.id.clone(),
+                piece_id: piece_id.clone(),
+                profile_id: profile_id.clone(),
+                source_file_id,
+                kind: "optimized_gif".to_string(),
+                preset: Some("custom".to_string()),
+                path: path_string(&output_path),
+                format: "gif".to_string(),
+                width: file_analysis.width,
+                height: file_analysis.height,
+                byte_size: i64::try_from(metadata.len()).unwrap_or(i64::MAX),
+                frame_count: file_analysis.frame_count,
+                duration_ms: file_analysis.duration_ms,
+                loop_mode: file_analysis
+                    .loop_mode
+                    .or_else(|| Some(validation.manifest.loop_mode.clone())),
+                settings_json: settings_json.clone(),
+                source_hash,
+                crop_hash,
+                profile_hash,
+                settings_hash: hash_text(&[settings_json]),
+            },
+        )
+    })();
+    let variant = match persisted_variant {
+        Ok(variant) => variant,
+        Err(error) => {
+            cleanup_failed_gif_variant(&temp_path, &output_path, &output_dir);
+            return Err(error);
+        }
+    };
 
     if request.set_active_variant && profile_id.is_some() && piece_id.is_some() {
         match crate::db::repositories::optimization::set_active_variant(connection, &variant.id) {
@@ -515,6 +580,16 @@ pub fn reimport_gif_frame_sheet(
     })
 }
 
+fn cleanup_failed_gif_variant(temp_path: &Path, output_path: &Path, output_dir: &Path) {
+    let _ = fs::remove_file(temp_path);
+    let _ = fs::remove_file(output_path);
+    let is_empty = fs::read_dir(output_dir)
+        .ok()
+        .is_some_and(|mut entries| entries.next().is_none());
+    if is_empty {
+        let _ = fs::remove_dir(output_dir);
+    }
+}
 fn build_gif_frame_manifest_plan(
     icon: &GifIconRecord,
     settings: &GifFrameSheetSettings,
@@ -563,6 +638,28 @@ fn build_gif_frame_manifest_plan(
         icon_id: icon.id.clone(),
         source_file_id: Some(icon.source_file_id.clone()),
         source_hash: Some(icon.source_hash.clone()),
+        render_recipe_hash: Some(render_recipe_crop_hash(
+            &icon.shape,
+            &ExportCropRect {
+                x: icon.crop_x,
+                y: icon.crop_y,
+                width: icon.crop_w,
+                height: icon.crop_h,
+            },
+            settings.frame_cell_width.max(1),
+            settings.frame_cell_height.max(1),
+            0,
+            ImageTransform::new(
+                icon.transform.quarter_turns,
+                icon.transform.flip_horizontal,
+                icon.transform.flip_vertical,
+            )?,
+            &icon.gif_loop_mode,
+            icon.gif_loop_count,
+            gif_icon_text_overlay(icon)?.as_ref(),
+            &icon.effects,
+            &icon.motion,
+        )?),
         display_name: icon.display_name.clone(),
         loop_mode: effective_loop_mode(icon),
         loop_count: effective_loop_count(icon),
@@ -600,94 +697,248 @@ fn load_gif_icon(connection: &Connection, icon_id: &str) -> AppResult<GifIconRec
                cs.crop_w,
                cs.crop_h,
                CASE WHEN i.gif_pingpong = 1 THEN 'pingpong' ELSE i.gif_loop_mode END AS gif_loop_mode,
-               i.gif_loop_count
+               i.gif_loop_count,
+               i.transform_quarter_turns,
+               i.transform_flip_horizontal,
+               i.transform_flip_vertical,
+               i.text_overlay_enabled,
+               i.text_overlay_text,
+               i.text_overlay_font_path,
+               i.text_overlay_font_size,
+               i.text_overlay_x,
+               i.text_overlay_y,
+               i.text_overlay_color,
+               i.text_overlay_stroke_color,
+               i.text_overlay_stroke_width,
+               er.effects_json AS effect_recipe_json,
+               mr.motion_json AS motion_recipe_json
              FROM icons i
              JOIN source_files s ON s.id = i.source_file_id
              JOIN crop_settings cs ON cs.icon_id = i.id
+             LEFT JOIN icon_effect_recipes er ON er.icon_id = i.id
+             LEFT JOIN icon_motion_recipes mr ON mr.icon_id = i.id
              WHERE i.id = ?1
                AND i.deleted_at IS NULL
                AND i.icon_kind = 'image'",
             params![icon_id],
             |row| {
-                Ok(GifIconRecord {
-                    id: row.get("id")?,
-                    source_file_id: row.get("source_file_id")?,
-                    display_name: row.get("display_name")?,
-                    source_path: row.get("original_path_in_library")?,
-                    source_extension: row.get("original_extension")?,
-                    source_hash: row.get("sha256")?,
-                    source_is_animated: row.get::<_, i64>("is_animated")? != 0,
-                    source_gif_loop_mode: row.get("source_loop_mode")?,
-                    source_gif_loop_count: row.get("original_loop_count")?,
-                    shape: row.get("shape")?,
-                    crop_x: row.get("crop_x")?,
-                    crop_y: row.get("crop_y")?,
-                    crop_w: row.get("crop_w")?,
-                    crop_h: row.get("crop_h")?,
-                    gif_loop_mode: row.get("gif_loop_mode")?,
-                    gif_loop_count: row.get("gif_loop_count")?,
-                })
+                Ok((
+                    GifIconRecord {
+                        id: row.get("id")?,
+                        source_file_id: row.get("source_file_id")?,
+                        display_name: row.get("display_name")?,
+                        source_path: row.get("original_path_in_library")?,
+                        source_extension: row.get("original_extension")?,
+                        source_hash: row.get("sha256")?,
+                        source_is_animated: row.get::<_, i64>("is_animated")? != 0,
+                        source_gif_loop_mode: row.get("source_loop_mode")?,
+                        source_gif_loop_count: row.get("original_loop_count")?,
+                        shape: row.get("shape")?,
+                        crop_x: row.get("crop_x")?,
+                        crop_y: row.get("crop_y")?,
+                        crop_w: row.get("crop_w")?,
+                        crop_h: row.get("crop_h")?,
+                        gif_loop_mode: row.get("gif_loop_mode")?,
+                        gif_loop_count: row.get("gif_loop_count")?,
+                        transform: ImageTransform {
+                            quarter_turns: row.get("transform_quarter_turns")?,
+                            flip_horizontal:
+                                row.get::<_, i64>("transform_flip_horizontal")? != 0,
+                            flip_vertical:
+                                row.get::<_, i64>("transform_flip_vertical")? != 0,
+                        },
+                        text_overlay_enabled: row.get::<_, i64>("text_overlay_enabled")? != 0,
+                        text_overlay_text: row.get("text_overlay_text")?,
+                        text_overlay_font_path: row.get("text_overlay_font_path")?,
+                        text_overlay_font_size: row.get("text_overlay_font_size")?,
+                        text_overlay_x: row.get("text_overlay_x")?,
+                        text_overlay_y: row.get("text_overlay_y")?,
+                        text_overlay_color: row.get("text_overlay_color")?,
+                        text_overlay_stroke_color: row.get("text_overlay_stroke_color")?,
+                        text_overlay_stroke_width: row.get("text_overlay_stroke_width")?,
+                        effects: EffectRecipe::default(),
+                        motion: MotionRecipe::default(),
+                    },
+                    row.get::<_, Option<String>>("effect_recipe_json")?,
+                    row.get::<_, Option<String>>("motion_recipe_json")?,
+                ))
             },
         )
         .optional()?
         .ok_or_else(|| AppError::not_found("GIF 프레임 시트로 내보낼 아이콘을 찾을 수 없습니다."))
-        .and_then(|icon| {
-            if icon.source_extension != "gif" {
+        .and_then(|(mut icon, effect_recipe_json, motion_recipe_json)| {
+            icon.effects =
+                parse_effect_recipe_json(effect_recipe_json.as_deref().unwrap_or_default())?;
+            icon.motion =
+                parse_motion_recipe_json(motion_recipe_json.as_deref().unwrap_or_default())?;
+            if icon.source_extension != "gif" && !icon.motion.has_enabled_motion() {
                 return Err(AppError::new(
                     "validation",
-                    "GIF 프레임 시트는 GIF 아이콘에서만 내보낼 수 있습니다.",
+                    "GIF 프레임 시트는 기존 GIF 또는 모션 효과가 켜진 아이콘에서만 내보낼 수 있습니다.",
                 ));
             }
-            if !icon.source_is_animated {
+            if icon.source_extension == "gif"
+                && !icon.source_is_animated
+                && !icon.motion.has_enabled_motion()
+            {
                 return Err(AppError::new(
                     "validation",
-                    "프레임 시트로 내보낼 애니메이션 프레임이 없는 GIF입니다.",
+                    "프레임 시트로 내보낼 애니메이션 프레임이 없습니다.",
                 ));
             }
             Ok(icon)
         })
 }
 
+fn load_source_timeline_frames(icon: &GifIconRecord) -> AppResult<Vec<SourceTimelineFrame>> {
+    if icon.source_extension.eq_ignore_ascii_case("gif") {
+        let file = File::open(&icon.source_path)?;
+        let decoder = GifDecoder::new(BufReader::new(file))?;
+        let frames = decoder.into_frames().collect_frames()?;
+        if frames.is_empty() {
+            return Err(AppError::new("gif", "GIF 프레임을 찾을 수 없습니다."));
+        }
+        return Ok(frames
+            .into_iter()
+            .map(|frame| {
+                let duration_ms = delay_ms(frame.delay());
+                SourceTimelineFrame {
+                    image: Arc::new(frame.into_buffer()),
+                    duration_ms,
+                }
+            })
+            .collect());
+    }
+
+    let source = image::open(&icon.source_path)?.to_rgba8();
+    let schedule = static_motion_schedule(&icon.motion)?;
+    if schedule.is_empty() {
+        return Err(AppError::new(
+            "validation",
+            "정적 이미지의 모션 프레임 일정이 비어 있습니다.",
+        ));
+    }
+
+    Ok(shared_static_source_frames(source, schedule))
+}
+
+fn shared_static_source_frames(
+    source: RgbaImage,
+    schedule: Vec<MotionFrameTiming>,
+) -> Vec<SourceTimelineFrame> {
+    let source = Arc::new(source);
+    schedule
+        .into_iter()
+        .map(|timing| SourceTimelineFrame {
+            image: Arc::clone(&source),
+            duration_ms: i64::from(timing.duration_ms),
+        })
+        .collect()
+}
+
 fn decode_rendered_frames(
     icon: &GifIconRecord,
     settings: &GifFrameSheetSettings,
 ) -> AppResult<Vec<DecodedFrame>> {
-    let file = File::open(&icon.source_path)?;
-    let decoder = GifDecoder::new(BufReader::new(file))?;
-    let frames = decoder.into_frames().collect_frames()?;
-    if frames.is_empty() {
-        return Err(AppError::new("gif", "GIF 프레임을 찾을 수 없습니다."));
-    }
+    let frames = load_source_timeline_frames(icon)?;
+    let is_pingpong = is_pingpong_loop_mode(&icon.gif_loop_mode);
+    let output_frame_count = if is_pingpong {
+        pingpong_sequence_len(frames.len())
+    } else {
+        frames.len()
+    };
 
     let viewport_width = viewport_width(&icon.shape, settings.frame_cell_width.max(1));
     let viewport_height = viewport_height(&icon.shape, settings.frame_cell_height.max(1));
-    let mut decoded = Vec::with_capacity(frames.len());
+    let source_geometry = source_viewport_geometry(
+        &icon.shape,
+        settings.frame_cell_width.max(1),
+        settings.frame_cell_height.max(1),
+        icon.transform,
+    )?;
+    let output_width = u32::try_from(viewport_width)
+        .map_err(|_| AppError::new("validation", "GIF 프레임 너비가 올바르지 않습니다."))?;
+    let output_height = u32::try_from(viewport_height)
+        .map_err(|_| AppError::new("validation", "GIF 프레임 높이가 올바르지 않습니다."))?;
+    validate_import_dimensions(output_width, output_height)?;
+    let frame_cell_width = u32::try_from(settings.frame_cell_width)
+        .map_err(|_| AppError::new("validation", "GIF 프레임 셀 너비가 올바르지 않습니다."))?;
+    let frame_cell_height = u32::try_from(settings.frame_cell_height)
+        .map_err(|_| AppError::new("validation", "GIF 프레임 셀 높이가 올바르지 않습니다."))?;
+    validate_import_dimensions(frame_cell_width, frame_cell_height)?;
+    validate_gif_workload(
+        output_width,
+        output_height,
+        i64::try_from(output_frame_count).unwrap_or(i64::MAX),
+    )
+    .map_err(|message| AppError::new("validation", message))?;
+    let repeat = output_repeat_for_settings(
+        &icon.gif_loop_mode,
+        icon.gif_loop_count,
+        &icon.source_gif_loop_mode,
+        icon.source_gif_loop_count,
+    )?;
+    let total_duration_ms = frames
+        .iter()
+        .map(|frame| u64::try_from(frame.duration_ms.max(0)).unwrap_or(u64::MAX))
+        .sum::<u64>()
+        .max(1);
+    let final_frame_index = frames.len().saturating_sub(1);
+    let mut elapsed_ms = 0_u64;
+    let text_overlay = gif_icon_text_overlay(icon)?;
+    let mut decoded = Vec::with_capacity(output_frame_count);
 
-    for frame in frames {
-        let delay = frame.delay();
-        let duration_ms = delay_ms(delay);
-        let source_frame = DynamicImage::ImageRgba8(frame.into_buffer());
+    for (frame_index, frame) in frames.into_iter().enumerate() {
+        let duration_ms = frame.duration_ms;
+        let source_frame = image_with_text_overlay(frame.image.as_ref(), text_overlay.as_ref())?;
         let viewport = crop_and_resize(
-            &source_frame,
+            source_frame.as_ref(),
             icon.crop_x,
             icon.crop_y,
             icon.crop_w,
             icon.crop_h,
-            viewport_width,
-            viewport_height,
+            source_geometry.viewport.width,
+            source_geometry.viewport.height,
         )?;
+        let mut viewport = apply_image_transform(viewport, icon.transform)?;
+        apply_effect_recipe(&mut viewport, &icon.effects)?;
+        let context_elapsed_ms = if repeat == GifOutputRepeat::Once
+            && frame_index == final_frame_index
+            && icon.motion.has_enabled_motion()
+        {
+            total_duration_ms
+        } else {
+            elapsed_ms
+        };
+        let motion_result = apply_motion_recipe(
+            &viewport,
+            &icon.motion,
+            MotionFrameContext {
+                elapsed_ms: context_elapsed_ms,
+                total_duration_ms,
+            },
+        )?;
+        let viewport = motion_result.image;
+        if i64::from(viewport.width()) != viewport_width
+            || i64::from(viewport.height()) != viewport_height
+        {
+            return Err(AppError::new(
+                "validation",
+                "회전 후 GIF 프레임 시트 크기가 아이콘 모양과 일치하지 않습니다.",
+            ));
+        }
         let rendered_frame = match icon.shape.as_str() {
             "single" => viewport,
             "horizontal_double" => imageops::resize(
                 &viewport,
-                settings.frame_cell_width.max(1) as u32,
-                settings.frame_cell_height.max(1) as u32,
+                frame_cell_width,
+                frame_cell_height,
                 FilterType::Lanczos3,
             ),
             "vertical_double" => imageops::resize(
                 &viewport,
-                settings.frame_cell_width.max(1) as u32,
-                settings.frame_cell_height.max(1) as u32,
+                frame_cell_width,
+                frame_cell_height,
                 FilterType::Lanczos3,
             ),
             _ => {
@@ -703,18 +954,39 @@ fn decode_rendered_frames(
             duration_ms,
             source_frame_hash,
         });
+        elapsed_ms = elapsed_ms.saturating_add(u64::try_from(duration_ms.max(0)).unwrap_or(0));
     }
 
-    if is_pingpong_loop_mode(&icon.gif_loop_mode) && decoded.len() > 2 {
-        let reflected = decoded[1..decoded.len() - 1]
-            .iter()
-            .rev()
-            .cloned()
-            .collect::<Vec<_>>();
-        decoded.extend(reflected);
+    if is_pingpong {
+        pingpong_sequence(&mut decoded);
     }
-
     Ok(decoded)
+}
+
+fn gif_icon_text_overlay(icon: &GifIconRecord) -> AppResult<Option<TextOverlayRenderSpec>> {
+    text_overlay_from_fields(
+        icon.text_overlay_enabled,
+        Some(icon.text_overlay_text.clone()),
+        icon.text_overlay_font_path.clone(),
+        Some(icon.text_overlay_font_size),
+        Some(icon.text_overlay_x),
+        Some(icon.text_overlay_y),
+        Some(icon.text_overlay_color.clone()),
+        Some(icon.text_overlay_stroke_color.clone()),
+        Some(icon.text_overlay_stroke_width),
+    )
+}
+
+fn image_with_text_overlay<'a>(
+    image: &'a RgbaImage,
+    text_overlay: Option<&TextOverlayRenderSpec>,
+) -> AppResult<Cow<'a, RgbaImage>> {
+    if text_overlay.is_none() {
+        return Ok(Cow::Borrowed(image));
+    }
+    let mut source = image.clone();
+    apply_text_overlay(&mut source, text_overlay)?;
+    Ok(Cow::Owned(source))
 }
 
 fn page_split_for_settings(
@@ -723,20 +995,18 @@ fn page_split_for_settings(
 ) -> AppResult<super::grid::PageSplitPlan> {
     validate_export_settings(settings)?;
     let effective_max_height = if let Some(frames_per_page) = settings.frames_per_page {
-        let rows = ((frames_per_page.max(1) + settings.columns.max(1) - 1)
-            / settings.columns.max(1))
-        .max(1);
+        let rows = ((frames_per_page + settings.columns - 1) / settings.columns).max(1);
         settings.max_sheet_height.min(sheet_extent(
             rows,
-            settings.frame_cell_height.max(1),
-            settings.gap_y.max(0),
-            settings.border_y.max(0),
+            settings.frame_cell_height,
+            settings.gap_y,
+            settings.border_y,
         ))
     } else {
         settings.max_sheet_height
     };
 
-    split_pages(
+    let plan = split_pages(
         item_count,
         PageSplitSettings {
             cell_width: settings.frame_cell_width,
@@ -749,15 +1019,52 @@ fn page_split_for_settings(
             max_sheet_width: settings.max_sheet_width,
             max_sheet_height: effective_max_height,
         },
-    )
+    )?;
+    validate_page_plan_workload(&plan)?;
+    Ok(plan)
 }
 
 fn validate_export_settings(settings: &GifFrameSheetSettings) -> AppResult<()> {
-    if settings.frame_cell_width <= 0 || settings.frame_cell_height <= 0 || settings.columns <= 0 {
+    let frame_cell_width = u32::try_from(settings.frame_cell_width)
+        .map_err(|_| AppError::new("validation", "GIF 프레임 시트 셀 너비가 올바르지 않습니다."))?;
+    let frame_cell_height = u32::try_from(settings.frame_cell_height)
+        .map_err(|_| AppError::new("validation", "GIF 프레임 시트 셀 높이가 올바르지 않습니다."))?;
+    validate_import_dimensions(frame_cell_width, frame_cell_height)?;
+    if !(1..=MAX_GIF_FRAMES).contains(&settings.columns) {
         return Err(AppError::new(
             "validation",
-            "GIF 프레임 시트 셀 크기와 열 수는 1 이상이어야 합니다.",
+            format!("GIF 프레임 시트 열 수는 1 이상 {MAX_GIF_FRAMES} 이하여야 합니다."),
         ));
+    }
+    if settings.gap_x < 0
+        || settings.gap_y < 0
+        || settings.border_x < 0
+        || settings.border_y < 0
+        || settings.gap_x > i64::from(MAX_IMPORT_DIMENSION)
+        || settings.gap_y > i64::from(MAX_IMPORT_DIMENSION)
+        || settings.border_x > i64::from(MAX_IMPORT_DIMENSION)
+        || settings.border_y > i64::from(MAX_IMPORT_DIMENSION)
+    {
+        return Err(AppError::new(
+            "validation",
+            "GIF 프레임 시트 간격과 테두리는 0~12,000px 범위여야 합니다.",
+        ));
+    }
+    if !(1..=i64::from(MAX_IMPORT_DIMENSION)).contains(&settings.max_sheet_width)
+        || !(1..=i64::from(MAX_IMPORT_DIMENSION)).contains(&settings.max_sheet_height)
+    {
+        return Err(AppError::new(
+            "validation",
+            "GIF 프레임 시트의 최대 가로·세로 크기는 1~12,000px 범위여야 합니다.",
+        ));
+    }
+    if let Some(frames_per_page) = settings.frames_per_page {
+        if !(1..=MAX_GIF_FRAMES).contains(&frames_per_page) {
+            return Err(AppError::new(
+                "validation",
+                format!("페이지당 프레임 수는 1 이상 {MAX_GIF_FRAMES} 이하여야 합니다."),
+            ));
+        }
     }
     if !settings.include_clean_sheet && !settings.include_guide_sheet && !settings.include_manifest
     {
@@ -765,6 +1072,31 @@ fn validate_export_settings(settings: &GifFrameSheetSettings) -> AppResult<()> {
             "validation",
             "내보낼 GIF 프레임 시트 산출물을 하나 이상 선택해야 합니다.",
         ));
+    }
+    Ok(())
+}
+
+fn validate_page_plan_workload(plan: &super::grid::PageSplitPlan) -> AppResult<()> {
+    let mut total_page_pixels = 0_u64;
+    for page in &plan.pages {
+        let width = u32::try_from(page.width)
+            .map_err(|_| AppError::new("validation", "프레임 시트 너비가 올바르지 않습니다."))?;
+        let height = u32::try_from(page.height)
+            .map_err(|_| AppError::new("validation", "프레임 시트 높이가 올바르지 않습니다."))?;
+        validate_import_dimensions(width, height)?;
+        let page_pixels = u64::from(width).saturating_mul(u64::from(height));
+        total_page_pixels = total_page_pixels.checked_add(page_pixels).ok_or_else(|| {
+            AppError::new(
+                "validation",
+                "프레임 시트 페이지의 전체 픽셀 수가 너무 큽니다.",
+            )
+        })?;
+        if total_page_pixels > MAX_GIF_TOTAL_FRAME_PIXELS {
+            return Err(AppError::new(
+                "validation",
+                "프레임 시트 페이지의 전체 픽셀 수가 지원 범위를 벗어났습니다.",
+            ));
+        }
     }
     Ok(())
 }
@@ -777,7 +1109,12 @@ fn render_frame_sheet_page(
     background: &str,
     guide: bool,
 ) -> AppResult<RgbaImage> {
-    let mut sheet = background_image(width.max(1) as u32, height.max(1) as u32, background, guide);
+    let width = u32::try_from(width)
+        .map_err(|_| AppError::new("validation", "프레임 시트 너비가 올바르지 않습니다."))?;
+    let height = u32::try_from(height)
+        .map_err(|_| AppError::new("validation", "프레임 시트 높이가 올바르지 않습니다."))?;
+    validate_import_dimensions(width, height)?;
+    let mut sheet = background_image(width, height, background, guide);
     for placement in placements {
         let frame = &frames[placement.item_index];
         imageops::overlay(&mut sheet, &frame.image, placement.x, placement.y);
@@ -812,25 +1149,55 @@ fn validate_reimport_inputs(
     edited_frame_sheet_files: Vec<ImportImageFilePayload>,
 ) -> AppResult<ReimportValidationInternal> {
     let manifest_path = PathBuf::from(manifest_path.trim());
-    let manifest = match manifest_file {
-        Some(file) => read_gif_manifest_bytes(&file.bytes)?,
-        None => read_gif_manifest(&manifest_path)?,
+    let manifest_file_supplied = manifest_file.is_some();
+    let input_path_count = edited_frame_sheet_paths.len();
+    let input_file_count = edited_frame_sheet_files.len();
+    let (manifest, manifest_payload_bytes) = match manifest_file.as_ref() {
+        Some(file) => (read_gif_manifest_bytes(&file.bytes)?, file.bytes.len()),
+        None => {
+            let bytes = read_import_file_bytes(&manifest_path)?;
+            let byte_size = bytes.len();
+            (read_gif_manifest_bytes(&bytes)?, byte_size)
+        }
     };
     validate_gif_manifest(&manifest)?;
 
+    let mut total_encoded_bytes = manifest_payload_bytes;
+    for file in &edited_frame_sheet_files {
+        validate_import_file_size(file.bytes.len())?;
+        total_encoded_bytes = total_encoded_bytes
+            .checked_add(file.bytes.len())
+            .ok_or_else(|| {
+                AppError::new(
+                    "manifest_workload",
+                    "선택한 프레임 시트 PNG의 전체 파일 크기가 너무 큽니다.",
+                )
+            })?;
+    }
+    if total_encoded_bytes > MAX_REIMPORT_TOTAL_ENCODED_BYTES {
+        return Err(AppError::new(
+            "manifest_workload",
+            "선택한 프레임 시트 PNG는 합계 64MB까지 처리할 수 있습니다.",
+        ));
+    }
+
+    let allow_sibling_lookup = !manifest_file_supplied && edited_frame_sheet_files.is_empty();
     let page_sources = resolve_page_sources(
         &manifest,
         &manifest_path,
         &edited_frame_sheet_paths,
-        &edited_frame_sheet_files,
+        edited_frame_sheet_files,
+        allow_sibling_lookup,
     );
     let mut warnings = Vec::new();
     let mut errors = Vec::new();
     let mut missing_pages = Vec::new();
     let mut wrong_dimension_pages = Vec::new();
     let mut detected_frame_indexes = HashSet::new();
+    let mut page_images = HashMap::with_capacity(manifest.pages.len());
+    let mut actual_decoded_page_pixels = 0_u64;
 
-    if edited_frame_sheet_paths.len() + edited_frame_sheet_files.len() > manifest.pages.len() {
+    if input_path_count + input_file_count > manifest.pages.len() {
         warnings.push(
             "선택한 프레임 시트 파일 수가 매니페스트 페이지 수보다 많습니다. 매니페스트에 있는 페이지만 사용합니다."
                 .to_string(),
@@ -847,8 +1214,9 @@ fn validate_reimport_inputs(
             continue;
         };
 
-        let image = match load_page_image_source(source) {
+        let image = match load_page_image_source(source, &mut total_encoded_bytes) {
             Ok(image) => image,
+            Err(error) if error.code == "manifest_workload" => return Err(error),
             Err(error) => {
                 errors.push(format!(
                     "{} 페이지를 읽을 수 없습니다: {}",
@@ -859,6 +1227,22 @@ fn validate_reimport_inputs(
             }
         };
 
+        let page_pixels = u64::from(image.width()).saturating_mul(u64::from(image.height()));
+        let next_total_page_pixels = actual_decoded_page_pixels
+            .checked_add(page_pixels)
+            .ok_or_else(|| {
+                AppError::new(
+                    "manifest_workload",
+                    "디코드한 프레임 시트 페이지의 전체 픽셀 수가 너무 큽니다.",
+                )
+            })?;
+        if next_total_page_pixels > MAX_GIF_TOTAL_FRAME_PIXELS {
+            return Err(AppError::new(
+                "manifest_workload",
+                "디코드한 프레임 시트 페이지의 전체 픽셀 수가 지원 범위를 벗어났습니다.",
+            ));
+        }
+        actual_decoded_page_pixels = next_total_page_pixels;
         if i64::from(image.width()) != page.width || i64::from(image.height()) != page.height {
             wrong_dimension_pages.push(page.page_index);
             errors.push(format!(
@@ -869,6 +1253,7 @@ fn validate_reimport_inputs(
                 image.width(),
                 image.height()
             ));
+            continue;
         }
         if !image.pixels().any(|pixel| pixel.0[3] < 255) {
             warnings.push(format!(
@@ -881,22 +1266,17 @@ fn validate_reimport_inputs(
             .iter()
             .filter(|frame| frame.page_index == page.page_index)
         {
-            if frame.x < 0
-                || frame.y < 0
-                || frame.w <= 0
-                || frame.h <= 0
-                || frame.x + frame.w > i64::from(image.width())
-                || frame.y + frame.h > i64::from(image.height())
-            {
+            if frame_fits_image(frame, &image) {
+                detected_frame_indexes.insert(frame.frame_index);
+            } else {
                 errors.push(format!(
                     "frame {} 셀 영역이 {} 페이지 이미지 밖으로 벗어났습니다.",
                     frame.frame_index,
                     page.page_index + 1
                 ));
-            } else {
-                detected_frame_indexes.insert(frame.frame_index);
             }
         }
+        page_images.insert(page.page_index, image);
     }
 
     if detected_frame_indexes.len() != manifest.frames.len() {
@@ -921,7 +1301,7 @@ fn validate_reimport_inputs(
             errors,
         },
         manifest,
-        page_sources,
+        page_images,
     })
 }
 
@@ -929,17 +1309,14 @@ fn resolve_page_sources(
     manifest: &GifFrameSheetManifest,
     manifest_path: &Path,
     explicit_paths: &[String],
-    explicit_files: &[ImportImageFilePayload],
+    explicit_files: Vec<ImportImageFilePayload>,
+    allow_sibling_lookup: bool,
 ) -> HashMap<i64, PageImageSource> {
     let paths = explicit_paths
         .iter()
         .map(|path| PathBuf::from(path.trim()))
         .filter(|path| !path.as_os_str().is_empty())
         .collect::<Vec<_>>();
-    let files = explicit_files
-        .iter()
-        .map(|file| (file.original_filename.clone(), file.bytes.clone()))
-        .collect::<HashMap<_, _>>();
     let mut output = HashMap::new();
 
     if paths.len() == manifest.pages.len() {
@@ -963,29 +1340,47 @@ fn resolve_page_sources(
                 output.insert(page.page_index, PageImageSource::Path(path.clone()));
                 continue;
             }
-            let same_dir = manifest_dir.join(&page.clean_sheet_file);
-            if same_dir.exists() {
-                output.insert(page.page_index, PageImageSource::Path(same_dir));
-                continue;
+            if allow_sibling_lookup {
+                if let Some(same_dir) =
+                    contained_manifest_sibling(manifest_dir, &page.clean_sheet_file)
+                {
+                    output.insert(page.page_index, PageImageSource::Path(same_dir));
+                }
             }
         }
     }
 
-    for page in &manifest.pages {
-        if let Some(bytes) = files.get(&page.clean_sheet_file) {
-            output.insert(page.page_index, PageImageSource::Bytes(bytes.clone()));
-            continue;
-        }
-        if explicit_files.len() == manifest.pages.len() {
+    if explicit_files.len() == manifest.pages.len() {
+        let all_names_match = manifest.pages.iter().all(|page| {
+            explicit_files
+                .iter()
+                .any(|file| file.original_filename == page.clean_sheet_file)
+        });
+        if all_names_match {
+            let mut files = explicit_files
+                .into_iter()
+                .map(|file| (file.original_filename, file.bytes))
+                .collect::<HashMap<_, _>>();
+            for page in &manifest.pages {
+                if let Some(bytes) = files.remove(&page.clean_sheet_file) {
+                    output.insert(page.page_index, PageImageSource::Bytes(bytes));
+                }
+            }
+        } else {
             let mut pages = manifest.pages.iter().collect::<Vec<_>>();
             pages.sort_by_key(|page| page.page_index);
-            if let Some(position) = pages
-                .iter()
-                .position(|candidate| candidate.page_index == page.page_index)
-            {
-                if let Some(file) = explicit_files.get(position) {
-                    output.insert(page.page_index, PageImageSource::Bytes(file.bytes.clone()));
-                }
+            for (page, file) in pages.into_iter().zip(explicit_files) {
+                output.insert(page.page_index, PageImageSource::Bytes(file.bytes));
+            }
+        }
+    } else {
+        let mut files = explicit_files
+            .into_iter()
+            .map(|file| (file.original_filename, file.bytes))
+            .collect::<HashMap<_, _>>();
+        for page in &manifest.pages {
+            if let Some(bytes) = files.remove(&page.clean_sheet_file) {
+                output.insert(page.page_index, PageImageSource::Bytes(bytes));
             }
         }
     }
@@ -993,23 +1388,44 @@ fn resolve_page_sources(
     output
 }
 
+fn contained_manifest_sibling(manifest_dir: &Path, file_name: &str) -> Option<PathBuf> {
+    let canonical_root = fs::canonicalize(manifest_dir).ok()?;
+    let candidate = fs::canonicalize(manifest_dir.join(file_name)).ok()?;
+    candidate.starts_with(&canonical_root).then_some(candidate)
+}
+
+fn frame_fits_image(frame: &GifFrameManifestItem, image: &RgbaImage) -> bool {
+    let Ok(x) = u32::try_from(frame.x) else {
+        return false;
+    };
+    let Ok(y) = u32::try_from(frame.y) else {
+        return false;
+    };
+    let Ok(width) = u32::try_from(frame.w) else {
+        return false;
+    };
+    let Ok(height) = u32::try_from(frame.h) else {
+        return false;
+    };
+    let Some(right) = x.checked_add(width) else {
+        return false;
+    };
+    let Some(bottom) = y.checked_add(height) else {
+        return false;
+    };
+    width > 0 && height > 0 && right <= image.width() && bottom <= image.height()
+}
+
 fn crop_reimport_frames(
     manifest: &GifFrameSheetManifest,
-    page_sources: &HashMap<i64, PageImageSource>,
+    page_images: &HashMap<i64, RgbaImage>,
 ) -> AppResult<Vec<Frame>> {
-    let mut page_cache = HashMap::new();
-    for page in &manifest.pages {
-        if let Some(source) = page_sources.get(&page.page_index) {
-            page_cache.insert(page.page_index, load_page_image_source(source)?);
-        }
-    }
-
-    let mut frame_items = manifest.frames.clone();
+    let mut frame_items = manifest.frames.iter().collect::<Vec<_>>();
     frame_items.sort_by_key(|frame| frame.frame_index);
     let mut frames = Vec::with_capacity(frame_items.len());
 
     for item in frame_items {
-        let page = page_cache.get(&item.page_index).ok_or_else(|| {
+        let page = page_images.get(&item.page_index).ok_or_else(|| {
             AppError::new(
                 "validation",
                 format!(
@@ -1018,36 +1434,67 @@ fn crop_reimport_frames(
                 ),
             )
         })?;
-        let cropped = imageops::crop_imm(
-            page,
-            item.x as u32,
-            item.y as u32,
-            item.w as u32,
-            item.h as u32,
-        )
-        .to_image();
+        if !frame_fits_image(item, page) {
+            return Err(AppError::new(
+                "validation",
+                format!(
+                    "frame {}의 셀 영역이 이미지 밖으로 나갑니다.",
+                    item.frame_index
+                ),
+            ));
+        }
+        let x = u32::try_from(item.x)
+            .map_err(|_| AppError::new("validation", "프레임 x 좌표가 올바르지 않습니다."))?;
+        let y = u32::try_from(item.y)
+            .map_err(|_| AppError::new("validation", "프레임 y 좌표가 올바르지 않습니다."))?;
+        let width = u32::try_from(item.w)
+            .map_err(|_| AppError::new("validation", "프레임 너비가 올바르지 않습니다."))?;
+        let height = u32::try_from(item.h)
+            .map_err(|_| AppError::new("validation", "프레임 높이가 올바르지 않습니다."))?;
+        let duration_ms = u32::try_from(item.duration_ms).map_err(|_| {
+            AppError::new("validation", "프레임 재생시간이 지원 범위를 벗어났습니다.")
+        })?;
+        let cropped = imageops::crop_imm(page, x, y, width, height).to_image();
         frames.push(Frame::from_parts(
             cropped,
             0,
             0,
-            Delay::from_numer_denom_ms(item.duration_ms.max(1) as u32, 1),
+            Delay::from_numer_denom_ms(duration_ms, 1),
         ));
     }
 
     Ok(frames)
 }
 
-fn load_page_image_source(source: &PageImageSource) -> AppResult<RgbaImage> {
+fn load_page_image_source(
+    source: &PageImageSource,
+    total_encoded_bytes: &mut usize,
+) -> AppResult<RgbaImage> {
     match source {
         PageImageSource::Path(path) => {
-            Ok(decode_import_image_file(path, ImageFormat::Png)?.to_rgba8())
+            let bytes = read_import_file_bytes(path)?;
+            let next_total_encoded_bytes = total_encoded_bytes
+                .checked_add(bytes.len())
+                .ok_or_else(|| {
+                    AppError::new(
+                        "manifest_workload",
+                        "선택한 프레임 시트 PNG의 전체 파일 크기가 너무 큽니다.",
+                    )
+                })?;
+            if next_total_encoded_bytes > MAX_REIMPORT_TOTAL_ENCODED_BYTES {
+                return Err(AppError::new(
+                    "manifest_workload",
+                    "선택한 프레임 시트 PNG는 합계 64MB까지 처리할 수 있습니다.",
+                ));
+            }
+            *total_encoded_bytes = next_total_encoded_bytes;
+            Ok(decode_import_image(&bytes, ImageFormat::Png)?.to_rgba8())
         }
         PageImageSource::Bytes(bytes) => {
             Ok(decode_import_image(bytes, ImageFormat::Png)?.to_rgba8())
         }
     }
 }
-
 fn repeat_from_manifest(manifest: &GifFrameSheetManifest) -> AppResult<GifOutputRepeat> {
     output_repeat_for_settings(
         &manifest.loop_mode,
@@ -1115,7 +1562,7 @@ fn write_gif_atomic(
 }
 
 fn crop_and_resize(
-    image: &DynamicImage,
+    image: &RgbaImage,
     crop_x: f64,
     crop_y: f64,
     crop_w: f64,
@@ -1123,40 +1570,33 @@ fn crop_and_resize(
     width: i64,
     height: i64,
 ) -> AppResult<RgbaImage> {
-    if crop_w <= 0.0 || crop_h <= 0.0 {
-        return Err(AppError::new(
-            "validation",
-            "올바르지 않은 crop 영역입니다.",
-        ));
-    }
-    let cropped = crop_with_padding(image, crop_x, crop_y, crop_w, crop_h);
+    let crop = validate_crop_rect(crop_x, crop_y, crop_w, crop_h)?;
+    let cropped = crop_with_padding(image, crop);
+    let width = u32::try_from(width)
+        .map_err(|_| AppError::new("validation", "GIF 프레임 너비가 올바르지 않습니다."))?;
+    let height = u32::try_from(height)
+        .map_err(|_| AppError::new("validation", "GIF 프레임 높이가 올바르지 않습니다."))?;
+    validate_import_dimensions(width, height)?;
     Ok(imageops::resize(
         &cropped,
-        width.max(1) as u32,
-        height.max(1) as u32,
+        width,
+        height,
         FilterType::Lanczos3,
     ))
 }
 
-fn crop_with_padding(
-    image: &DynamicImage,
-    crop_x: f64,
-    crop_y: f64,
-    crop_w: f64,
-    crop_h: f64,
-) -> RgbaImage {
-    let source = image.to_rgba8();
-    let crop_x = crop_x.round() as i64;
-    let crop_y = crop_y.round() as i64;
-    let crop_width = crop_w.round().max(1.0) as u32;
-    let crop_height = crop_h.round().max(1.0) as u32;
+fn crop_with_padding(source: &RgbaImage, crop: ValidatedCropRect) -> RgbaImage {
+    let crop_x = crop.x;
+    let crop_y = crop.y;
+    let crop_width = crop.width;
+    let crop_height = crop.height;
     let mut output = RgbaImage::from_pixel(crop_width, crop_height, Rgba([0, 0, 0, 0]));
     let source_width = i64::from(source.width());
     let source_height = i64::from(source.height());
     let src_x = crop_x.max(0);
     let src_y = crop_y.max(0);
-    let dst_x = (-crop_x).max(0);
-    let dst_y = (-crop_y).max(0);
+    let dst_x = crop_x.saturating_neg().max(0);
+    let dst_y = crop_y.saturating_neg().max(0);
     let copy_width = (source_width - src_x)
         .min(i64::from(crop_width) - dst_x)
         .max(0) as u32;
@@ -1302,6 +1742,9 @@ fn delay_ms(delay: Delay) -> i64 {
 }
 
 fn effective_loop_mode(icon: &GifIconRecord) -> String {
+    if icon.source_extension != "gif" && icon.gif_loop_mode == "preserve" {
+        return "infinite".to_string();
+    }
     if icon.gif_loop_mode == "preserve" {
         icon.source_gif_loop_mode.clone()
     } else {
@@ -1310,6 +1753,9 @@ fn effective_loop_mode(icon: &GifIconRecord) -> String {
 }
 
 fn effective_loop_count(icon: &GifIconRecord) -> Option<i64> {
+    if icon.source_extension != "gif" && icon.gif_loop_mode == "preserve" {
+        return None;
+    }
     if icon.gif_loop_mode == "preserve" {
         icon.source_gif_loop_count
     } else {
@@ -1414,6 +1860,7 @@ fn default_true() -> bool {
 #[cfg(test)]
 mod tests {
     use std::io::Cursor;
+    use std::sync::Arc;
     use std::time::{SystemTime, UNIX_EPOCH};
 
     use image::{AnimationDecoder, DynamicImage, ImageBuffer, ImageFormat, Rgba};
@@ -1421,15 +1868,21 @@ mod tests {
 
     use crate::db::migrations;
     use crate::db::repositories::collections::create_collection;
+    use crate::db::repositories::effects::upsert_effect_recipe;
     use crate::db::repositories::imports::import_image_files;
+    use crate::db::repositories::motion::upsert_motion_recipe;
+    use crate::imaging::effects::{EffectRecipe, EffectStep, ToneMode, EFFECT_RECIPE_VERSION};
+    use crate::imaging::motion::{static_motion_schedule, MotionRecipe, SpatialMotion};
     use crate::models::ImportImageFilePayload;
     use crate::paths::AppPaths;
 
     use super::{
-        analyze_gif_frame_sheet_export, export_gif_frame_sheet, reimport_gif_frame_sheet,
-        validate_gif_frame_sheet_reimport, AnalyzeGifFrameSheetExportRequest,
-        GifFrameSheetExportRequest, GifFrameSheetReimportRequest, GifFrameSheetSettings,
-        ValidateGifFrameSheetReimportRequest,
+        analyze_gif_frame_sheet_export, crop_reimport_frames, decode_rendered_frames,
+        export_gif_frame_sheet, load_gif_icon, load_page_image_source, reimport_gif_frame_sheet,
+        shared_static_source_frames, validate_gif_frame_sheet_reimport, validate_reimport_inputs,
+        AnalyzeGifFrameSheetExportRequest, GifFrameSheetExportRequest,
+        GifFrameSheetReimportRequest, GifFrameSheetSettings, PageImageSource,
+        ValidateGifFrameSheetReimportRequest, MAX_REIMPORT_TOTAL_ENCODED_BYTES,
     };
 
     fn connection() -> Connection {
@@ -1511,6 +1964,24 @@ mod tests {
     }
 
     #[test]
+    fn static_motion_timeline_shares_one_source_allocation() {
+        let source = ImageBuffer::from_pixel(16, 16, Rgba([255, 0, 0, 255]));
+        let schedule = static_motion_schedule(&MotionRecipe {
+            duration_ms: 10_000,
+            fps: 50,
+            ..MotionRecipe::default()
+        })
+        .unwrap();
+        let frames = shared_static_source_frames(source, schedule);
+
+        assert_eq!(frames.len(), 500);
+        assert!(frames[1..]
+            .iter()
+            .all(|frame| Arc::ptr_eq(&frames[0].image, &frame.image)));
+        assert_eq!(Arc::strong_count(&frames[0].image), frames.len());
+    }
+
+    #[test]
     fn gif_frame_export_writes_clean_guide_and_manifest_with_page_split() {
         let mut connection = connection();
         let paths = temp_paths("pmtconcon-gif-frame-export");
@@ -1553,6 +2024,49 @@ mod tests {
             [&manifest["icon_id"].as_str().unwrap()],
             |row| row.get(0),
         ).unwrap()).unwrap(), source_bytes);
+
+        std::fs::remove_dir_all(paths.root).unwrap();
+    }
+
+    #[test]
+    fn gif_frame_sheet_loads_and_applies_persisted_effect_recipe() {
+        let mut connection = connection();
+        let paths = temp_paths("pmtconcon-gif-frame-effects");
+        let (icon_id, _) = seed_gif_icon(&mut connection, &paths);
+        let before =
+            decode_rendered_frames(&load_gif_icon(&connection, &icon_id).unwrap(), &settings())
+                .unwrap();
+        let before_pixel = *before[0].image.get_pixel(12, 12);
+        assert_ne!(before_pixel[0], before_pixel[1]);
+
+        let collection_id: String = connection
+            .query_row(
+                "SELECT collection_id FROM icons WHERE id = ?1",
+                [&icon_id],
+                |row| row.get(0),
+            )
+            .unwrap();
+        let recipe = EffectRecipe {
+            version: EFFECT_RECIPE_VERSION,
+            effects: vec![EffectStep::Tone {
+                id: "grayscale".to_string(),
+                enabled: true,
+                mode: ToneMode::Grayscale,
+                amount: 100,
+            }],
+        };
+        let transaction = connection.transaction().unwrap();
+        upsert_effect_recipe(&transaction, &collection_id, &icon_id, 0, &recipe).unwrap();
+        transaction.commit().unwrap();
+
+        let stored = load_gif_icon(&connection, &icon_id).unwrap();
+        assert_eq!(stored.effects, recipe);
+        let after = decode_rendered_frames(&stored, &settings()).unwrap();
+        let after_pixel = *after[0].image.get_pixel(12, 12);
+        assert_ne!(after_pixel, before_pixel);
+        assert_eq!(after_pixel[0], after_pixel[1]);
+        assert_eq!(after_pixel[1], after_pixel[2]);
+        assert_eq!(after[0].duration_ms, before[0].duration_ms);
 
         std::fs::remove_dir_all(paths.root).unwrap();
     }
@@ -1662,6 +2176,122 @@ mod tests {
     }
 
     #[test]
+    fn gif_frame_reimport_only_activates_when_source_and_render_recipe_still_match() {
+        let mut connection = connection();
+        let paths = temp_paths("pmtconcon-gif-frame-recipe");
+        let (icon_id, _) = seed_gif_icon(&mut connection, &paths);
+        connection
+            .execute(
+                "UPDATE icons
+                 SET cell_width_override = 24,
+                     cell_height_override = 24
+                 WHERE id = ?1",
+                [&icon_id],
+            )
+            .unwrap();
+        let profile_id: String = connection
+            .query_row(
+                "SELECT p.id
+                 FROM export_profiles p
+                 JOIN icons i ON i.collection_id = p.collection_id
+                 WHERE i.id = ?1
+                 ORDER BY p.created_at ASC
+                 LIMIT 1",
+                [&icon_id],
+                |row| row.get(0),
+            )
+            .unwrap();
+        let export = export_gif_frame_sheet(
+            &connection,
+            &paths,
+            GifFrameSheetExportRequest {
+                icon_id: icon_id.clone(),
+                settings: settings(),
+            },
+        )
+        .unwrap();
+        let manifest_path = export.manifest_path.clone().unwrap();
+        let manifest: serde_json::Value =
+            serde_json::from_slice(&std::fs::read(&manifest_path).unwrap()).unwrap();
+        assert!(manifest["render_recipe_hash"].as_str().is_some());
+
+        let matching = reimport_gif_frame_sheet(
+            &connection,
+            &paths,
+            GifFrameSheetReimportRequest {
+                manifest_path: manifest_path.clone(),
+                manifest_file: None,
+                edited_frame_sheet_paths: export.frame_sheet_paths.clone(),
+                edited_frame_sheet_files: Vec::new(),
+                target_icon_id: icon_id.clone(),
+                create_variant: true,
+                set_active_variant: true,
+                target_profile_id: Some(profile_id.clone()),
+            },
+        )
+        .unwrap();
+        assert!(matching.active_variant_set);
+
+        let collection_id: String = connection
+            .query_row(
+                "SELECT collection_id FROM icons WHERE id = ?1",
+                [&icon_id],
+                |row| row.get(0),
+            )
+            .unwrap();
+        let transaction = connection.transaction().unwrap();
+        upsert_effect_recipe(
+            &transaction,
+            &collection_id,
+            &icon_id,
+            0,
+            &EffectRecipe {
+                version: EFFECT_RECIPE_VERSION,
+                effects: vec![EffectStep::Pixelate {
+                    id: "stale-pixelate".to_string(),
+                    enabled: true,
+                    block_size: 4,
+                }],
+            },
+        )
+        .unwrap();
+        transaction.commit().unwrap();
+        let stale = reimport_gif_frame_sheet(
+            &connection,
+            &paths,
+            GifFrameSheetReimportRequest {
+                manifest_path,
+                manifest_file: None,
+                edited_frame_sheet_paths: export.frame_sheet_paths,
+                edited_frame_sheet_files: Vec::new(),
+                target_icon_id: icon_id,
+                create_variant: true,
+                set_active_variant: true,
+                target_profile_id: Some(profile_id),
+            },
+        )
+        .unwrap();
+
+        assert!(!stale.active_variant_set);
+        assert!(stale
+            .warnings
+            .iter()
+            .any(|warning| warning.contains("recipe가 바뀌어")));
+        let stale_profile_id: Option<String> = connection
+            .query_row(
+                "SELECT profile_id
+                 FROM processed_asset_variants
+                 WHERE id = ?1",
+                [stale.variant_id.as_ref().unwrap()],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert!(stale_profile_id.is_none());
+
+        std::fs::remove_dir_all(paths.root).unwrap();
+    }
+
+    #[test]
     fn gif_frame_reimport_validation_detects_missing_and_wrong_size_pages() {
         let mut connection = connection();
         let paths = temp_paths("pmtconcon-gif-frame-validate");
@@ -1698,6 +2328,271 @@ mod tests {
         assert!(!validation.errors.is_empty());
         assert_eq!(validation.missing_pages, vec![1]);
         assert_eq!(validation.wrong_dimension_pages, vec![0]);
+
+        std::fs::remove_dir_all(paths.root).unwrap();
+    }
+    #[test]
+    fn gif_frame_sheet_pingpong_reflects_final_motion_frames() {
+        let mut connection = connection();
+        let paths = temp_paths("pmtconcon-gif-frame-pingpong-motion");
+        let (icon_id, _) = seed_gif_icon(&mut connection, &paths);
+        let collection_id: String = connection
+            .query_row(
+                "SELECT collection_id FROM icons WHERE id = ?1",
+                [&icon_id],
+                |row| row.get(0),
+            )
+            .unwrap();
+        let transaction = connection.transaction().unwrap();
+        upsert_motion_recipe(
+            &transaction,
+            &collection_id,
+            &icon_id,
+            0,
+            &MotionRecipe {
+                duration_ms: 260,
+                fps: 10,
+                seed: 91,
+                spatial: Some(SpatialMotion::Spin {
+                    enabled: true,
+                    cycles_per_loop: 1,
+                    clockwise: true,
+                }),
+                ..MotionRecipe::default()
+            },
+        )
+        .unwrap();
+        transaction.commit().unwrap();
+
+        let mut normal_icon = load_gif_icon(&connection, &icon_id).unwrap();
+        normal_icon.gif_loop_mode = "infinite".to_string();
+        let normal = decode_rendered_frames(&normal_icon, &settings()).unwrap();
+        let mut pingpong_icon = load_gif_icon(&connection, &icon_id).unwrap();
+        pingpong_icon.gif_loop_mode = "pingpong".to_string();
+        let actual = decode_rendered_frames(&pingpong_icon, &settings()).unwrap();
+
+        assert_eq!(normal.len(), 4);
+        assert_eq!(actual.len(), 6);
+        assert_eq!(
+            actual
+                .iter()
+                .map(|frame| frame.duration_ms)
+                .collect::<Vec<_>>(),
+            vec![50, 60, 70, 80, 70, 60]
+        );
+        for index in 0..4 {
+            assert_eq!(actual[index].image, normal[index].image);
+            assert_eq!(
+                actual[index].source_frame_hash,
+                normal[index].source_frame_hash
+            );
+        }
+        assert_eq!(actual[4].image, normal[2].image);
+        assert_eq!(actual[4].source_frame_hash, normal[2].source_frame_hash);
+        assert_eq!(actual[5].image, normal[1].image);
+        assert_eq!(actual[5].source_frame_hash, normal[1].source_frame_hash);
+
+        std::fs::remove_dir_all(paths.root).unwrap();
+    }
+
+    #[test]
+    fn gif_frame_reimport_rejects_target_mismatch_before_writing() {
+        let mut connection = connection();
+        let paths = temp_paths("pmtconcon-gif-frame-target-mismatch");
+        let (manifest_icon_id, _) = seed_gif_icon(&mut connection, &paths);
+        let (other_icon_id, _) = seed_gif_icon(&mut connection, &paths);
+        let export = export_gif_frame_sheet(
+            &connection,
+            &paths,
+            GifFrameSheetExportRequest {
+                icon_id: manifest_icon_id,
+                settings: settings(),
+            },
+        )
+        .unwrap();
+        let reimport_root = paths.processed_variants_dir.join("gif_frame_reimports");
+        let result = reimport_gif_frame_sheet(
+            &connection,
+            &paths,
+            GifFrameSheetReimportRequest {
+                manifest_path: export.manifest_path.unwrap(),
+                manifest_file: None,
+                edited_frame_sheet_paths: export.frame_sheet_paths,
+                edited_frame_sheet_files: Vec::new(),
+                target_icon_id: other_icon_id,
+                create_variant: true,
+                set_active_variant: false,
+                target_profile_id: None,
+            },
+        )
+        .unwrap();
+
+        assert!(result.variant_id.is_none());
+        assert!(result.output_path.is_none());
+        assert!(!result.errors.is_empty());
+        assert!(!reimport_root.exists());
+        let variant_count: i64 = connection
+            .query_row("SELECT COUNT(*) FROM processed_asset_variants", [], |row| {
+                row.get(0)
+            })
+            .unwrap();
+        assert_eq!(variant_count, 0);
+
+        std::fs::remove_dir_all(paths.root).unwrap();
+    }
+
+    #[test]
+    fn gif_frame_reimport_preflights_missing_manifest_icon_without_orphan() {
+        let mut connection = connection();
+        let paths = temp_paths("pmtconcon-gif-frame-missing-target");
+        let (icon_id, _) = seed_gif_icon(&mut connection, &paths);
+        let export = export_gif_frame_sheet(
+            &connection,
+            &paths,
+            GifFrameSheetExportRequest {
+                icon_id,
+                settings: settings(),
+            },
+        )
+        .unwrap();
+        let mut manifest: serde_json::Value =
+            serde_json::from_slice(&std::fs::read(export.manifest_path.unwrap()).unwrap()).unwrap();
+        manifest["icon_id"] = serde_json::json!("icon_missing");
+        let edited_frame_sheet_files = export
+            .frame_sheet_paths
+            .iter()
+            .enumerate()
+            .map(|(index, path)| ImportImageFilePayload {
+                original_filename: format!("frames_sheet_{:03}.png", index + 1),
+                bytes: std::fs::read(path).unwrap(),
+            })
+            .collect();
+        let error = reimport_gif_frame_sheet(
+            &connection,
+            &paths,
+            GifFrameSheetReimportRequest {
+                manifest_path: String::new(),
+                manifest_file: Some(ImportImageFilePayload {
+                    original_filename: "frames_manifest.json".to_string(),
+                    bytes: serde_json::to_vec(&manifest).unwrap(),
+                }),
+                edited_frame_sheet_paths: Vec::new(),
+                edited_frame_sheet_files,
+                target_icon_id: "icon_missing".to_string(),
+                create_variant: true,
+                set_active_variant: false,
+                target_profile_id: None,
+            },
+        )
+        .unwrap_err();
+
+        assert_eq!(error.code, "not_found");
+        assert!(!paths
+            .processed_variants_dir
+            .join("gif_frame_reimports")
+            .exists());
+        let variant_count: i64 = connection
+            .query_row("SELECT COUNT(*) FROM processed_asset_variants", [], |row| {
+                row.get(0)
+            })
+            .unwrap();
+        assert_eq!(variant_count, 0);
+
+        std::fs::remove_dir_all(paths.root).unwrap();
+    }
+
+    #[test]
+    fn gif_frame_reimport_crops_validated_image_snapshot_after_paths_are_removed() {
+        let mut connection = connection();
+        let paths = temp_paths("pmtconcon-gif-frame-snapshot");
+        let (icon_id, _) = seed_gif_icon(&mut connection, &paths);
+        let export = export_gif_frame_sheet(
+            &connection,
+            &paths,
+            GifFrameSheetExportRequest {
+                icon_id,
+                settings: settings(),
+            },
+        )
+        .unwrap();
+        let validation = validate_reimport_inputs(
+            export.manifest_path.unwrap(),
+            None,
+            export.frame_sheet_paths.clone(),
+            Vec::new(),
+        )
+        .unwrap();
+        assert!(validation.public.errors.is_empty());
+        for path in export.frame_sheet_paths {
+            std::fs::remove_file(path).unwrap();
+        }
+
+        let frames = crop_reimport_frames(&validation.manifest, &validation.page_images).unwrap();
+        assert_eq!(frames.len(), 4);
+
+        std::fs::remove_dir_all(paths.root).unwrap();
+    }
+    #[test]
+    fn gif_path_aggregate_limit_is_checked_before_png_decode() {
+        let paths = temp_paths("pmtconcon-gif-frame-path-budget");
+        let invalid_png_path = paths.root.join("invalid.png");
+        std::fs::write(&invalid_png_path, b"not a png").unwrap();
+        let source = PageImageSource::Path(invalid_png_path);
+        let mut total_encoded_bytes = MAX_REIMPORT_TOTAL_ENCODED_BYTES;
+
+        let error = load_page_image_source(&source, &mut total_encoded_bytes).unwrap_err();
+
+        assert_eq!(error.code, "manifest_workload");
+        assert_eq!(total_encoded_bytes, MAX_REIMPORT_TOTAL_ENCODED_BYTES);
+        std::fs::remove_dir_all(paths.root).unwrap();
+    }
+
+    #[test]
+    fn gif_frame_export_rejects_oversized_sheet_settings_before_output() {
+        let mut connection = connection();
+        let paths = temp_paths("pmtconcon-gif-frame-export-workload");
+        let (icon_id, _) = seed_gif_icon(&mut connection, &paths);
+        let rejected_output = paths.root.join("rejected-output");
+        let mut huge = settings();
+        huge.columns = 1_000_000_000;
+        huge.max_sheet_width = 1_000_000_000;
+        huge.output_directory = Some(rejected_output.to_string_lossy().to_string());
+        let error = export_gif_frame_sheet(
+            &connection,
+            &paths,
+            GifFrameSheetExportRequest {
+                icon_id: icon_id.clone(),
+                settings: huge,
+            },
+        )
+        .unwrap_err();
+        assert_eq!(error.code, "validation");
+        assert!(!rejected_output.exists());
+
+        let mut oversized_cell = settings();
+        oversized_cell.frame_cell_width = i64::MAX;
+        let error = analyze_gif_frame_sheet_export(
+            &connection,
+            AnalyzeGifFrameSheetExportRequest {
+                icon_id: icon_id.clone(),
+                settings: oversized_cell,
+            },
+        )
+        .unwrap_err();
+        assert_eq!(error.code, "validation");
+
+        let mut overflowing = settings();
+        overflowing.gap_x = i64::MAX;
+        overflowing.border_y = i64::MAX;
+        overflowing.max_sheet_height = i64::MAX;
+        assert!(analyze_gif_frame_sheet_export(
+            &connection,
+            AnalyzeGifFrameSheetExportRequest {
+                icon_id,
+                settings: overflowing,
+            },
+        )
+        .is_err());
 
         std::fs::remove_dir_all(paths.root).unwrap();
     }
