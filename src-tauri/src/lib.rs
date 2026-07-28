@@ -12,6 +12,13 @@ pub fn run() {
         .invoke_handler(tauri::generate_handler![
             commands::collections::list_collections,
             commands::collections::create_collection,
+            commands::ai::get_ai_review_state,
+            commands::ai::import_local_ai_candidate,
+            commands::ai::preview_ai_candidate_normalization,
+            commands::ai::activate_ai_candidate,
+            commands::ai::create_ai_icon_root,
+            commands::ai::restore_ai_version,
+            commands::ai::repair_ai_to_original,
             commands::collections::rename_collection,
             commands::collections::delete_collection,
             commands::collections::duplicate_collection,

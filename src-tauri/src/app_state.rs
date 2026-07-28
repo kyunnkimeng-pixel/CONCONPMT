@@ -4,7 +4,7 @@ use std::sync::{Mutex, MutexGuard};
 use rusqlite::Connection;
 use tauri::{AppHandle, Manager, Runtime};
 
-use crate::db::connection::{open_database, open_existing_database};
+use crate::db::connection::{open_database_with_paths, open_existing_database};
 use crate::error::{AppError, AppResult};
 use crate::paths::AppPaths;
 
@@ -17,7 +17,8 @@ impl AppState {
     pub fn initialize<R: Runtime>(app: &AppHandle<R>) -> AppResult<Self> {
         let app_data_dir = app_data_dir(app)?;
         let paths = AppPaths::prepare(app_data_dir)?;
-        let connection = open_database(&paths.database_path)?;
+        let connection = open_database_with_paths(&paths.database_path, &paths)?;
+        let _ = crate::db::repositories::ai::cleanup_ai_crash_orphans(&connection, &paths);
 
         Ok(Self {
             connection: Mutex::new(connection),

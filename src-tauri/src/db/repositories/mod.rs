@@ -1,3 +1,11 @@
+pub mod ai;
+mod ai_activation;
+pub(crate) mod ai_candidate_normalization;
+#[cfg(test)]
+mod ai_integration_tests;
+mod ai_managed_artifacts;
+mod ai_new_icon;
+mod ai_snapshots;
 mod clone_artifacts;
 #[cfg(test)]
 mod collection_clone_tests;

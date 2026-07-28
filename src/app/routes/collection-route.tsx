@@ -26,6 +26,7 @@ import {
 } from "@/features/collections/api";
 import { DropImportZone } from "@/features/collections/components/DropImportZone";
 import { notifyCollectionListChanged } from "@/features/collections/events";
+import { upsertIconSummary } from "@/features/collections/icon-list-model";
 import type {
   CollectionSettingsPayload,
   CollectionSummary,
@@ -57,6 +58,10 @@ import {
 } from "@/features/icons/api";
 import { IconGrid } from "@/features/icons/components/IconGrid";
 import { createUniqueBatchAltUpdates } from "@/features/icons/batch-alt";
+import type {
+  IconRevealAction,
+  IconRevealRequest,
+} from "@/features/icons/icon-reveal";
 import { DcinsidePreview } from "@/features/preview/components/DcinsidePreview";
 import {
   bytesToMegabytesInput,
@@ -108,6 +113,7 @@ export function CollectionRoute() {
   const thumbnailInputRef = useRef<HTMLInputElement>(null);
   const replaceImageInputRef = useRef<HTMLInputElement>(null);
   const hasLoadedRouteSettingsRef = useRef(false);
+  const iconRevealRequestIdRef = useRef(0);
   const [collection, setCollection] = useState<CollectionSummary | null>(null);
   const [icons, setIcons] = useState<IconSummary[]>([]);
   const [isLoading, setIsLoading] = useState(true);
@@ -115,6 +121,7 @@ export function CollectionRoute() {
   const [isImporting, setIsImporting] = useState(false);
   const [editingIconId, setEditingIconId] = useState<string | null>(null);
   const [isEditorDirty, setIsEditorDirty] = useState(false);
+  const [isAiDialogOpen, setIsAiDialogOpen] = useState(false);
   const [isExportDialogOpen, setIsExportDialogOpen] = useState(false);
   const [isSheetImportOpen, setIsSheetImportOpen] = useState(false);
   const [isFrameSheetGifOpen, setIsFrameSheetGifOpen] = useState(false);
@@ -134,6 +141,8 @@ export function CollectionRoute() {
   const [errorMessage, setErrorMessage] = useState<string | null>(null);
   const [thumbnailOverrideIconId, setThumbnailOverrideIconId] = useState<string | null>(null);
   const [replaceImageIconId, setReplaceImageIconId] = useState<string | null>(null);
+  const [iconRevealRequest, setIconRevealRequest] =
+    useState<IconRevealRequest | null>(null);
   const [operationProgress, setOperationProgress] = useState<OperationProgress | null>(null);
   const duplicatePieceIds = useMemo(() => findDuplicateAltPieceIds(icons), [icons]);
 
@@ -432,29 +441,53 @@ export function CollectionRoute() {
   const handleEditIcon = useCallback(
     (iconId: string) => {
       if (editingIconId === iconId) {
-        return;
+        return true;
       }
       if (
         editingIconId &&
         isEditorDirty &&
         !window.confirm("저장하지 않은 편집 변경을 버리고 다른 아이콘을 열까요?")
       ) {
-        return;
+        return false;
       }
       setIsEditorDirty(false);
       setEditingIconId(iconId);
       setImportStatus("아이콘 편집 패널을 열었습니다.");
+      return true;
     },
     [editingIconId, isEditorDirty],
   );
 
-  const handleIconUpdated = useCallback((updatedIcon: IconSummary) => {
-    setIcons((currentIcons) =>
-      currentIcons.map((icon) => (icon.id === updatedIcon.id ? updatedIcon : icon)),
-    );
-    setImportStatus("아이콘 편집값을 저장했습니다.");
-    notifyCollectionListChanged();
-  }, []);
+  const handleRevealIcon = useCallback(
+    (iconId: string, action: IconRevealAction) => {
+      if (action === "open_editor" && !handleEditIcon(iconId)) {
+        return false;
+      }
+      iconRevealRequestIdRef.current += 1;
+      setViewMode("explorer");
+      setIconRevealRequest({
+        iconId,
+        action,
+        requestId: iconRevealRequestIdRef.current,
+      });
+      return true;
+    },
+    [handleEditIcon],
+  );
+
+  const handleIconUpdated = useCallback(
+    (
+      updatedIcon: IconSummary,
+      options?: { silent?: boolean },
+    ) => {
+      setIcons((currentIcons) => upsertIconSummary(currentIcons, updatedIcon));
+      if (!options?.silent) {
+        setImportStatus("아이콘 목록을 최신 상태로 갱신했습니다.");
+      }
+      notifyCollectionListChanged();
+    },
+    [],
+  );
 
   const handleReorderIcons = useCallback(
     async (orderedIconIds: string[]) => {
@@ -900,6 +933,7 @@ export function CollectionRoute() {
         {isSettingsOpen ? (
           <CollectionSettingsPanel
             collection={collection}
+            suppressLiveRegions={isAiDialogOpen}
             onSave={async (payload) => {
               const updatedCollection = await updateCollectionSettings(collection.id, payload);
               setCollection(updatedCollection);
@@ -999,6 +1033,8 @@ export function CollectionRoute() {
                   duplicatePieceIds={duplicatePieceIds}
                   editRequest={null}
                   icons={icons}
+                  revealRequest={iconRevealRequest}
+                  suppressBackgroundLiveRegions={isAiDialogOpen}
                   thumbnailOnly={isThumbnailOnly}
                   validateAltDraft={validateAltDraft}
                   validateCurrentAlt={validateCurrentAlt}
@@ -1044,13 +1080,21 @@ export function CollectionRoute() {
           )}
 
           {importStatus ? (
-            <p className="mt-3 text-sm text-muted" role="status">
+            <p
+              aria-hidden={isAiDialogOpen || undefined}
+              className="mt-3 text-sm text-muted"
+              role={isAiDialogOpen ? undefined : "status"}
+            >
               {importStatus}
             </p>
           ) : null}
 
           {errorMessage ? (
-            <p className="mt-3 text-sm text-danger" role="alert">
+            <p
+              aria-hidden={isAiDialogOpen || undefined}
+              className="mt-3 text-sm text-danger"
+              role={isAiDialogOpen ? undefined : "alert"}
+            >
               {errorMessage}
             </p>
           ) : null}
@@ -1061,12 +1105,16 @@ export function CollectionRoute() {
             collection={collection}
             iconId={editingIconId}
             key={editingIconId}
+            onAiModalOpenChange={setIsAiDialogOpen}
             onClose={() => {
               setEditingIconId(null);
               setIsEditorDirty(false);
+              setIsAiDialogOpen(false);
             }}
             onDirtyChange={setIsEditorDirty}
             onIconUpdated={handleIconUpdated}
+            onRevealIcon={handleRevealIcon}
+            suppressBackgroundLiveRegions={isAiDialogOpen}
           />
         ) : null}
       </section>
@@ -1074,9 +1122,14 @@ export function CollectionRoute() {
       {isExportDialogOpen ? (
         <ExportDialog
           collection={collection}
-          onClose={() => setIsExportDialogOpen(false)}
+          onAiModalOpenChange={setIsAiDialogOpen}
+          onClose={() => {
+            setIsExportDialogOpen(false);
+            setIsAiDialogOpen(false);
+          }}
           onExported={handleExported}
           onIconUpdated={handleIconUpdated}
+          onRevealIcon={handleRevealIcon}
         />
       ) : null}
       {isSheetImportOpen ? (
@@ -1119,7 +1172,12 @@ export function CollectionRoute() {
           }}
         />
       ) : null}
-      {operationProgress ? <OperationProgressOverlay progress={operationProgress} /> : null}
+      {operationProgress ? (
+        <OperationProgressOverlay
+          progress={operationProgress}
+          suppressLiveRegion={isAiDialogOpen}
+        />
+      ) : null}
     </div>
   );
 }
@@ -1127,9 +1185,11 @@ export function CollectionRoute() {
 function CollectionSettingsPanel({
   collection,
   onSave,
+  suppressLiveRegions,
 }: {
   collection: CollectionSummary;
   onSave: (payload: CollectionSettingsPayload) => Promise<void>;
+  suppressLiveRegions: boolean;
 }) {
   const [draft, setDraft] = useState<CollectionSettingsPayload>(() => ({
     defaultCellWidth: collection.defaultCellWidth,
@@ -1212,7 +1272,11 @@ function CollectionSettingsPanel({
       </div>
       <div className="flex items-center justify-between gap-3">
         {errorMessage ? (
-          <p className="text-sm text-danger" role="alert">
+          <p
+            aria-hidden={suppressLiveRegions || undefined}
+            className="text-sm text-danger"
+            role={suppressLiveRegions ? undefined : "alert"}
+          >
             {errorMessage}
           </p>
         ) : (
@@ -1387,7 +1451,13 @@ function SettingsMegabytesField({
   );
 }
 
-function OperationProgressOverlay({ progress }: { progress: OperationProgress }) {
+function OperationProgressOverlay({
+  progress,
+  suppressLiveRegion,
+}: {
+  progress: OperationProgress;
+  suppressLiveRegion: boolean;
+}) {
   const percentage =
     progress.total > 0
       ? Math.min(100, Math.round((progress.current / progress.total) * 100))
@@ -1395,9 +1465,10 @@ function OperationProgressOverlay({ progress }: { progress: OperationProgress })
 
   return (
     <div
-      aria-live="polite"
+      aria-hidden={suppressLiveRegion || undefined}
+      aria-live={suppressLiveRegion ? undefined : "polite"}
       className="fixed inset-0 z-50 flex items-center justify-center bg-slate-900/30 px-4"
-      role="status"
+      role={suppressLiveRegion ? undefined : "status"}
     >
       <div className="w-full max-w-md rounded-lg border border-border bg-surface p-5 shadow-xl">
         <div className="flex items-center justify-between gap-3">

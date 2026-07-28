@@ -196,3 +196,198 @@ Reasoning:
   sheets, and GIF frame-sheet source/render hashes use the same normalized recipe.
 - Existing image/GIF code is sufficient for this bounded set, so no effect dependency
   or embedded third-party editor runtime is introduced.
+
+## ADR-014: AI separates immutable provider candidates from icon-scoped versions
+
+AI support is provider-neutral and candidate-first. It must not overwrite
+`icons.source_file_id`, original bytes, crop data, or deterministic edit recipes. Preview
+artifacts are newly rendered to icon/activation-owned durable paths and switched by DB pointer.
+
+Decision:
+- Persist each provider execution as a mutable status/retention record in `ai_requests`
+  and its immutable raw outputs in `ai_candidates`. Register authoritative bytes in the
+  existing content-addressed `source_files`; request input/handoff folders are temporary
+  copies, not source of truth.
+- Bind a candidate to a specific icon and original lineage through `icon_ai_versions`.
+  Use `icons.original_lineage_id` plus monotonic `original_lineage_generation`
+  independently from content-addressed source identity so same-byte replacement cannot
+  revive old history and legacy manifests can detect any replacement. Store normalization/
+  effective source on the version and a revisioned nullable pointer in `icon_ai_state`.
+  `NULL` selects the original; selecting an old version or `NULL` is a local rollback.
+- Backfill every existing icon with a distinct lineage, generation 0 and original-only AI
+  state. DB lineage defaults, an atomic state trigger and one guarded repository helper
+  cover every import, placeholder, duplicate, sheet and clone insert path. Enforce nullable
+  `SET NULL` request origins, restricted candidate/source provenance, a lineage-scoped
+  parent FK, and an icon-scoped active-version FK plus lineage CAS. Store safely decoded
+  `pmtcon-alpha-v1` metadata on `source_files`: true means an actual non-opaque pixel in any
+  displayed frame, not merely an alpha channel. Never infer it from an extension.
+- Resolve one `EffectiveVisualSource` at the start of every preview, export, optimizer,
+  GIF-FPS, static-sheet and GIF-sheet operation. Sheet manifests retain original identity
+  and separately record lineage/generation plus effective render source/hash in versioned
+  static/GIF v2 schemas; legacy manifests require inactive AI and generation 0. AI changes
+  only the base source; native edit stages remain durable.
+- Broken/missing state, source files, SHA or decode metadata fail closed and block
+  render/export rather than silently selecting the original. The editor exposes separate
+  original and effective-render sources. `processed_asset_variants` records the effective
+  source ID/hash, while non-render ownership queries remain on a documented direct-original
+  allowlist.
+  Reconcile legacy nullable variant source IDs only on unambiguous owning-original ID/SHA
+  matches. Bounded-check legacy artifacts and backfill `output_sha256`; otherwise deactivate
+  them and replace promoted previews with native effective-source renders. Require all new
+  variants to carry matching non-null source ID/SHA and output digest provenance.
+- Default to adding a candidate as a new working icon with empty alt. Preserve provider-raw
+  and deterministic normalized sources. Activate only compatible `base_source` versions on
+  the current icon; rendered-viewport and GIF-poster results create new full-canvas icons
+  so existing recipes are not applied twice.
+  A base-source new-icon transaction includes its candidate child/active state before final
+  effective-source resolution, variants and previews; failure compensates the entire icon
+  instead of leaving a committed clone awaiting a second activation.
+- Keep the editor entry compact and perform import/generation, large candidate comparison,
+  normalization, activation and history in one large in-app AI workspace dialog. Preserve
+  arbitrary-size raw JPG/PNG candidates and create a separate deterministic
+  `contain_pad`/`cover_crop` source for the effective base canvas. Default to
+  contain + transparent padding, show raw/normalized/final output before commit, and provide
+  explicit post-create reveal/open actions. Provider controls appear only when their full
+  flow is implemented.
+- Request-time payload, request-recipe and activation-recipe signatures are distinct:
+  base-source payload signatures exclude downstream recipes, rendered-viewport signatures
+  include them, and the activation signature always covers the latest full native recipe.
+- Activation and rollback use prepare snapshot, staging render, full-recipe CAS and one
+  short transaction. After CAS, staging files are atomically renamed to preallocated
+  icon/activation-owned durable paths and those paths plus version/pointer/revision are committed;
+  failures use DB rollback, file compensation and reference-aware crash-orphan cleanup.
+  Network, manual web waits and rendering never hold the transaction.
+- A normal image replacement stages the new source/preview and atomically updates the
+  original, always issues a new lineage ID, increments lineage generation, resets edit
+  geometry, clears active AI state, increments activation revision and marks old-signature
+  requests superseded. Old versions remain history but cannot be activated on the new
+  lineage, including an `A → B → A` replacement.
+- Keep pixelation, color adjustment, transforms and motion in the deterministic native
+  renderer; use AI for semantic style, character, background and composition changes.
+- Keep PMTCONCON Studio free/MIT and do not operate a shared provider account, shared
+  credential, metered proxy or paid AI service. Each user's provider subscription, credits,
+  charges and compliance remain on that user's account.
+- Use NovelAI Image API as the first automated adapter and conditional primary. Accept only
+  a user-issued Persistent API Token, session-first, and initially allow only exact
+  `https://image.novelai.net:443/ai/generate-image`. Do not accept account login credentials
+  or call primary login/token APIs. Require one human action for one request/sample and
+  prohibit background batches, chained generation, automatic retries and provider fallback.
+  Release requires official support clarification and a user-approved small live pilot
+  because the public schema leaves model/action, rate and API Anlas details incomplete.
+  A newly issued PAT invalidates the old PAT and is only shown once, so clear frontend token
+  input after the invoke handoff, never auto-read the clipboard, and handle `401` without
+  retry by giving rotation/re-entry guidance.
+- Treat NovelAI text-to-image, img2img and inpaint as the first capability set. General Opus
+  zero-Anlas conditions exclude base-image generation. The official web Inpaint guide
+  separately documents zero-Anlas Focused Inpainting on large-image regions for Opus, but
+  the public Image API does not document Focused payload support or charging parity. Treat
+  API inpaint cost as provider-confirmation-required until support clarification and the
+  pilot. Do not convert subscription Anlas to USD actual/billed or assume alpha/animation.
+- Preserve manual website handoff as a token-free fallback. It may package the image/mask/
+  references and prompt, open an official website, and import a user-selected result. It
+  records service surface, account context and typed policy references, may represent
+  model/cost as unverified, and must not automate login, cookies, DOM upload, scraping, or
+  downloads.
+- Gemini is not the default: current image generation has no free tier and requires a
+  separate age/audience, professional/business, region and paid-service distribution gate.
+  OpenAI Image API remains a separately reviewed optional paid-cloud adapter. A generic
+  local adapter is a separate literal-loopback-only security stage with redirects denied.
+- Use BYOK only. Secrets never enter SQLite, durable settings, request history or logs.
+  A Tauri desktop backend remains a client: OS credential storage protects at rest but
+  does not remove runtime theft risk. Start with session keys, code-owned exact HTTPS
+  origins, strict CSP and narrow Rust commands; persistent keys require credential-store/
+  license review.
+- Persist only provider-qualified, versioned, bounded canonical allowlist snapshots for
+  adapter contract/capability/data-tier/retention/consent and prompt/options, not binary
+  payloads, complete requests/responses, secret references or secrets.
+- Foundation and the first cloud-adapter stage persist `credential_mode_snapshot` only. They
+  create no credential binding table/column/FK and reject `os_vault_ref`.
+- Persistent credentials require a separate later Stage Gate. It must introduce a secret-
+  free `ai_credential_bindings` parent, nullable request FK `ON DELETE SET NULL`, and
+  adapter/provider consistency guards while keeping tokens only in the OS vault. Deletion
+  first marks the binding `deleting`, then removes the vault entry and DB row; interruption
+  is a retryable repair state. Its migration tests must prove no cascade into AI history.
+- Provider changes require a new request and consent. Disabling an adapter, clearing a
+  session token or deleting a future persistent binding never deletes candidates/versions or
+  changes the active pointer, so local rollback remains available.
+- Do not bundle local AI runtimes, model weights, workflows, or copyleft/unclear
+  dependencies. ComfyUI may only be considered as a separately installed user endpoint
+  reached by independently written bounded HTTP integration. Disclose that its workflow
+  may itself call external paid Partner Nodes, so only the app-to-endpoint hop is local.
+- Keep GIF frame batches and sprite-sheet generation experimental. A larger sheet is not
+  assumed to be cheaper, and static poster replacement is never silently treated as a
+  full animated edit.
+- The repository's MIT license covers PMTCONCON Studio code, not provider/model/workflow
+  terms, attribution duties or generated-output rights. Store typed references and show
+  this boundary during consent/export instead of promising rights the app cannot grant.
+- Icon and collection clones share mutable request execution provenance, immutable
+  candidates and bytes, but map every distinct historical lineage one-to-one to a new ID,
+  preserve generation, and receive new version/state IDs and independent previews. The fixed
+  order is durable recipes, the complete AI DAG/state, target effective source, compatible
+  variants, then preview paths. Copy a variant only when source/crop hashes, format and an
+  ID/path-independent output-profile compatibility hash match the final target. Otherwise
+  skip its bytes/row and promoted-preview remap and render natively; never relabel old bytes
+  with the new effective-source hash. Every failure rolls back DB state and compensates
+  files. A pending request's late candidate is
+  not auto-attached to a clone. Usage/cost is counted once per distinct request. Cleanup
+  protects referenced sources and expires temporary sensitive input/handoff/staging copies
+  under an explicit retention policy.
+- Preserve original and version source bytes through ordinary cleanup so rollback remains
+  local and available until the user explicitly confirms permanent AI-history deletion
+  after seeing affected rollback points, descendants and clones.
+
+Reasoning:
+- Generative output is not reproducible enough for “call the model again” to be a
+  rollback mechanism. Persisted bytes and a local pointer make rollback immediate,
+  restart-safe, provider-independent and free of extra API charges.
+- Separating execution candidates from per-icon versions avoids duplicating provider
+  identity, usage and cost when a result becomes a new icon or a collection is cloned,
+  while preserving independent rollback trees.
+- Separating AI base sources from export optimization variants prevents provider
+  provenance from being mixed with profile/piece-specific derivatives.
+- Keeping deterministic PMTCONCON Studio recipes outside the AI version lets users
+  remove AI while retaining later crop, text, effect and motion edits.
+- NovelAI's documented third-party PAT flow fits a free desktop BYOT product and its
+  anime/img2img/inpaint tools fit emoticon work, while the pilot gate contains its broad
+  credential and incomplete billing/schema contract. Manual handoff remains a reusable
+  no-token fallback because both routes share the same candidate model.
+
+Tradeoffs:
+- All render consumers must be migrated to the shared effective-source resolver.
+- Current-icon activation initially requires a compatible canvas; rendered-viewport
+  edits are added as new icons to avoid double-applying existing recipes.
+- Candidate/version history consumes storage, and external-transfer copies are sensitive;
+  both need explicit reference-aware cleanup instead of automatic orphan deletion or
+  indefinite retention.
+
+Detailed contracts: `docs/AI_INTEGRATION_DESIGN.md` and
+`docs/AI_WORKSPACE_UX_DESIGN.md`.
+
+## ADR-015: AI-UX completion uses atomic mutation snapshots and direct-create provenance
+
+Decision:
+- Current-icon AI activation and rollback return `AiReviewState` and `IconEditorState`
+  from the same immediate transaction. Callers adopt that response and do not issue a
+  mutation-followup read that could observe a different revision.
+- Migration `016_ai_icon_root_creations` records only successful explicit
+  `create_ai_icon_root` operations. The user-facing count means icons directly added
+  with this candidate in this collection; ordinary icon duplicates and collection clones
+  are deliberately excluded even though their AI version DAG keeps shared execution
+  provenance. Existing installations receive no guessed historical backfill.
+- Counts and latest links ignore soft-deleted icons. The latest link follows durable
+  creation order, falls back to the previous non-deleted direct result, and becomes empty
+  when none remain. Target icon deletion cascades its direct-create row, source icon
+  deletion nulls the optional source identity, and candidate deletion is restricted.
+- After a successful create, the AI workspace remains open and offers explicit open,
+  reveal and continue-comparing actions. Reveal requests select, scroll and focus the exact
+  tile; opening also crosses the existing unsaved-editor confirmation boundary.
+
+Reasoning:
+- A same-transaction response prevents an avoidable race between a committed AI source and
+  the crop/editor state rendered immediately afterward.
+- A dedicated direct-create record makes duplicate-use messaging exact without interpreting
+  cloned `new_icon_root` version rows as additional user actions.
+
+Tradeoffs:
+- Pre-016 direct creates are not counted. This is more honest than presenting inferred
+  history as exact, and future explicit creates become precise immediately.

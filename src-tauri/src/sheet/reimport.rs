@@ -4,7 +4,7 @@ use std::path::{Path, PathBuf};
 
 use image::imageops;
 use image::ImageFormat;
-use rusqlite::Connection;
+use rusqlite::{params, Connection};
 use serde::{Deserialize, Serialize};
 
 use crate::error::{AppError, AppResult};
@@ -16,7 +16,10 @@ use crate::paths::AppPaths;
 
 use super::exporter::current_static_sheet_render_guard;
 use super::importer::{create_icons_from_png_cells, png_bytes_from_rgba, CellImportInput};
-use super::manifest::{read_static_manifest_bytes, StaticSheetManifest, StaticSheetManifestItem};
+use super::manifest::{
+    read_static_manifest_bytes, ManifestVisualSource, StaticSheetManifest, StaticSheetManifestItem,
+    LEGACY_STATIC_SHEET_SCHEMA,
+};
 use super::path_string;
 use crate::models::ImportImageFilePayload;
 
@@ -227,6 +230,21 @@ pub fn reimport_edit_sheet(
                 item.h,
             ) {
                 Ok((current_source_hash, current_recipe_hash)) => {
+                    if let Err(error) = validate_static_item_visual_source(
+                        connection,
+                        &request.target_collection_id,
+                        item,
+                        &manifest.schema,
+                    ) {
+                        skipped_items.push(skip_item(
+                            item,
+                            &format!(
+                                "작업 시트 source provenance가 현재 아이콘과 다릅니다: {}",
+                                error.message
+                            ),
+                        ));
+                        continue;
+                    }
                     if let Some(expected_source_hash) = item.source_hash.as_deref() {
                         if expected_source_hash != current_source_hash {
                             skipped_items.push(skip_item(
@@ -375,6 +393,53 @@ fn static_item_fits_image(
     width > 0 && height > 0 && right <= image_width && bottom <= image_height
 }
 
+fn validate_static_item_visual_source(
+    connection: &Connection,
+    collection_id: &str,
+    item: &StaticSheetManifestItem,
+    schema: &str,
+) -> AppResult<()> {
+    let current = connection.query_row(
+        "SELECT original_source_file_id, original_source_sha256,
+                original_lineage_id, original_lineage_generation,
+                effective_source_file_id, effective_source_sha256, active_version_id
+         FROM effective_visual_sources
+         WHERE icon_id = ?1 AND collection_id = ?2",
+        params![item.icon_id, collection_id],
+        |row| {
+            Ok((
+                ManifestVisualSource {
+                    original_source_file_id: row.get("original_source_file_id")?,
+                    original_source_hash: row.get("original_source_sha256")?,
+                    original_lineage_id: row.get("original_lineage_id")?,
+                    original_lineage_generation: row.get("original_lineage_generation")?,
+                    effective_source_file_id: row.get("effective_source_file_id")?,
+                    effective_source_hash: row.get("effective_source_sha256")?,
+                },
+                row.get::<_, Option<String>>("active_version_id")?,
+            ))
+        },
+    )?;
+
+    if schema == LEGACY_STATIC_SHEET_SCHEMA {
+        if current.1.is_none() && current.0.original_lineage_generation == 0 {
+            return Ok(());
+        }
+        return Err(AppError::new(
+            "manifest_stale",
+            "AI 버전이 활성화되었거나 원본 계보가 바뀐 아이콘에는 legacy v1 정적 시트를 적용할 수 없습니다.",
+        ));
+    }
+
+    if item.visual_source.as_ref() != Some(&current.0) {
+        return Err(AppError::new(
+            "manifest_stale",
+            "정적 시트를 내보낸 뒤 원본 계보 또는 AI 렌더 소스가 바뀌었습니다.",
+        ));
+    }
+    Ok(())
+}
+
 fn resolve_sheet_paths(
     manifest: &StaticSheetManifest,
     manifest_path: &Path,
@@ -490,7 +555,7 @@ mod tests {
     use crate::sheet::exporter::{export_edit_sheet, ExportEditSheetRequest};
     use crate::sheet::manifest::{
         read_static_manifest, write_static_manifest, StaticSheetManifest, StaticSheetManifestItem,
-        StaticSheetPage, StaticSheetProfile, APP_NAME, STATIC_SHEET_SCHEMA,
+        StaticSheetPage, StaticSheetProfile, APP_NAME, LEGACY_STATIC_SHEET_SCHEMA,
     };
 
     use super::{reimport_edit_sheet, ReimportEditSheetRequest};
@@ -547,7 +612,7 @@ mod tests {
             .unwrap();
         let sheet_bytes = image_cursor.into_inner();
         let manifest = StaticSheetManifest {
-            schema: STATIC_SHEET_SCHEMA.to_string(),
+            schema: LEGACY_STATIC_SHEET_SCHEMA.to_string(),
             app: APP_NAME.to_string(),
             created_at: "2026-05-12T00:00:00Z".to_string(),
             collection_id: collection.id.clone(),
@@ -589,6 +654,7 @@ mod tests {
                 source_hash: Some("source".to_string()),
                 render_hash: Some("render".to_string()),
                 render_recipe_hash: None,
+                visual_source: None,
             }],
         };
         let manifest_bytes = serde_json::to_vec(&manifest).unwrap();

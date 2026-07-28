@@ -1,3 +1,4 @@
+pub mod ai;
 pub mod collections;
 pub mod editor;
 pub mod export;

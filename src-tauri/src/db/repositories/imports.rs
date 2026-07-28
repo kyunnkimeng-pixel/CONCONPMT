@@ -1,16 +1,13 @@
-use std::fmt::Write as FmtWrite;
-use std::fs;
 use std::path::{Path, PathBuf};
 
-use image::{DynamicImage, GenericImageView, ImageFormat};
 use rusqlite::{params, Connection, OptionalExtension, Transaction};
-use sha2::{Digest, Sha256};
 
+use crate::db::repositories::source_files::{
+    import_source_file_from_bytes, SourceFileImportOptions, StoredSourceFile,
+};
 use crate::db::repositories::{collections as collection_repository, icons as icon_repository};
 use crate::error::{AppError, AppResult};
 use crate::ids::create_id;
-use crate::imaging::gif_pipeline::inspect_gif_bytes;
-use crate::imaging::import_limits::decode_import_image;
 use crate::models::{ImportImageFilePayload, ImportImagesResultDto, RejectedImportFileDto};
 use crate::paths::AppPaths;
 
@@ -31,12 +28,18 @@ pub fn import_image_files(
     for file in files {
         let original_filename = file.original_filename.clone();
 
-        match inspect_import_file(&file) {
-            Ok(metadata) => {
-                let source_file = ensure_source_file(&transaction, paths, &file, &metadata)?;
+        match import_source_file_from_bytes(
+            &transaction,
+            paths,
+            &file,
+            SourceFileImportOptions {
+                allow_gif: true,
+                exact_dimensions: None,
+            },
+        ) {
+            Ok(source_file) => {
                 let display_name = display_name_from_filename(&file.original_filename);
-                let thumbnail_path = source_thumbnail_path(paths, &source_file.id);
-                ensure_thumbnail(&metadata.image, &thumbnail_path)?;
+                let thumbnail_path = PathBuf::from(&source_file.thumbnail_path);
 
                 let current_preview_path = if source_file.original_extension == "gif" {
                     PathBuf::from(&source_file.original_path_in_library)
@@ -64,7 +67,7 @@ pub fn import_image_files(
             }
             Err(reason) => rejected_files.push(RejectedImportFileDto {
                 original_filename,
-                reason,
+                reason: reason.message,
             }),
         }
     }
@@ -91,30 +94,6 @@ struct CollectionImportRecord {
     cover_icon_id: Option<String>,
     default_cell_width: i64,
     default_cell_height: i64,
-}
-
-#[derive(Debug)]
-struct SourceFileRecord {
-    id: String,
-    original_path_in_library: String,
-    original_extension: String,
-    width: i64,
-    height: i64,
-}
-
-#[derive(Debug)]
-struct ImageMetadata {
-    extension: String,
-    mime_type: String,
-    width: i64,
-    height: i64,
-    byte_size: i64,
-    sha256: String,
-    is_animated: i64,
-    frame_count: Option<i64>,
-    original_loop_mode: String,
-    original_loop_count: Option<i64>,
-    image: DynamicImage,
 }
 
 #[derive(Debug)]
@@ -155,195 +134,10 @@ fn load_collection_for_import(
         .ok_or_else(|| AppError::not_found("이미지를 가져올 모음을 찾을 수 없습니다."))
 }
 
-fn inspect_import_file(file: &ImportImageFilePayload) -> Result<ImageMetadata, String> {
-    if file.bytes.is_empty() {
-        return Err("빈 파일은 가져올 수 없습니다.".to_string());
-    }
-
-    let extension = normalized_extension(&file.original_filename)
-        .ok_or_else(|| "jpg, jpeg, png, gif 파일만 가져올 수 있습니다.".to_string())?;
-    let image_format = image_format_for_extension(&extension)
-        .ok_or_else(|| "jpg, jpeg, png, gif 파일만 가져올 수 있습니다.".to_string())?;
-    let image = decode_import_image(&file.bytes, image_format).map_err(|error| error.message)?;
-    let (width, height) = image.dimensions();
-
-    if width == 0 || height == 0 {
-        return Err("가로세로 크기가 없는 이미지는 가져올 수 없습니다.".to_string());
-    }
-
-    let gif_metadata = if extension == "gif" {
-        Some(inspect_gif_bytes(&file.bytes)?)
-    } else {
-        None
-    };
-    let frame_count = gif_metadata.as_ref().map(|metadata| metadata.frame_count);
-    let original_loop_mode = gif_metadata
-        .as_ref()
-        .map(|metadata| metadata.loop_mode.clone())
-        .unwrap_or_else(|| "preserve".to_string());
-    let original_loop_count = gif_metadata
-        .as_ref()
-        .and_then(|metadata| metadata.loop_count);
-
-    Ok(ImageMetadata {
-        extension: extension.clone(),
-        mime_type: mime_type_for_extension(&extension).to_string(),
-        width: i64::from(width),
-        height: i64::from(height),
-        byte_size: file.bytes.len() as i64,
-        sha256: sha256_hex(&file.bytes),
-        is_animated: i64::from(frame_count.unwrap_or(1) > 1),
-        frame_count,
-        original_loop_mode,
-        original_loop_count,
-        image,
-    })
-}
-
-fn ensure_source_file(
-    transaction: &Transaction<'_>,
-    paths: &AppPaths,
-    file: &ImportImageFilePayload,
-    metadata: &ImageMetadata,
-) -> AppResult<SourceFileRecord> {
-    if let Some(source_file) = find_source_file(transaction, &metadata.sha256)? {
-        ensure_original_bytes(&source_file.original_path_in_library, &file.bytes)?;
-        return Ok(source_file);
-    }
-
-    let source_file_id = create_id("source");
-    let original_path = original_library_path(paths, &metadata.sha256, &metadata.extension);
-    if let Some(parent) = original_path.parent() {
-        fs::create_dir_all(parent)?;
-    }
-    if !original_path.exists() {
-        fs::write(&original_path, &file.bytes)?;
-    }
-
-    let original_path_in_library = path_string(&original_path);
-    transaction.execute(
-        "INSERT INTO source_files (
-           id,
-           original_filename,
-           original_path_in_library,
-           original_extension,
-           mime_type,
-           width,
-           height,
-           byte_size,
-           sha256,
-           is_animated,
-           frame_count,
-           original_loop_mode,
-           original_loop_count,
-           imported_from_path,
-           created_at
-         )
-         VALUES (
-           ?1,
-           ?2,
-           ?3,
-           ?4,
-           ?5,
-           ?6,
-           ?7,
-           ?8,
-           ?9,
-           ?10,
-           ?11,
-           ?12,
-           ?13,
-           NULL,
-           strftime('%Y-%m-%dT%H:%M:%fZ', 'now')
-         )",
-        params![
-            source_file_id,
-            file.original_filename,
-            original_path_in_library,
-            metadata.extension,
-            metadata.mime_type,
-            metadata.width,
-            metadata.height,
-            metadata.byte_size,
-            metadata.sha256,
-            metadata.is_animated,
-            metadata.frame_count,
-            metadata.original_loop_mode,
-            metadata.original_loop_count,
-        ],
-    )?;
-
-    Ok(SourceFileRecord {
-        id: source_file_id,
-        original_path_in_library,
-        original_extension: metadata.extension.clone(),
-        width: metadata.width,
-        height: metadata.height,
-    })
-}
-
-fn find_source_file(
-    transaction: &Transaction<'_>,
-    sha256: &str,
-) -> AppResult<Option<SourceFileRecord>> {
-    transaction
-        .query_row(
-            "SELECT
-               id,
-               original_path_in_library,
-               original_extension,
-               width,
-               height
-             FROM source_files
-             WHERE sha256 = ?1",
-            params![sha256],
-            |row| {
-                Ok(SourceFileRecord {
-                    id: row.get("id")?,
-                    original_path_in_library: row.get("original_path_in_library")?,
-                    original_extension: row.get("original_extension")?,
-                    width: row.get("width")?,
-                    height: row.get("height")?,
-                })
-            },
-        )
-        .optional()
-        .map_err(AppError::from)
-}
-
-fn ensure_original_bytes(path: &str, bytes: &[u8]) -> AppResult<()> {
-    let path = PathBuf::from(path);
-    if path.exists() {
-        return Ok(());
-    }
-
-    if let Some(parent) = path.parent() {
-        fs::create_dir_all(parent)?;
-    }
-    fs::write(path, bytes)?;
-
-    Ok(())
-}
-
-fn ensure_thumbnail(image: &DynamicImage, thumbnail_path: &Path) -> AppResult<()> {
-    if thumbnail_path.exists() {
-        return Ok(());
-    }
-
-    if let Some(parent) = thumbnail_path.parent() {
-        fs::create_dir_all(parent)?;
-    }
-
-    let thumbnail = image.thumbnail(256, 256);
-    thumbnail.save_with_format(thumbnail_path, ImageFormat::Png)?;
-
-    Ok(())
-}
-
 fn insert_icon(
     transaction: &Transaction<'_>,
     collection: &CollectionImportRecord,
-    source_file: &SourceFileRecord,
+    source_file: &StoredSourceFile,
     display_name: &str,
     order_index: i64,
     thumbnail_path: &Path,
@@ -396,7 +190,7 @@ fn insert_default_crop_settings(
     transaction: &Transaction<'_>,
     icon_id: &str,
     collection: &CollectionImportRecord,
-    source_file: &SourceFileRecord,
+    source_file: &StoredSourceFile,
 ) -> AppResult<()> {
     let crop = centered_crop_rect(
         source_file.width,
@@ -534,37 +328,6 @@ fn centered_crop_rect(
     }
 }
 
-fn normalized_extension(filename: &str) -> Option<String> {
-    let extension = Path::new(filename)
-        .extension()
-        .and_then(|extension| extension.to_str())?
-        .trim()
-        .to_ascii_lowercase();
-
-    match extension.as_str() {
-        "jpg" | "jpeg" | "png" | "gif" => Some(extension),
-        _ => None,
-    }
-}
-
-fn image_format_for_extension(extension: &str) -> Option<ImageFormat> {
-    match extension {
-        "jpg" | "jpeg" => Some(ImageFormat::Jpeg),
-        "png" => Some(ImageFormat::Png),
-        "gif" => Some(ImageFormat::Gif),
-        _ => None,
-    }
-}
-
-fn mime_type_for_extension(extension: &str) -> &'static str {
-    match extension {
-        "jpg" | "jpeg" => "image/jpeg",
-        "png" => "image/png",
-        "gif" => "image/gif",
-        _ => "application/octet-stream",
-    }
-}
-
 fn display_name_from_filename(filename: &str) -> String {
     Path::new(filename)
         .file_stem()
@@ -573,31 +336,6 @@ fn display_name_from_filename(filename: &str) -> String {
         .filter(|stem| !stem.is_empty())
         .unwrap_or("새 아이콘")
         .to_string()
-}
-
-fn sha256_hex(bytes: &[u8]) -> String {
-    let digest = Sha256::digest(bytes);
-    let mut output = String::with_capacity(64);
-
-    for byte in digest {
-        let _ = write!(&mut output, "{byte:02x}");
-    }
-
-    output
-}
-
-fn original_library_path(paths: &AppPaths, sha256: &str, extension: &str) -> PathBuf {
-    let prefix = sha256.get(0..2).unwrap_or("00");
-    paths
-        .originals_dir
-        .join(prefix)
-        .join(format!("{sha256}.{extension}"))
-}
-
-fn source_thumbnail_path(paths: &AppPaths, source_file_id: &str) -> PathBuf {
-    paths
-        .source_file_thumbnails_dir
-        .join(format!("{source_file_id}.png"))
 }
 
 fn path_string(path: &Path) -> String {

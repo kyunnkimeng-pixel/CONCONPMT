@@ -12,6 +12,7 @@ use rusqlite::{params, Connection, OptionalExtension, Row};
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 
+use crate::db::repositories::ai as ai_repository;
 use crate::error::{AppError, AppResult};
 use crate::imaging::effects::{apply_effect_recipe, parse_effect_recipe_json, EffectRecipe};
 use crate::imaging::export_render::ExportCropRect;
@@ -34,8 +35,8 @@ use super::grid::{
 };
 use super::importer::png_bytes_from_rgba;
 use super::manifest::{
-    write_static_manifest, StaticSheetManifest, StaticSheetManifestItem, StaticSheetPage,
-    StaticSheetProfile, APP_NAME, STATIC_SHEET_SCHEMA,
+    write_static_manifest, ManifestVisualSource, StaticSheetManifest, StaticSheetManifestItem,
+    StaticSheetPage, StaticSheetProfile, APP_NAME, STATIC_SHEET_SCHEMA,
 };
 use super::path_string;
 
@@ -112,6 +113,12 @@ struct IconRecord {
     id: String,
     display_name: String,
     shape: String,
+    original_source_file_id: String,
+    original_source_hash: String,
+    original_lineage_id: String,
+    original_lineage_generation: i64,
+    effective_source_file_id: String,
+    effective_source_hash: String,
     source_path: String,
     source_extension: String,
     source_hash: String,
@@ -141,6 +148,7 @@ struct RenderedSheetItem {
     alt: String,
     icon_type: String,
     source_hash: Option<String>,
+    visual_source: ManifestVisualSource,
     render_hash: String,
     render_recipe_hash: String,
     image: RgbaImage,
@@ -291,6 +299,7 @@ pub fn export_edit_sheet(
             format: "png".to_string(),
             source_hash: item.source_hash.clone(),
             render_hash: Some(item.render_hash.clone()),
+            visual_source: Some(item.visual_source.clone()),
             render_recipe_hash: Some(item.render_recipe_hash.clone()),
         });
     }
@@ -465,6 +474,12 @@ const ICON_RECORD_SELECT: &str = "SELECT
    i.id,
    i.display_name,
    i.shape,
+   evs.original_source_file_id,
+   evs.original_source_sha256,
+   evs.original_lineage_id,
+   evs.original_lineage_generation,
+   evs.effective_source_file_id,
+   evs.effective_source_sha256,
    s.original_path_in_library,
    s.original_extension,
    s.sha256,
@@ -488,7 +503,8 @@ const ICON_RECORD_SELECT: &str = "SELECT
    er.effects_json AS effect_recipe_json,
    mr.motion_json AS motion_recipe_json
  FROM icons i
- JOIN source_files s ON s.id = i.source_file_id
+ JOIN effective_visual_sources evs ON evs.icon_id = i.id
+ JOIN source_files s ON s.id = evs.effective_source_file_id
  JOIN crop_settings cs ON cs.icon_id = i.id
  LEFT JOIN icon_effect_recipes er ON er.icon_id = i.id
  LEFT JOIN icon_motion_recipes mr ON mr.icon_id = i.id";
@@ -502,6 +518,37 @@ fn load_icons(
         .iter()
         .map(String::as_str)
         .collect::<HashSet<_>>();
+    let icon_ids = {
+        let mut statement = connection.prepare(
+            "SELECT id
+             FROM icons
+             WHERE collection_id = ?1
+               AND deleted_at IS NULL
+               AND icon_kind = 'image'
+             ORDER BY order_index ASC, created_at ASC",
+        )?;
+        let rows = statement
+            .query_map(params![request.collection_id], |row| {
+                row.get::<_, String>(0)
+            })?
+            .collect::<Result<Vec<_>, _>>()?;
+        rows
+    };
+    let target_icon_ids = icon_ids
+        .into_iter()
+        .filter(|icon_id| {
+            request.source != "selected_icons"
+                || selected_ids.is_empty()
+                || selected_ids.contains(icon_id.as_str())
+        })
+        .collect::<Vec<_>>();
+    for icon_id in &target_icon_ids {
+        ai_repository::resolve_effective_visual_source(
+            connection,
+            &request.collection_id,
+            icon_id,
+        )?;
+    }
     let query = format!(
         "{ICON_RECORD_SELECT}
          WHERE i.collection_id = ?1
@@ -514,14 +561,26 @@ fn load_icons(
         .query_map(params![request.collection_id], icon_record_from_row)?
         .collect::<Result<Vec<_>, _>>()?;
 
-    if request.source == "selected_icons" && !selected_ids.is_empty() {
-        Ok(icons
+    let icons = if request.source == "selected_icons" && !selected_ids.is_empty() {
+        icons
             .into_iter()
             .filter(|icon| selected_ids.contains(icon.id.as_str()))
-            .collect())
+            .collect::<Vec<_>>()
     } else {
-        Ok(icons)
+        icons
+    };
+    if icons.len() != target_icon_ids.len()
+        || icons
+            .iter()
+            .zip(target_icon_ids.iter())
+            .any(|(icon, expected_id)| icon.id != *expected_id)
+    {
+        return Err(AppError::new(
+            "sheet_icon_state_missing",
+            "편집 시트에 포함할 아이콘의 소스 또는 자르기 상태가 누락되었습니다. 아이콘을 복구한 뒤 다시 시도해 주세요.",
+        ));
     }
+    Ok(icons)
 }
 
 fn icon_record_from_row(row: &Row<'_>) -> rusqlite::Result<IconRecord> {
@@ -529,6 +588,12 @@ fn icon_record_from_row(row: &Row<'_>) -> rusqlite::Result<IconRecord> {
         id: row.get("id")?,
         display_name: row.get("display_name")?,
         shape: row.get("shape")?,
+        original_source_file_id: row.get("original_source_file_id")?,
+        original_source_hash: row.get("original_source_sha256")?,
+        original_lineage_id: row.get("original_lineage_id")?,
+        original_lineage_generation: row.get("original_lineage_generation")?,
+        effective_source_file_id: row.get("effective_source_file_id")?,
+        effective_source_hash: row.get("effective_source_sha256")?,
         source_path: row.get("original_path_in_library")?,
         source_extension: row.get("original_extension")?,
         source_hash: row.get("sha256")?,
@@ -587,6 +652,7 @@ pub(super) fn current_static_sheet_render_guard(
             "작업 시트 셀 크기는 1 이상이어야 합니다.",
         ));
     }
+    ai_repository::resolve_effective_visual_source(connection, collection_id, icon_id)?;
     let query = format!(
         "{ICON_RECORD_SELECT}
          WHERE i.id = ?1
@@ -730,23 +796,38 @@ fn render_icon_items(
     let split = split_viewport(&viewport, &icon.shape, cell_width, cell_height)?;
     let pieces = load_pieces(connection, &icon.id)?;
     let mut items = Vec::new();
+    if pieces.len() != split.len()
+        || pieces
+            .iter()
+            .enumerate()
+            .any(|(position, piece)| piece.piece_index != position as i64)
+    {
+        return Err(AppError::new(
+            "sheet_piece_state_missing",
+            "편집 시트에 포함할 아이콘의 조각 정보가 모양과 일치하지 않습니다. 아이콘을 복구한 뒤 다시 시도해 주세요.",
+        ));
+    }
 
     for (piece_position, piece_image) in split.into_iter().enumerate() {
-        let piece = pieces
-            .iter()
-            .find(|piece| piece.piece_index as usize == piece_position);
+        let piece = &pieces[piece_position];
         let render_hash = sha256_hex(&png_bytes_from_rgba(&piece_image)?);
         let render_recipe_hash =
             static_sheet_render_recipe_hash(icon, piece_position, cell_width, cell_height)?;
         items.push(RenderedSheetItem {
             icon_id: icon.id.clone(),
-            piece_id: piece.map(|piece| piece.id.clone()),
+            piece_id: Some(piece.id.clone()),
             display_name: icon.display_name.clone(),
-            alt: piece
-                .map(|piece| piece.alt_text.clone())
-                .unwrap_or_default(),
+            alt: piece.alt_text.clone(),
             icon_type: icon.shape.clone(),
             source_hash: Some(icon.source_hash.clone()),
+            visual_source: ManifestVisualSource {
+                original_source_file_id: icon.original_source_file_id.clone(),
+                original_source_hash: icon.original_source_hash.clone(),
+                original_lineage_id: icon.original_lineage_id.clone(),
+                original_lineage_generation: icon.original_lineage_generation,
+                effective_source_file_id: icon.effective_source_file_id.clone(),
+                effective_source_hash: icon.effective_source_hash.clone(),
+            },
             render_hash,
             render_recipe_hash,
             image: piece_image,

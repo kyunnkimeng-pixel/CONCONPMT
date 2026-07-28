@@ -6,7 +6,9 @@ use std::time::{SystemTime, UNIX_EPOCH};
 use image::{DynamicImage, ImageBuffer, ImageFormat, Rgba};
 use rusqlite::{params, Connection};
 
+use crate::db::connection::open_database_with_paths;
 use crate::db::migrations;
+use crate::db::repositories::ai::resolve_effective_visual_source;
 use crate::db::repositories::collections::{create_collection, duplicate_collection};
 use crate::db::repositories::icons::{duplicate_icon, list_icons};
 use crate::db::repositories::imports::import_image_files;
@@ -416,6 +418,7 @@ fn collection_clone_preserves_active_animated_multi_piece_output_presets_and_pro
                 load_target(&connection, &icon.id, &cloned_profile_id, Some(&piece.id)).unwrap();
             let source_variant = find_active_variant(
                 &connection,
+                &paths,
                 &source_target.icon_id,
                 &source_profile_id,
                 &source_target.piece_id,
@@ -428,6 +431,7 @@ fn collection_clone_preserves_active_animated_multi_piece_output_presets_and_pro
             .unwrap();
             let cloned_variant = find_active_variant(
                 &connection,
+                &paths,
                 &target.icon_id,
                 &cloned_profile_id,
                 &target.piece_id,
@@ -578,8 +582,17 @@ fn icon_clone_owns_active_variant_and_frame_sheet_recipe_with_shared_profile() {
     let source_icon = &imported.imported_icons[0];
     let source_piece = &source_icon.pieces[0];
     let profile_id = default_profile_id(&connection, &collection.id);
+    connection
+        .execute(
+            "UPDATE icons
+             SET cell_width_override = 8,
+                 cell_height_override = 8
+             WHERE id = ?1",
+            [&source_icon.id],
+        )
+        .unwrap();
     let active_bytes = gif_bytes(8, 8, [[255, 255, 0, 255], [255, 0, 255, 255]]);
-    let (_, source_variant_path) = seed_active_gif_variant(
+    let (source_variant_id, source_variant_path) = seed_active_gif_variant(
         &connection,
         &paths,
         &source_icon.id,
@@ -587,6 +600,27 @@ fn icon_clone_owns_active_variant_and_frame_sheet_recipe_with_shared_profile() {
         &source_piece.id,
         &active_bytes,
     );
+    connection
+        .execute(
+            "UPDATE icons SET current_preview_path = ?1 WHERE id = ?2",
+            params![source_variant_path, source_icon.id],
+        )
+        .unwrap();
+    connection
+        .execute(
+            "UPDATE icon_pieces
+             SET generated_preview_path = ?1, export_status = 'ready'
+             WHERE id = ?2",
+            params![source_variant_path, source_piece.id],
+        )
+        .unwrap();
+    let source_output_sha256: String = connection
+        .query_row(
+            "SELECT output_sha256 FROM processed_asset_variants WHERE id = ?1",
+            [&source_variant_id],
+            |row| row.get(0),
+        )
+        .unwrap();
     let source_recipe_id = insert_frame_sheet_recipe(&connection, &paths, &source_icon.id);
 
     let cloned = duplicate_icon(&mut connection, &paths, &collection.id, &source_icon.id).unwrap();
@@ -599,6 +633,7 @@ fn icon_clone_owns_active_variant_and_frame_sheet_recipe_with_shared_profile() {
     .unwrap();
     let target_variant = find_active_variant(
         &connection,
+        &paths,
         &target.icon_id,
         &profile_id,
         &target.piece_id,
@@ -618,11 +653,108 @@ fn icon_clone_owns_active_variant_and_frame_sheet_recipe_with_shared_profile() {
             |row| row.get(0),
         )
         .unwrap();
+    assert_eq!(
+        target_variant.output_sha256.as_deref(),
+        Some(source_output_sha256.as_str())
+    );
+    assert_eq!(
+        cloned.current_preview_url.as_deref(),
+        Some(target_variant.path.as_str())
+    );
+    assert_eq!(
+        cloned.pieces[0].generated_preview_url.as_deref(),
+        Some(target_variant.path.as_str())
+    );
     assert_ne!(target_recipe_id, source_recipe_id);
     fs::remove_file(source_variant_path).unwrap();
     assert!(Path::new(&target_variant.path).is_file());
     fs::remove_dir_all(paths.root).unwrap();
 }
+#[test]
+fn icon_clone_rejects_same_size_same_dimension_variant_with_tampered_digest() {
+    let mut connection = connection();
+    let paths = temp_paths("tampered-variant");
+    let collection =
+        create_collection(&mut connection, Some("tampered variant clone".to_string())).unwrap();
+    let imported = import_image_files(
+        &mut connection,
+        &paths,
+        &collection.id,
+        vec![ImportImageFilePayload {
+            original_filename: "source.gif".to_string(),
+            bytes: gif_bytes(8, 8, [[10, 30, 220, 255], [220, 30, 10, 255]]),
+        }],
+    )
+    .unwrap();
+    let source_icon = &imported.imported_icons[0];
+    let source_piece = &source_icon.pieces[0];
+    let profile_id = default_profile_id(&connection, &collection.id);
+    let recorded_bytes = gif_bytes(8, 8, [[240, 220, 20, 255], [20, 220, 240, 255]]);
+    let (_, source_variant_path) = seed_active_gif_variant(
+        &connection,
+        &paths,
+        &source_icon.id,
+        &profile_id,
+        &source_piece.id,
+        &recorded_bytes,
+    );
+    connection
+        .execute(
+            "UPDATE icons SET current_preview_path = ?1 WHERE id = ?2",
+            params![source_variant_path, source_icon.id],
+        )
+        .unwrap();
+    connection
+        .execute(
+            "UPDATE icon_pieces
+             SET generated_preview_path = ?1, export_status = 'ready'
+             WHERE id = ?2",
+            params![source_variant_path, source_piece.id],
+        )
+        .unwrap();
+
+    let tampered_bytes = gif_bytes(8, 8, [[15, 210, 80, 255], [210, 15, 180, 255]]);
+    assert_eq!(tampered_bytes.len(), recorded_bytes.len());
+    assert_ne!(tampered_bytes, recorded_bytes);
+    fs::write(&source_variant_path, &tampered_bytes).unwrap();
+
+    let cloned = duplicate_icon(&mut connection, &paths, &collection.id, &source_icon.id).unwrap();
+    let target_variant_count: i64 = connection
+        .query_row(
+            "SELECT COUNT(*) FROM processed_asset_variants WHERE icon_id = ?1",
+            [&cloned.id],
+            |row| row.get(0),
+        )
+        .unwrap();
+    assert_eq!(target_variant_count, 0);
+    let native_root = paths
+        .ai_activation_previews_dir
+        .join(&collection.id)
+        .join(&cloned.id)
+        .join("native-clone");
+    let current_preview = cloned.current_preview_url.as_deref().unwrap();
+    let piece_preview = cloned.pieces[0].generated_preview_url.as_deref().unwrap();
+    assert!(Path::new(current_preview).starts_with(&native_root));
+    assert!(Path::new(piece_preview).starts_with(&native_root));
+    assert!(Path::new(current_preview).is_file());
+    assert!(Path::new(piece_preview).is_file());
+    assert_ne!(current_preview, source_variant_path);
+    assert_ne!(piece_preview, source_variant_path);
+    assert_eq!(cloned.pieces[0].export_status, "ready");
+
+    let target = load_target(
+        &connection,
+        &cloned.id,
+        &profile_id,
+        Some(&cloned.pieces[0].id),
+    )
+    .unwrap();
+    assert!(target.source_path.is_file());
+    assert_ne!(target.source_path.to_string_lossy(), source_variant_path);
+
+    fs::remove_dir_all(paths.root).unwrap();
+}
+
 #[test]
 fn collection_clone_skips_missing_and_stale_active_variants() {
     let mut connection = connection();
@@ -654,7 +786,7 @@ fn collection_clone_skips_missing_and_stale_active_variants() {
         &imported.imported_icons[0].pieces[0].id,
         &gif_bytes(8, 8, [[255, 255, 0, 255], [0, 0, 0, 255]]),
     );
-    let (stale_variant_id, _) = seed_active_gif_variant(
+    let (stale_variant_id, stale_path) = seed_active_gif_variant(
         &connection,
         &paths,
         &imported.imported_icons[1].id,
@@ -662,7 +794,26 @@ fn collection_clone_skips_missing_and_stale_active_variants() {
         &imported.imported_icons[1].pieces[0].id,
         &gif_bytes(8, 8, [[0, 255, 255, 255], [0, 0, 0, 255]]),
     );
-    fs::remove_file(missing_path).unwrap();
+    for (icon, promoted_path) in [
+        (&imported.imported_icons[0], missing_path.as_str()),
+        (&imported.imported_icons[1], stale_path.as_str()),
+    ] {
+        connection
+            .execute(
+                "UPDATE icons SET current_preview_path = ?1 WHERE id = ?2",
+                params![promoted_path, icon.id],
+            )
+            .unwrap();
+        connection
+            .execute(
+                "UPDATE icon_pieces
+                 SET generated_preview_path = ?1, export_status = 'ready'
+                 WHERE id = ?2",
+                params![promoted_path, icon.pieces[0].id],
+            )
+            .unwrap();
+    }
+    fs::remove_file(&missing_path).unwrap();
     connection
         .execute(
             "UPDATE processed_asset_variants
@@ -684,6 +835,97 @@ fn collection_clone_skips_missing_and_stale_active_variants() {
         )
         .unwrap();
     assert_eq!(cloned_variant_count, 0);
+    let cloned_icons = list_icons(&connection, &cloned.id).unwrap();
+    assert_eq!(cloned_icons.len(), 2);
+    for icon in &cloned_icons {
+        let native_root = paths
+            .ai_activation_previews_dir
+            .join(&cloned.id)
+            .join(&icon.id)
+            .join("native-clone");
+        let current_preview = icon.current_preview_url.as_deref().unwrap();
+        let piece_preview = icon.pieces[0].generated_preview_url.as_deref().unwrap();
+        assert!(Path::new(current_preview).starts_with(&native_root));
+        assert!(Path::new(piece_preview).starts_with(&native_root));
+        assert!(Path::new(current_preview).is_file());
+        assert!(Path::new(piece_preview).is_file());
+        assert_eq!(icon.pieces[0].export_status, "ready");
+        assert_ne!(current_preview, missing_path);
+        assert_ne!(current_preview, stale_path);
+    }
 
+    fs::remove_dir_all(paths.root).unwrap();
+}
+#[test]
+fn icon_clone_preview_ownership_survives_database_restart() {
+    let paths = temp_paths("restart-ownership");
+    let database_path = paths.root.join("clone-restart.sqlite3");
+    let mut connection = open_database_with_paths(&database_path, &paths).unwrap();
+    let collection =
+        create_collection(&mut connection, Some("clone restart ownership".to_string())).unwrap();
+    let imported = import_image_files(
+        &mut connection,
+        &paths,
+        &collection.id,
+        vec![ImportImageFilePayload {
+            original_filename: "restart-source.png".to_string(),
+            bytes: png_bytes(20, 20),
+        }],
+    )
+    .unwrap();
+    let source_icon = &imported.imported_icons[0];
+    let cloned = duplicate_icon(&mut connection, &paths, &collection.id, &source_icon.id).unwrap();
+    let target_current = cloned.current_preview_url.clone().unwrap();
+    let target_piece = cloned.pieces[0].generated_preview_url.clone().unwrap();
+    let target_root = paths
+        .ai_activation_previews_dir
+        .join(&collection.id)
+        .join(&cloned.id)
+        .join("native-clone");
+    assert!(Path::new(&target_current).starts_with(&target_root));
+    assert!(Path::new(&target_piece).starts_with(&target_root));
+    assert!(Path::new(&target_current).is_file());
+    assert!(Path::new(&target_piece).is_file());
+    assert_ne!(cloned.current_preview_url, source_icon.current_preview_url);
+    assert_ne!(
+        cloned.pieces[0].generated_preview_url,
+        source_icon.pieces[0].generated_preview_url
+    );
+
+    let source_preview_root = paths
+        .collection_previews_dir
+        .join(&collection.id)
+        .join(&source_icon.id);
+    if source_preview_root.exists() {
+        fs::remove_dir_all(&source_preview_root).unwrap();
+    }
+    drop(connection);
+
+    let connection = open_database_with_paths(&database_path, &paths).unwrap();
+    let reopened = list_icons(&connection, &collection.id)
+        .unwrap()
+        .into_iter()
+        .find(|icon| icon.id == cloned.id)
+        .unwrap();
+    assert_eq!(
+        reopened.current_preview_url.as_deref(),
+        Some(target_current.as_str())
+    );
+    assert_eq!(
+        reopened.pieces[0].generated_preview_url.as_deref(),
+        Some(target_piece.as_str())
+    );
+    assert!(Path::new(&target_current).is_file());
+    assert!(Path::new(&target_piece).is_file());
+    resolve_effective_visual_source(&connection, &collection.id, &cloned.id).unwrap();
+    let violations = connection
+        .prepare("PRAGMA foreign_key_check")
+        .unwrap()
+        .query_map([], |_| Ok(()))
+        .unwrap()
+        .collect::<Result<Vec<_>, _>>()
+        .unwrap();
+    assert!(violations.is_empty());
+    drop(connection);
     fs::remove_dir_all(paths.root).unwrap();
 }

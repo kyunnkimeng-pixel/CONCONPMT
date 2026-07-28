@@ -1,4 +1,10 @@
 import type { IconSummary } from "@/features/collections/types";
+import type {
+  AiNormalizationAlignment,
+  AiNormalizationMode,
+  AiNormalizationOptions,
+  AiNormalizationResizeFilter,
+} from "@/features/editor/ai-normalization-model";
 
 export type IconShape = "single" | "horizontal_double" | "vertical_double";
 export type CropMode = "free" | "fixed";
@@ -199,7 +205,10 @@ export interface SourceFileSummary {
   id: string;
   originalFilename: string;
   originalImageUrl: string;
+  originalExtension: string;
   mimeType: string;
+  sha256: string;
+  hasAlpha: boolean | null;
   width: number;
   height: number;
   byteSize: number;
@@ -223,10 +232,161 @@ export interface CropSettings {
   updatedAt: string;
 }
 
+export interface EffectiveVisualSource {
+  originalSource: SourceFileSummary;
+  effectiveRenderSource: SourceFileSummary;
+  originalLineageId: string;
+  originalLineageGeneration: number;
+  activeVersionId: string | null;
+  activeCandidateId: string | null;
+  activationRevision: number;
+  normalizationRecipeHash: string | null;
+}
+
+export type AiManualServiceSurface =
+  | "gemini_web"
+  | "novelai_web"
+  | "other_manual";
+
+export interface AiCandidateUsageSummary {
+  createdIconCount: number;
+  latestCreatedIcon: IconSummary | null;
+}
+
+export interface AiCandidate {
+  id: string;
+  requestId: string;
+  candidateIndex: number;
+  serviceSurface: AiManualServiceSurface;
+  source: SourceFileSummary;
+  createdAt: string;
+  isMaterialized: boolean;
+  isStale: boolean;
+  staleReason: string | null;
+  isAvailable: boolean;
+  unavailableReason: string | null;
+  createdIconUsage: AiCandidateUsageSummary;
+}
+
+export interface AiVersion {
+  id: string;
+  candidateId: string;
+  parentVersionId: string | null;
+  source: SourceFileSummary;
+  normalizationRecipeHash: string;
+  normalizationSummary: AiVersionNormalizationSummary | null;
+  isActive: boolean;
+  isAvailable: boolean;
+  unavailableReason: string | null;
+  createdAt: string;
+}
+
+export interface AiVersionNormalizationSummary {
+  kind: "identity" | "contain_pad" | "cover_crop";
+  mode: AiNormalizationMode | null;
+  alignment: AiNormalizationAlignment | null;
+  resizeFilter: AiNormalizationResizeFilter | null;
+  targetCanvasWidth: number;
+  targetCanvasHeight: number;
+}
+
+export interface AiReviewState {
+  visualSource: EffectiveVisualSource;
+  nativeRecipeSignature: string;
+  candidates: AiCandidate[];
+  versions: AiVersion[];
+}
+
+export interface PreviewAiCandidateNormalizationInput {
+  iconId: string;
+  candidateId: string;
+  expectedRevision: number;
+  normalization: AiNormalizationOptions;
+}
+
+export interface AiNormalizationGeometry {
+  kind: "identity" | "contain_pad" | "cover_crop";
+  resizedWidth: number;
+  resizedHeight: number;
+  cropX: number;
+  cropY: number;
+  pasteX: number;
+  pasteY: number;
+}
+
+export interface AiNormalizationCompatibility {
+  allowed: boolean;
+  reasonCode: string | null;
+  reason: string | null;
+}
+
+export interface AiNormalizationPreviewWarning {
+  code: string;
+  severity: "info" | "warning";
+  message: string;
+}
+
+export interface AiNormalizationPreview {
+  candidateId: string;
+  rawSource: SourceFileSummary;
+  normalizedPreviewPath: string;
+  finalPreviewPath: string;
+  targetCanvasWidth: number;
+  targetCanvasHeight: number;
+  finalRenderWidth: number;
+  finalRenderHeight: number;
+  pieceWidth: number;
+  pieceHeight: number;
+  normalizationRecipeHash: string;
+  previewSignature: string;
+  nativeRecipeSignature: string;
+  geometry: AiNormalizationGeometry;
+  normalizedHasAlpha: boolean;
+  currentIconCompatibility: AiNormalizationCompatibility;
+  newIconCompatibility: AiNormalizationCompatibility;
+  warnings: AiNormalizationPreviewWarning[];
+  existingVersionId: string | null;
+  isCurrentRecipe: boolean;
+}
+
+export interface ActivateAiCandidateInput {
+  iconId: string;
+  candidateId: string;
+  expectedRevision: number;
+  normalization: AiNormalizationOptions;
+  expectedPreviewSignature: string;
+}
+
+export interface CreateAiIconRootInput {
+  iconId: string;
+  candidateId: string;
+  expectedRevision: number;
+  normalization: AiNormalizationOptions;
+  expectedPreviewSignature: string;
+}
+
+export interface CreateAiIconRootResult {
+  createdIcon: IconSummary;
+  sourceReviewState: AiReviewState;
+  createdIconUsage: AiCandidateUsageSummary;
+}
+
+export interface AiSourceMutationResult {
+  reviewState: AiReviewState;
+  editorState: IconEditorState;
+}
+
+export interface RestoreAiVersionInput {
+  iconId: string;
+  versionId: string | null;
+  expectedRevision: number;
+}
+
 export interface IconEditorState {
   icon: IconSummary;
   source: SourceFileSummary;
   crop: CropSettings;
+  visualSource: EffectiveVisualSource;
   textOverlay: TextOverlaySettings;
   effectRecipe: EffectRecipeV1;
   effectRevision: number;

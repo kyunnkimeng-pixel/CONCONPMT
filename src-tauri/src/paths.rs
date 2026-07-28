@@ -25,6 +25,10 @@ pub struct AppPaths {
     pub source_file_thumbnails_dir: PathBuf,
     pub previews_dir: PathBuf,
     pub collection_previews_dir: PathBuf,
+    pub ai_inputs_dir: PathBuf,
+    pub ai_handoffs_dir: PathBuf,
+    pub ai_activation_staging_dir: PathBuf,
+    pub ai_activation_previews_dir: PathBuf,
     pub temp_import_dir: PathBuf,
     pub temp_export_dir: PathBuf,
 }
@@ -60,6 +64,10 @@ impl AppPaths {
             source_file_thumbnails_dir: root.join("thumbnails").join("source-files"),
             previews_dir: root.join("previews"),
             collection_previews_dir: root.join("previews").join("collections"),
+            ai_inputs_dir: root.join("ai").join("inputs"),
+            ai_handoffs_dir: root.join("ai").join("handoffs"),
+            ai_activation_staging_dir: root.join("ai").join("staging").join("activations"),
+            ai_activation_previews_dir: root.join("previews").join("ai-activations"),
             temp_import_dir: root.join("temp").join("import"),
             temp_export_dir: root.join("temp").join("export"),
             root,
@@ -99,6 +107,10 @@ impl AppPaths {
             &self.source_file_thumbnails_dir,
             &self.previews_dir,
             &self.collection_previews_dir,
+            &self.ai_inputs_dir,
+            &self.ai_handoffs_dir,
+            &self.ai_activation_staging_dir,
+            &self.ai_activation_previews_dir,
             &self.temp_import_dir,
             &self.temp_export_dir,
         ]
@@ -138,6 +150,10 @@ mod tests {
         assert!(paths.sheet_export_gif_manifests_dir.is_dir());
         assert!(paths.source_file_thumbnails_dir.is_dir());
         assert!(paths.collection_previews_dir.is_dir());
+        assert!(paths.ai_inputs_dir.is_dir());
+        assert!(paths.ai_handoffs_dir.is_dir());
+        assert!(paths.ai_activation_staging_dir.is_dir());
+        assert!(paths.ai_activation_previews_dir.is_dir());
         assert!(paths.temp_import_dir.is_dir());
         assert!(paths.temp_export_dir.is_dir());
 

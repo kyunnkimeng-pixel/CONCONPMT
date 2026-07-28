@@ -7,6 +7,7 @@ import {
   effectPreviewRequestKey,
   hasUnsavedEditorChanges,
   invalidateIconRequestLifecycle,
+  isAiSourceRepairRequired,
   isEditorStateResponseCurrent,
   isIconRequestCurrent,
   isRevisionConflict,
@@ -88,6 +89,12 @@ describe("editor state guards", () => {
     );
   });
 
+  it("offers AI repair only for the exact repair-required command code", () => {
+    expect(isAiSourceRepairRequired({ code: "ai_source_repair_required" })).toBe(true);
+    expect(isAiSourceRepairRequired({ code: "ai_revision_conflict" })).toBe(false);
+    expect(isAiSourceRepairRequired(new Error("AI source failed"))).toBe(false);
+  });
+
   it("drops a delayed response after the editor switches icons", async () => {
     const lifecycle = createIconRequestLifecycle("icon_1");
     const token = captureIconRequest(lifecycle);
@@ -125,12 +132,41 @@ describe("editor state guards", () => {
 
     expect(applied).toEqual([]);
   });
+
+  it("keeps a delayed AI mutation failure from clearing the next icon state", async () => {
+    const lifecycle = createIconRequestLifecycle("icon_1");
+    const token = captureIconRequest(lifecycle);
+    const deferred = createDeferred<string>();
+    let busy = true;
+    let errorMessage: string | null = null;
+    const response = deferred.promise
+      .catch((error: unknown) => {
+        if (isIconRequestCurrent(lifecycle, token)) {
+          errorMessage = error instanceof Error ? error.message : "unknown";
+        }
+      })
+      .finally(() => {
+        if (isIconRequestCurrent(lifecycle, token)) {
+          busy = false;
+        }
+      });
+
+    activateIconRequestLifecycle(lifecycle, "icon_2");
+    busy = true;
+    deferred.reject(new Error("old icon failure"));
+    await response;
+
+    expect(errorMessage).toBeNull();
+    expect(busy).toBe(true);
+  });
 });
 
 function createDeferred<T>() {
   let resolve!: (value: T) => void;
-  const promise = new Promise<T>((nextResolve) => {
+  let reject!: (reason?: unknown) => void;
+  const promise = new Promise<T>((nextResolve, nextReject) => {
     resolve = nextResolve;
+    reject = nextReject;
   });
-  return { promise, resolve };
+  return { promise, reject, resolve };
 }

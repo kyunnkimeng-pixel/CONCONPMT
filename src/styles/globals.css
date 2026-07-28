@@ -51,3 +51,14 @@ img {
 #root {
   min-height: 100vh;
 }
+
+@media (prefers-reduced-motion: reduce) {
+  [data-testid="ai-workspace-overlay"],
+  [data-testid="ai-workspace-overlay"] *,
+  [data-testid="ai-workspace-overlay"] *::before,
+  [data-testid="ai-workspace-overlay"] *::after {
+    animation: none !important;
+    scroll-behavior: auto !important;
+    transition: none !important;
+  }
+}
