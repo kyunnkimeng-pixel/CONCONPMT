@@ -5,6 +5,19 @@ Set-Location $root
 
 & (Join-Path $PSScriptRoot "check-forbidden-dependencies.ps1")
 
+$noticePath = Join-Path $root "THIRD_PARTY_LICENSES.md"
+if (-not (Test-Path -LiteralPath $noticePath)) {
+  throw "THIRD_PARTY_LICENSES.md is missing. Run npm run license:generate first."
+}
+
+$unknownNotices = @(
+  Get-Content -LiteralPath $noticePath |
+    Where-Object { $_ -match '^- .+: (?:UNKNOWN|NOASSERTION)(?:;|$)' }
+)
+if ($unknownNotices.Count -gt 0) {
+  throw ("Unknown or NOASSERTION dependency licenses found in THIRD_PARTY_LICENSES.md:`n{0}" -f ($unknownNotices -join "`n"))
+}
+
 $cargoDeny = Get-Command cargo-deny -ErrorAction SilentlyContinue
 if ($cargoDeny) {
   cargo deny --manifest-path (Join-Path $root "src-tauri/Cargo.toml") check licenses

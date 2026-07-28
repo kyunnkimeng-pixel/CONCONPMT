@@ -9,6 +9,7 @@ import {
   ImagePlus,
   NotebookPen,
   Pencil,
+  Sparkles,
   Star,
   Tags,
   Trash2,
@@ -27,11 +28,13 @@ interface IconContextMenuProps {
   hasNote: boolean;
   selectionCount: number;
   altSelectionCount: number;
+  aiGridEditDisabledReason: string | null;
   onClose: () => void;
   onBatchAltEdit: () => void;
   onDelete: () => void;
   onDuplicate: () => void;
   onEdit: () => void;
+  onAiGridEdit: () => void;
   onEditNote: () => void;
   onClearNote: () => void;
   onExportSelectedSheet: () => void;
@@ -55,11 +58,13 @@ export function IconContextMenu({
   hasNote,
   selectionCount,
   altSelectionCount,
+  aiGridEditDisabledReason,
   onClose,
   onBatchAltEdit,
   onDelete,
   onDuplicate,
   onEdit,
+  onAiGridEdit,
   onEditNote,
   onClearNote,
   onExportSelectedSheet,
@@ -209,6 +214,24 @@ export function IconContextMenu({
         <Pencil aria-hidden="true" />
         편집
       </MenuButton>
+      {selectionCount > 1 ? (
+        <MenuButton
+          disabledReason={aiGridEditDisabledReason ?? undefined}
+          testId="icon-context-ai-grid-edit"
+          title={aiGridEditDisabledReason ?? "선택한 아이콘을 한 장의 그리드로 AI 수정합니다."}
+          onClick={() => runAction(onAiGridEdit)}
+        >
+          <Sparkles aria-hidden="true" />
+          <span className="grid min-w-0 gap-0.5 text-left">
+            <span>선택 {selectionCount}개 AI로 수정</span>
+            {aiGridEditDisabledReason ? (
+              <span className="whitespace-normal text-[11px] font-normal leading-4 text-danger">
+                {aiGridEditDisabledReason}
+              </span>
+            ) : null}
+          </span>
+        </MenuButton>
+      ) : null}
       <MenuButton testId="icon-context-rename" onClick={() => runAction(onRename)}>
         <Pencil aria-hidden="true" />
         이름 변경
@@ -307,7 +330,9 @@ export function IconContextMenu({
 interface MenuButtonProps {
   children: ReactNode;
   disabled?: boolean;
+  disabledReason?: string;
   testId?: string;
+  title?: string;
   tone?: "default" | "danger";
   onClick: () => void;
 }
@@ -315,21 +340,28 @@ interface MenuButtonProps {
 function MenuButton({
   children,
   disabled = false,
+  disabledReason,
   testId,
+  title,
   tone = "default",
   onClick,
 }: MenuButtonProps) {
   return (
     <button
+      aria-disabled={disabledReason ? true : undefined}
       className={cn(
         "flex w-full items-center gap-2 rounded px-3 py-2 text-left text-sm hover:bg-menu-hover focus-visible:outline focus-visible:outline-2 focus-visible:outline-focus disabled:cursor-not-allowed disabled:text-muted",
+        disabledReason && "cursor-not-allowed text-muted",
         tone === "danger" ? "text-danger" : "text-foreground",
       )}
       data-testid={testId}
       disabled={disabled}
       role="menuitem"
+      title={title}
       type="button"
-      onClick={onClick}
+      onClick={() => {
+        if (!disabledReason) onClick();
+      }}
     >
       {children}
     </button>

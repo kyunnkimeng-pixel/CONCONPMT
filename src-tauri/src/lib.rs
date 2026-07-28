@@ -2,10 +2,21 @@
 pub fn run() {
     use tauri::Manager;
 
-    tauri::Builder::default()
+    let builder = tauri::Builder::default();
+    #[cfg(any(target_os = "macos", windows, target_os = "linux"))]
+    let builder = builder.plugin(tauri_plugin_single_instance::init(|app, _argv, _cwd| {
+        if let Some(window) = app.get_webview_window("main") {
+            let _ = window.unminimize();
+            let _ = window.show();
+            let _ = window.set_focus();
+        }
+    }));
+
+    builder
         .plugin(tauri_plugin_opener::init())
         .setup(|app| {
             let state = app_state::AppState::initialize(app.handle())?;
+            state.start_ai_handoff_maintenance_worker();
             app.manage(state);
             Ok(())
         })
@@ -13,12 +24,41 @@ pub fn run() {
             commands::collections::list_collections,
             commands::collections::create_collection,
             commands::ai::get_ai_review_state,
+            commands::ai::get_ai_provider_session_status,
+            commands::ai::set_ai_session_credential,
+            commands::ai::clear_ai_session_credential,
+            commands::ai::execute_ai_image_edit,
+            commands::ai::open_ai_official_resource,
             commands::ai::import_local_ai_candidate,
             commands::ai::preview_ai_candidate_normalization,
             commands::ai::activate_ai_candidate,
             commands::ai::create_ai_icon_root,
             commands::ai::restore_ai_version,
             commands::ai::repair_ai_to_original,
+            commands::ai_grid::prepare_ai_grid_edit_workspace,
+            commands::ai_grid::prepare_ai_generation_workspace,
+            commands::ai_grid::get_ai_grid_workspace,
+            commands::ai_grid::get_latest_ai_grid_workspace,
+            commands::ai_grid::mark_ai_grid_workspace_awaiting_result,
+            commands::ai_grid::attach_ai_grid_output,
+            commands::ai_grid::analyze_ai_grid_output,
+            commands::ai_grid::commit_ai_grid_review,
+            commands::ai_grid::commit_ai_generated_icons,
+            commands::ai_grid::cancel_ai_grid_workspace,
+            commands::ai_grid::reveal_ai_grid_input,
+            commands::ai_grid::start_ai_grid_input_drag,
+            commands::ai_handoff::prepare_ai_web_handoff,
+            commands::ai_handoff::get_ai_web_handoff,
+            commands::ai_handoff::get_latest_ai_web_handoff_for_icon,
+            commands::ai_handoff::reveal_ai_web_handoff_upload,
+            commands::ai_handoff::start_ai_web_handoff_drag,
+            commands::ai_handoff::validate_ai_web_handoff_result,
+            commands::ai_handoff::commit_ai_web_handoff_result,
+            commands::ai_handoff::extend_ai_web_handoff_retention,
+            commands::ai_handoff::delete_ai_web_handoff_payload,
+            commands::ai_handoff::list_recent_ai_web_handoffs,
+            commands::ai_handoff::get_ai_web_handoff_storage_status,
+            commands::ai_handoff::run_ai_web_handoff_maintenance,
             commands::collections::rename_collection,
             commands::collections::delete_collection,
             commands::collections::duplicate_collection,
@@ -99,6 +139,7 @@ pub fn run() {
         .expect("error while running tauri application");
 }
 
+mod ai_provider;
 mod app_state;
 mod commands;
 mod db;
@@ -107,6 +148,7 @@ mod export;
 mod ids;
 mod imaging;
 mod models;
+mod native_drag;
 mod optimization;
 mod paths;
 mod sheet;

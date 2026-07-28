@@ -1150,19 +1150,37 @@ pub(crate) fn candidate_stale_reason(
 ) -> AppResult<Option<String>> {
     let request = connection.query_row(
         "SELECT
-           request.request_recipe_signature,
-           request.activation_revision,
-           request.original_lineage_id,
-           request.original_lineage_generation,
-           request.original_source_sha256,
-           request.effective_source_sha256,
+           COALESCE(request_item.native_recipe_signature, request.request_recipe_signature)
+             AS request_recipe_signature,
+           COALESCE(request_item.activation_revision, request.activation_revision)
+             AS activation_revision,
+           COALESCE(request_item.original_lineage_id, request.original_lineage_id)
+             AS original_lineage_id,
+           COALESCE(
+             request_item.original_lineage_generation,
+             request.original_lineage_generation
+           ) AS original_lineage_generation,
+           COALESCE(request_item.original_source_sha256, request.original_source_sha256)
+             AS original_source_sha256,
+           COALESCE(request_item.effective_source_sha256, request.effective_source_sha256)
+             AS effective_source_sha256,
            request.status,
            request.superseded_at
          FROM ai_candidates candidate
          JOIN ai_requests request ON request.id = candidate.request_id
+         LEFT JOIN ai_request_items request_item
+           ON request_item.id = candidate.request_item_id
          WHERE candidate.id = ?1
-           AND request.origin_icon_id = ?2
-           AND request.origin_collection_id = ?3",
+           AND request.origin_collection_id = ?3
+           AND (
+             (
+               request_item.id IS NOT NULL
+               AND request_item.origin_icon_id = ?2
+             ) OR (
+               request_item.id IS NULL
+               AND request.origin_icon_id = ?2
+             )
+           )",
         params![candidate_id, icon_id, collection_id],
         |row| {
             Ok((

@@ -85,6 +85,10 @@ fn orphan_source_files(connection: &Connection) -> AppResult<Vec<OrphanSourceFil
              WHERE candidate.raw_source_file_id = s.id
            )
            AND NOT EXISTS (
+             SELECT 1 FROM ai_request_artifacts artifact
+             WHERE artifact.source_file_id = s.id
+           )
+           AND NOT EXISTS (
              SELECT 1 FROM icon_ai_lineages lineage
              WHERE lineage.original_source_file_id = s.id
            )

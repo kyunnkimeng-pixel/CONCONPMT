@@ -1,7 +1,8 @@
 # UI_TRACE.md - PMTCONCON Studio UI Reference Trace
 
-Stage: `06_UI_REFERENCE_IMAGES`  
-Date: 2026-05-09  
+Stage: `06_UI_REFERENCE_IMAGES`
+Date: 2026-05-09
+Latest implementation trace update: 2026-07-28 (F138-F140 provider panels and security boundary)
 Mode: visual reference generation only, no product source implementation.
 
 Generated UI images are subordinate to the written specification. Use
@@ -110,4 +111,14 @@ omitted visual element must not remove a required feature.
 | F135-F137 | `EditorPanel.tsx` source summary, `AiReviewSection.tsx` history view, native AI repositories | R3 | Provider-neutral non-destructive source/version foundation. Originals remain immutable; activation and rollback are restart-safe and fail closed. |
 | F144 | `AiReviewSection.tsx` normalization inspector and comparison views | R3 | Local JPG/PNG candidates support contain-pad or cover-crop normalization with deterministic native preview before commit. |
 | F145 | AI outcome panel plus grid reveal/focus integration | R2, R3 | New-icon creation, current-source activation, restore, repeat creation count, open/reveal/continue actions, and one document-wide live region are implemented. |
-| F146 | `AiReviewSection.tsx` in-app AI workspace dialog | R3 | Implemented three-tab workspace for local result import, candidate review, and source history. Provider generation, API keys, and browser automation are intentionally absent until later stages. |
+| F146 | `AiReviewSection.tsx` in-app AI workspace dialog | R3 | Implemented three-tab workspace for local result import, candidate review, and source history. Provider execution and safe web handoff are added only through the separately gated F138–F140 panel below. |
+| F138 | `AiProviderPanel.tsx`, `AiWebHandoffPanel.tsx`, history dialog, native `ai_handoff` commands/repository | R1, R3 | Static-single manual round trip includes verified Windows file drag, Explorer fallback, result validation/correction, inactive candidate, restart restore and explicit close. Global quota/history is F151. No provider DOM/session automation. |
+| F139 | `AiProviderPanel.tsx` NovelAI form, `ai-provider-model.ts`, `api.ts`, native `ai_provider.rs` and `ai_provider_runtime/` | R3 | Session PAT connect/status/clear, exact experimental action/model fields, source/prompt/cost/rights confirmation and one-image execute feed the existing inactive-candidate review. Token input clears at invoke and is never echoed or persisted; only static-image edit and JSON response are in this gate. |
+| F140 | `AiProviderPanel.tsx` `Gemini API (실험실)` form, `ai-provider-model.ts`, native provider adapter | R3 | Mock-tested private static-edit pilot only. Full adult/professional-business/supported-region/paid-service/request-cost confirmations gate execution; the session key is non-persistent. This row does not authorize or claim general consumer release, and Gemini web handoff remains available. |
+| F138-F140 security boundary | production `tauri.conf.json`, `capabilities/default.json`, native official-resource enum/constant mapping | R1-R4 | WebView `connect-src` is IPC-only, general `opener:default` is absent, and frontend URLs cannot select arbitrary external destinations. Official links and provider HTTP use separate Rust-owned constant allowlists. |
+| F147 | migration `018`, `ai_grid.rs`, `sheet/composer.rs`, `sheet/splitter.rs` | R2-R3 | Durable request items/artifacts, deterministic 2–16 one-page composition, reviewed all-or-none splitting and source-free roots back the visible GRID-2 workflow. |
+| F148 | `IconGrid.tsx`/`IconContextMenu.tsx` and `AiGridWorkspaceDialog.tsx` | R2-R3 | Eligible 2–16 static square single icons expose `선택 N개 AI로 수정`; disabled cases show an exact reason. Five steps cover prompt, verified drag/Explorer, result drop, overlay mapping and all-or-none inactive candidates. |
+| F149 | Collection toolbar `AI 아이콘 만들기` and `AiGridWorkspaceDialog.tsx` | R2-R3 | Source-free 1–16 generation creates no placeholder. Reviewed cells become source/icon/piece/crop/provenance/order/cover atomically. |
+| F150 | Grid/single handoff `파일 끌기` buttons plus `native_drag.rs` | R3 | Mouse starts OS-native drag only after request-ID lookup and managed-file integrity validation; keyboard/non-Windows use Explorer. No arbitrary path or DOM automation. |
+| F151 | AppShell sidebar `최근 AI 전달` and `AiHandoffHistoryDialog.tsx` | R1-R3 | Shows unified single/grid 256MiB usage, recent 30 records, lifecycle/cleanup-pending state and request-type-safe drag/reveal/close/manual cleanup; backend protects active work and repeats maintenance every 15 minutes while open. |
+| F152 | `GifFrameSheetDialog.tsx` and native GIF manifest/reimport pipeline | R2-R3 | Export/reimport uses manifest page filenames, restores exact frame timing and loop metadata, bounds output, previews rebuilt variant and preserves the original. |

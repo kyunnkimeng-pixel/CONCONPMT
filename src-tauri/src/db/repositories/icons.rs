@@ -8,8 +8,8 @@ use rusqlite::{params, Connection, OptionalExtension, Row, Transaction};
 
 use crate::db::repositories::clone_artifacts::{
     cleanup_cloned_icon_previews, clone_current_ai_lineage, clone_effective_active_variants,
-    clone_frame_sheet_gif_recipe, materialize_clone_native_preview, validate_icon_clone_source,
-    validate_icon_clone_target,
+    clone_frame_sheet_gif_recipe, clone_source_free_root_provenance,
+    materialize_clone_native_preview, validate_icon_clone_source, validate_icon_clone_target,
 };
 use crate::db::repositories::effects as effect_repository;
 use crate::db::repositories::source_files::{
@@ -509,8 +509,16 @@ pub fn replace_icon_source(
              superseded_at = strftime('%Y-%m-%dT%H:%M:%fZ', 'now'),
              superseded_reason = 'original_source_replaced',
              updated_at = strftime('%Y-%m-%dT%H:%M:%fZ', 'now')
-         WHERE origin_icon_id = ?1
-           AND status IN ('prepared', 'awaiting_result', 'running')",
+         WHERE (
+             origin_icon_id = ?1
+             OR EXISTS (
+               SELECT 1
+               FROM ai_request_items request_item
+               WHERE request_item.request_id = ai_requests.id
+                 AND request_item.origin_icon_id = ?1
+             )
+           )
+           AND status IN ('draft', 'prepared', 'awaiting_result', 'running', 'layout_review_pending')",
             [icon_id],
         )?;
         let state_rows = transaction.execute(
@@ -798,6 +806,7 @@ pub fn duplicate_icon(
         duplicate_icon_motion_recipe(&transaction, icon_id, &duplicate_icon_id)?;
         clone_frame_sheet_gif_recipe(&transaction, icon_id, &duplicate_icon_id)?;
         clone_current_ai_lineage(&transaction, icon_id, &duplicate_icon_id)?;
+        clone_source_free_root_provenance(&transaction, icon_id, &duplicate_icon_id)?;
         validate_icon_clone_target(&transaction, collection_id, &duplicate_icon_id)?;
         materialize_clone_native_preview(&transaction, paths, collection_id, &duplicate_icon_id)?;
         clone_effective_active_variants(
@@ -836,6 +845,24 @@ pub fn delete_icons(
     let mut deleted_count = 0;
 
     for icon_id in &requested_ids {
+        transaction.execute(
+            "UPDATE ai_requests
+             SET status = 'cancelled',
+                 superseded_at = strftime('%Y-%m-%dT%H:%M:%fZ', 'now'),
+                 superseded_reason = 'target_icon_deleted',
+                 updated_at = strftime('%Y-%m-%dT%H:%M:%fZ', 'now')
+             WHERE (
+                 origin_icon_id = ?1
+                 OR EXISTS (
+                   SELECT 1
+                   FROM ai_request_items request_item
+                   WHERE request_item.request_id = ai_requests.id
+                     AND request_item.origin_icon_id = ?1
+                 )
+               )
+               AND status IN ('draft', 'prepared', 'awaiting_result', 'running', 'layout_review_pending')",
+            [icon_id],
+        )?;
         let changed = transaction.execute(
             "UPDATE icons
              SET deleted_at = strftime('%Y-%m-%dT%H:%M:%fZ', 'now'),

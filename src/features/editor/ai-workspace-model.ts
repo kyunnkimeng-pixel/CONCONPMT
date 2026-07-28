@@ -1,5 +1,5 @@
 export const AI_WORKSPACE_TABS = [
-  { value: "import", label: "결과 가져오기" },
+  { value: "import", label: "AI 수정·가져오기" },
   { value: "review", label: "후보 검토" },
   { value: "history", label: "소스 이력" },
 ] as const;

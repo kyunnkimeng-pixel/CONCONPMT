@@ -9,6 +9,9 @@ PMTCONCON Studio는 DCInside 스타일 디시콘과 커스텀 이모티콘 모�
 AI 프리릴리스 검증 범위는 [Release Readiness 0.3.0-alpha.1](docs/RELEASE_READINESS_0.3.0-alpha.1.md)에 별도로 기록합니다.
 최신 안정 버전의 변경 사항은 [Release Notes 0.2.0](docs/RELEASE_NOTES_0.2.0.md)에서 볼 수 있습니다.
 AI 후보 작업공간 프리릴리스는 [Release Notes 0.3.0-alpha.1](docs/RELEASE_NOTES_0.3.0-alpha.1.md)에서 확인할 수 있습니다.
+이미지 표시 핫픽스는 [Release Notes 0.3.0-alpha.2](docs/RELEASE_NOTES_0.3.0-alpha.2.md)에서 확인할 수 있습니다.
+AI 그리드·GIF 왕복·전달 관리 프리릴리스는 [Release Notes 0.3.0-alpha.3](docs/RELEASE_NOTES_0.3.0-alpha.3.md)에서 확인할 수 있습니다.
+검증·패키징 결과는 [Release Readiness 0.3.0-alpha.3](docs/RELEASE_READINESS_0.3.0-alpha.3.md)에 기록했습니다.
 
 ## 화면
 
@@ -50,9 +53,14 @@ AI 후보 작업공간 프리릴리스는 [Release Notes 0.3.0-alpha.1](docs/REL
 
 ### GIF 프레임 작업 시트
 
-GIF 아이콘은 우클릭 메뉴에서 모든 프레임을 PNG frame sheet로 내보내고, 수정된 frame sheet를 manifest로 다시 가져와 새 animated GIF variant를 만들 수 있습니다. 원본 GIF 파일은 보존됩니다.
+GIF 아이콘은 우클릭 메뉴에서 모든 프레임을 PNG frame sheet로 내보내고, 수정된 frame sheet를 manifest의 페이지 파일명으로 다시 가져와 새 animated GIF variant를 만들 수 있습니다. 프레임별 시간과 once/infinite/finite 반복 설정을 복원하며 원본 GIF 파일은 보존됩니다.
 
 ![PMTCONCON Studio GIF frame sheet export dialog](docs/manual-assets/manual-16-gif-frame-sheet-export.png)
+### AI 그리드와 수동 웹 전달
+
+모음 도구의 `AI 아이콘 만들기`에서 원본 없이 한 개 또는 최대 16개 이모티콘을 만들 수 있습니다. 정적 단일 아이콘 2–16개를 Ctrl/Shift로 선택한 뒤 우클릭하면 한 장의 clean grid로 일괄 수정할 수 있습니다. 웹에서 받은 결과 시트는 셀 매핑을 검토한 뒤에만 비활성 후보 또는 새 아이콘으로 모두 함께 저장됩니다.
+
+Windows에서는 앱이 다시 검증한 관리형 파일을 공식 웹의 업로드 영역까지 직접 끌 수 있고, 키보드·비Windows·호환성 문제에는 Explorer 선택을 사용합니다. 앱은 로그인, DOM, cookie, 생성 완료 또는 다운로드를 자동 제어하지 않습니다. 사이드바 `최근 AI 전달`에서 256MiB 임시 저장 공간, 만료/정리 상태와 최근 기록을 확인할 수 있으며 앱이 켜져 있으면 15분마다 만료 정리를 다시 시도합니다.
 
 ## 주요 기능
 
@@ -76,6 +84,10 @@ GIF 아이콘은 우클릭 메뉴에서 모든 프레임을 PNG frame sheet로 �
 - 스프라이트 시트 가져오기와 manifest 기반 작업 시트 재가져오기
 - 선택 아이콘만 작업 시트로 내보내기
 - GIF 프레임 작업 시트 내보내기/교체하기
+- 정적 단일 아이콘 웹 AI 왕복: 검증 파일 직접 끌기/Explorer, 프롬프트, 결과 검사와 비활성 후보 저장
+- 선택한 정적 단일 아이콘 2–16개 AI 그리드 일괄 수정과 all-or-none 후보 저장
+- 원본 없는 단일/최대 16개 그리드 아이콘 생성과 atomic 새 아이콘 저장
+- 최근 AI 전달 목록, 256MiB 임시 저장 제한, 앱 실행 중 15분 주기 만료 정리
 - 아이콘 메모와 hover 표시
 - 가져오기/내보내기/GIF frame sheet에 공유되는 grid 프리셋
 - 직접 Slice 지정과 자동 감지(실험) proposal 적용

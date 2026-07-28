@@ -1,14 +1,114 @@
-use tauri::State;
+use tauri::{AppHandle, State};
+use tauri_plugin_opener::OpenerExt;
 
+use crate::ai_provider::provider;
 use crate::app_state::AppState;
+use crate::db::connection::open_existing_database;
 use crate::db::repositories::ai as ai_repository;
 use crate::error::{AppError, AppResult};
 use crate::models::{
-    ActivateAiCandidatePayload, AiNormalizationPreviewDto, AiReviewStateDto,
-    AiSourceMutationResultDto, CreateAiIconRootPayload, CreateAiIconRootResultDto,
-    ImportAiCandidatePayload, PreviewAiCandidateNormalizationPayload, RepairAiToOriginalPayload,
-    RestoreAiVersionPayload,
+    ActivateAiCandidatePayload, AiNormalizationPreviewDto, AiProviderSessionStatusDto,
+    AiReviewStateDto, AiSourceMutationResultDto, CreateAiIconRootPayload,
+    CreateAiIconRootResultDto, ExecuteAiImageEditPayload, ImportAiCandidatePayload,
+    PreviewAiCandidateNormalizationPayload, RepairAiToOriginalPayload, RestoreAiVersionPayload,
+    SetAiSessionCredentialPayload,
 };
+
+#[tauri::command]
+pub fn get_ai_provider_session_status(
+    state: State<'_, AppState>,
+) -> AppResult<AiProviderSessionStatusDto> {
+    state.ai_credentials().status()
+}
+
+#[tauri::command]
+pub fn set_ai_session_credential(
+    state: State<'_, AppState>,
+    payload: SetAiSessionCredentialPayload,
+) -> AppResult<AiProviderSessionStatusDto> {
+    state.ai_credentials().set(payload)
+}
+
+#[tauri::command]
+pub fn clear_ai_session_credential(
+    state: State<'_, AppState>,
+    provider: String,
+) -> AppResult<AiProviderSessionStatusDto> {
+    state.ai_credentials().clear(&provider)
+}
+
+#[tauri::command]
+pub async fn execute_ai_image_edit(
+    state: State<'_, AppState>,
+    collection_id: String,
+    payload: ExecuteAiImageEditPayload,
+) -> AppResult<AiReviewStateDto> {
+    let credential = state.ai_credentials().credential(&payload.provider)?;
+    let paths = state.paths().clone();
+    let prepared = {
+        let mut connection = state.render_connection()?;
+        provider::start_image_edit(&mut connection, &paths, &collection_id, payload)?
+    };
+    let request_id = prepared.request_id.clone();
+    let worker_paths = paths.clone();
+
+    let worker = tauri::async_runtime::spawn_blocking(move || {
+        let mut connection = open_existing_database(&worker_paths.database_path)?;
+        provider::execute_started_http(
+            &mut connection,
+            &worker_paths,
+            &prepared,
+            credential.as_str(),
+        )
+    })
+    .await;
+
+    match worker {
+        Ok(Ok(review_state)) => Ok(review_state),
+        Ok(Err(error)) => {
+            if let Ok(connection) = state.connection() {
+                let _ = provider::record_started_request_failure(&connection, &request_id, &error);
+            }
+            Err(error)
+        }
+        Err(_) => {
+            let error = AppError::new(
+                "ai_provider_worker",
+                "AI 공급자 작업이 예기치 않게 중단되어 결과를 저장하지 않았습니다.",
+            );
+            if let Ok(connection) = state.connection() {
+                let _ = provider::record_started_request_failure(&connection, &request_id, &error);
+            }
+            Err(error)
+        }
+    }
+}
+#[tauri::command]
+pub fn open_ai_official_resource(app: AppHandle, resource: String) -> AppResult<()> {
+    let url = match resource.as_str() {
+        "user_manual" => "https://github.com/kyunnkimeng-pixel/CONCONPMT",
+        "novelai_app" => "https://novelai.net/image",
+        "novelai_pat" => "https://novelai.net/account",
+        "novelai_docs" => "https://image.novelai.net/docs/index.html",
+        "novelai_terms" => "https://novelai.net/terms",
+        "gemini_ai_studio" => "https://aistudio.google.com/",
+        "gemini_image_docs" => "https://ai.google.dev/gemini-api/docs/image-generation",
+        "gemini_pricing" => "https://ai.google.dev/gemini-api/docs/pricing",
+        "gemini_terms" => "https://ai.google.dev/gemini-api/terms",
+        _ => {
+            return Err(AppError::new(
+                "ai_official_resource_invalid",
+                "허용되지 않은 외부 주소입니다.",
+            ));
+        }
+    };
+    app.opener().open_url(url, None::<&str>).map_err(|_| {
+        AppError::new(
+            "ai_official_resource_open",
+            "공식 페이지를 열지 못했습니다.",
+        )
+    })
+}
 
 #[tauri::command]
 pub fn get_ai_review_state(

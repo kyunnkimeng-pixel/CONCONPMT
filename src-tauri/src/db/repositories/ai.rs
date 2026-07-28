@@ -482,17 +482,46 @@ fn list_candidates(
                AND version.base_original_lineage_id = ?2
                AND version.base_original_lineage_generation = ?3
            ) AS is_materialized,
-           COALESCE(request.origin_icon_id = ?1, 0) AS is_direct_origin
+           COALESCE(
+             (
+               request_item.id IS NOT NULL
+               AND request_item.origin_icon_id = ?1
+               AND request.origin_collection_id = ?4
+             ) OR (
+               request_item.id IS NULL
+               AND request.origin_icon_id = ?1
+               AND request.origin_collection_id = ?4
+             ),
+             0
+           ) AS is_direct_origin,
+           EXISTS (
+             SELECT 1
+             FROM ai_icon_root_creations root_creation
+             WHERE root_creation.icon_id = ?1
+               AND root_creation.candidate_id = candidate.id
+           ) AS is_owned_root
          FROM ai_candidates candidate
          JOIN ai_requests request ON request.id = candidate.request_id
+         LEFT JOIN ai_request_items request_item
+           ON request_item.id = candidate.request_item_id
          WHERE (
-           request.origin_icon_id = ?1
+           request_item.id IS NOT NULL
+           AND request_item.origin_icon_id = ?1
+           AND request.origin_collection_id = ?4
+         ) OR (
+           request_item.id IS NULL
+           AND request.origin_icon_id = ?1
            AND request.origin_collection_id = ?4
          ) OR EXISTS (
            SELECT 1
            FROM icon_ai_versions owned_version
            WHERE owned_version.icon_id = ?1
              AND owned_version.candidate_id = candidate.id
+         ) OR EXISTS (
+           SELECT 1
+           FROM ai_icon_root_creations owned_root
+           WHERE owned_root.icon_id = ?1
+             AND owned_root.candidate_id = candidate.id
          )
          ORDER BY candidate.created_at DESC, candidate.candidate_index ASC",
     )?;
@@ -514,6 +543,7 @@ fn list_candidates(
                     row.get::<_, String>("created_at")?,
                     row.get::<_, i64>("is_materialized")? != 0,
                     row.get::<_, i64>("is_direct_origin")? != 0,
+                    row.get::<_, i64>("is_owned_root")? != 0,
                 ))
             },
         )?
@@ -522,7 +552,7 @@ fn list_candidates(
     for row in rows {
         let (source, is_available, unavailable_reason) = load_review_source(connection, &row.4)?;
         let created_icon_usage = candidate_created_icon_usage(connection, collection_id, &row.0)?;
-        let stale_reason = if row.6 {
+        let stale_reason = if row.6 || row.8 {
             None
         } else if !row.7 {
             Some(
@@ -566,6 +596,7 @@ pub(crate) fn candidate_created_icon_usage(
          FROM ai_icon_root_creations creation
          JOIN icons icon ON icon.id = creation.icon_id
          WHERE creation.candidate_id = ?1
+           AND creation.creation_kind <> 'clone'
            AND icon.collection_id = ?2
            AND icon.deleted_at IS NULL",
         params![candidate_id, collection_id],
@@ -577,6 +608,7 @@ pub(crate) fn candidate_created_icon_usage(
              FROM ai_icon_root_creations creation
              JOIN icons icon ON icon.id = creation.icon_id
              WHERE creation.candidate_id = ?1
+               AND creation.creation_kind <> 'clone'
                AND icon.collection_id = ?2
                AND icon.deleted_at IS NULL
              ORDER BY creation.creation_order DESC

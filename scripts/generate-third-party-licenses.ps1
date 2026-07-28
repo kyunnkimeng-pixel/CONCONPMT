@@ -100,7 +100,7 @@ function Get-CargoPackagesForNotice([string] $lockPath) {
   $cargo = Get-Command cargo -ErrorAction SilentlyContinue
   if ($cargo -and (Test-Path -LiteralPath $workspaceCargoTomlPath)) {
     try {
-      $metadataJson = & cargo metadata --manifest-path $workspaceCargoTomlPath --format-version 1 --locked 2>$null
+      $metadataJson = & cargo metadata --manifest-path $workspaceCargoTomlPath --format-version 1 --locked --filter-platform x86_64-pc-windows-msvc 2>$null
       if ($LASTEXITCODE -eq 0 -and $metadataJson) {
         $metadata = $metadataJson | ConvertFrom-Json
         $packageById = @{}
@@ -163,7 +163,7 @@ function Get-CargoPackagesForNotice([string] $lockPath) {
         }
       }
     } catch {
-      Write-Host "WARN: cargo metadata failed; falling back to Cargo.lock scan."
+      Write-Host ("WARN: cargo metadata graph processing failed; falling back to Cargo.lock scan: {0}" -f $_.Exception.Message)
     }
   }
 
@@ -185,6 +185,10 @@ function Test-CargoDepKindAppliesToWindowsNotice($depKind) {
   }
 
   if ($target -match "windows") {
+    return $true
+  }
+
+  if ($target -match 'not\s*\(\s*target_arch\s*=\s*"wasm32"\s*\)') {
     return $true
   }
 
@@ -334,6 +338,12 @@ $manualReviewResolutions = @(
     Version = "6.0.0"
     Source = "Rust"
     Resolution = 'Reviewed 2026-05-11: same upstream license shape as r-efi 5.3.0. PMTCONCON Studio uses the permissive MIT/Apache-2.0 license path and does not rely on the LGPL alternative.'
+  },
+  [pscustomobject]@{
+    Name = "ring"
+    Version = "0.17.14"
+    Source = "Rust"
+    Resolution = 'Reviewed 2026-07-28: "Apache-2.0 AND ISC" requires preserving both permissive notices. Both licenses are allowed by PMTCONCON Studio policy; the crate package includes LICENSE, LICENSE-BoringSSL, LICENSE-other-bits, and the referenced polyfill/third-party license files.'
   },
   [pscustomobject]@{
     Name = "unicode-ident"

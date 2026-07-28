@@ -14,8 +14,11 @@ import {
   LayoutGrid,
   MessageSquareText,
   Settings,
+  Sparkles,
 } from "lucide-react";
 
+import { AiGridWorkspaceDialog } from "@/features/ai-grid/components/AiGridWorkspaceDialog";
+import type { AiGridWorkspaceMode } from "@/features/ai-grid/components/AiGridWorkspaceDialog";
 import {
   getAppSettings,
   importCollectionCoverImage,
@@ -122,6 +125,10 @@ export function CollectionRoute() {
   const [editingIconId, setEditingIconId] = useState<string | null>(null);
   const [isEditorDirty, setIsEditorDirty] = useState(false);
   const [isAiDialogOpen, setIsAiDialogOpen] = useState(false);
+  const [aiGridRequest, setAiGridRequest] = useState<{
+    mode: AiGridWorkspaceMode;
+    selectedIconIds: string[];
+  } | null>(null);
   const [isExportDialogOpen, setIsExportDialogOpen] = useState(false);
   const [isSheetImportOpen, setIsSheetImportOpen] = useState(false);
   const [isFrameSheetGifOpen, setIsFrameSheetGifOpen] = useState(false);
@@ -839,6 +846,18 @@ export function CollectionRoute() {
               내보내기
             </button>
             <button
+              className="inline-flex shrink-0 items-center gap-2 whitespace-nowrap rounded-md border border-accent bg-white px-3 py-2 text-sm font-semibold hover:bg-selected focus-visible:outline focus-visible:outline-2 focus-visible:outline-focus"
+              title="원본 없이 단일 또는 최대 16개의 그리드 이모티콘을 AI로 만듭니다."
+              type="button"
+              onClick={() => {
+                setAiGridRequest({ mode: "generate", selectedIconIds: [] });
+                setIsAiDialogOpen(true);
+              }}
+            >
+              <Sparkles aria-hidden="true" />
+              AI 아이콘 만들기
+            </button>
+            <button
               className="inline-flex shrink-0 items-center gap-2 whitespace-nowrap rounded-md border border-border bg-white px-3 py-2 text-sm font-medium hover:bg-menu-hover focus-visible:outline focus-visible:outline-2 focus-visible:outline-focus disabled:cursor-not-allowed disabled:text-muted"
               title="스프라이트 시트 한 장을 셀로 나눠 여러 아이콘으로 가져옵니다."
               type="button"
@@ -1043,6 +1062,10 @@ export function CollectionRoute() {
                   onDeleteIcons={handleDeleteIcons}
                   onDuplicateIcon={handleDuplicateIcon}
                   onEditIcon={handleEditIcon}
+                  onAiGridEdit={(iconIds) => {
+                    setAiGridRequest({ mode: "edit", selectedIconIds: iconIds });
+                    setIsAiDialogOpen(true);
+                  }}
                   onExportSelectedSheet={(iconIds) => {
                     setSheetExportSelectedIconIds(iconIds);
                     setIsSheetExportOpen(true);
@@ -1119,6 +1142,23 @@ export function CollectionRoute() {
         ) : null}
       </section>
 
+      {aiGridRequest ? (
+        <AiGridWorkspaceDialog
+          collection={collection}
+          icons={icons}
+          mode={aiGridRequest.mode}
+          selectedIconIds={aiGridRequest.selectedIconIds}
+          onClose={() => {
+            setAiGridRequest(null);
+            setIsAiDialogOpen(false);
+          }}
+          onCompleted={async () => {
+            await refreshCollectionAndIcons();
+            setImportStatus("AI 그리드 작업 결과를 저장했습니다.");
+            notifyCollectionListChanged();
+          }}
+        />
+      ) : null}
       {isExportDialogOpen ? (
         <ExportDialog
           collection={collection}

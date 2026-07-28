@@ -1,6 +1,7 @@
 import type {
   AiCandidate,
   AiManualServiceSurface,
+  AiServiceSurface,
   EffectiveVisualSource,
 } from "@/features/editor/types";
 
@@ -18,7 +19,9 @@ export const AI_MANUAL_SERVICE_OPTIONS: ReadonlyArray<{
   { value: "novelai_web", label: "NovelAI 웹 결과 (수동)" },
 ];
 
-export function aiServiceSurfaceLabel(surface: AiManualServiceSurface) {
+export function aiServiceSurfaceLabel(surface: AiServiceSurface) {
+  if (surface === "novelai_api") return "NovelAI API";
+  if (surface === "gemini_api") return "Gemini API (실험실)";
   return (
     AI_MANUAL_SERVICE_OPTIONS.find((option) => option.value === surface)?.label ??
     "수동/로컬 결과"

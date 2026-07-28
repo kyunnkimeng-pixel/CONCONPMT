@@ -95,6 +95,8 @@ import type {
   SourceFileSummary,
 } from "@/features/editor/types";
 import type { IconSummary } from "@/features/collections/types";
+import { AiProviderPanel } from "@/features/editor/components/AiProviderPanel";
+import { newestGeneratedCandidateId } from "@/features/editor/ai-provider-model";
 import type { IconRevealAction } from "@/features/icons/icon-reveal";
 import { getCommandErrorMessage } from "@/lib/tauri";
 import { useModalFocus } from "@/lib/use-modal-focus";
@@ -121,6 +123,7 @@ interface AiReviewSectionProps {
 
 type BusyAction =
   | "import"
+  | "provider"
   | "sync-created-icon"
   | "sync-editor"
   | "restore-original"
@@ -223,6 +226,13 @@ export function AiReviewSection({
   const fileInputRef = useRef<HTMLInputElement>(null);
   const lifecycleRef = useRef(createIconRequestLifecycle(iconId));
   activateIconRequestLifecycle(lifecycleRef.current, iconId);
+  const announceProvider = useCallback(
+    (message: string, tone: "status" | "error") => {
+      setErrorMessage(tone === "error" ? message : null);
+      setStatusMessage(tone === "status" ? message : null);
+    },
+    [],
+  );
 
   const acceptReviewState = useCallback(
     (nextState: AiReviewState, preferredCandidateId?: string | null) => {
@@ -1121,6 +1131,31 @@ export function AiReviewSection({
               isImporting={busyAction === "import"}
               selectedFile={selectedFile}
               serviceSurface={serviceSurface}
+              providerPanel={
+                <AiProviderPanel
+                  collectionId={collectionId}
+                  disabled={viewingDisabled && busyAction !== "provider"}
+                  hasUnsavedChanges={hasUnsavedChanges}
+                  iconId={iconId}
+                  source={currentVisualSource.effectiveRenderSource}
+                  onAnnouncement={announceProvider}
+
+                  onBusyEnd={() => finishBusyAction("provider")}
+                  onBusyStart={() => beginBusyAction("provider")}
+                  onGenerated={(nextState) => {
+                    const newestCandidateId = newestGeneratedCandidateId(
+                      reviewState?.candidates ?? [],
+                      nextState.candidates,
+                    );
+                    acceptReviewState(nextState, newestCandidateId);
+                    dispatchWorkspaceUi({ type: "set_view", view: "review" });
+                    dispatchWorkspaceUi({
+                      type: "set_compare_view",
+                      view: "raw",
+                    });
+                  }}
+                />
+              }
               onFileChange={selectFile}
               onImport={() => {
                 void importCandidate();
@@ -1695,6 +1730,7 @@ export function AiImportResultPanel({
   isImporting,
   selectedFile,
   serviceSurface,
+  providerPanel,
   onFileChange,
   onImport,
   onServiceSurfaceChange,
@@ -1706,6 +1742,7 @@ export function AiImportResultPanel({
   isImporting: boolean;
   selectedFile: File | null;
   serviceSurface: AiManualServiceSurface;
+  providerPanel?: ReactNode;
   onFileChange: (file: File | null) => void;
   onImport: () => void;
   onServiceSurfaceChange: (service: AiManualServiceSurface) => void;
@@ -1721,8 +1758,9 @@ export function AiImportResultPanel({
         <div className="flex gap-2 rounded-md border border-focus/25 bg-selected/50 p-3 text-xs leading-5" role="note">
           <ShieldCheck aria-hidden="true" className="mt-0.5 size-4 shrink-0 text-focus" />
           <p>
-            API나 네트워크를 자동으로 사용하지 않습니다. Gemini 웹, NovelAI 웹
-            또는 다른 도구에서 직접 저장한 결과만 가져오며 API 키를 입력하거나 저장하지 않습니다.
+            원본은 항상 보존됩니다. API는 아래에서 키를 세션에 연결하고 결과 1장 요청을
+            직접 눌렀을 때만 한 번 호출합니다. 웹 전달과 로컬 가져오기는 파일을 자동으로
+            전송하지 않습니다.
           </p>
         </div>
         <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
@@ -1733,7 +1771,12 @@ export function AiImportResultPanel({
             source={currentVisualSource.effectiveRenderSource}
           />
         </div>
-        <section className="flex flex-col gap-3 rounded-md border border-border bg-white p-4">
+        {providerPanel}
+        <details className="rounded-md border border-border bg-white p-4">
+          <summary className="cursor-pointer text-sm font-semibold">
+            다른 이미지 직접 가져오기 (고급)
+          </summary>
+          <section className="mt-3 flex flex-col gap-3">
           <div>
             <h3 className="text-sm font-semibold">로컬 결과를 후보로 가져오기</h3>
             <p className="mt-1 text-xs leading-5 text-muted">
@@ -1816,7 +1859,8 @@ export function AiImportResultPanel({
             )}
             {isImporting ? "후보 가져오는 중" : "후보로 가져오기"}
           </button>
-        </section>
+          </section>
+        </details>
       </div>
     </div>
   );

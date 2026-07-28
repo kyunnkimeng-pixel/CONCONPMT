@@ -1,7 +1,9 @@
+use std::collections::HashSet;
 use std::fmt::Write as FmtWrite;
 use std::fs::{self, File, OpenOptions};
 use std::io::{Cursor, Read, Write};
 use std::path::{Path, PathBuf};
+use std::time::{Duration, SystemTime};
 
 use image::codecs::gif::GifDecoder;
 use image::{AnimationDecoder, DynamicImage, GenericImageView, ImageFormat};
@@ -14,6 +16,8 @@ use crate::imaging::gif_pipeline::inspect_gif_bytes;
 use crate::imaging::import_limits::decode_import_image;
 use crate::models::ImportImageFilePayload;
 use crate::paths::AppPaths;
+
+const SOURCE_FILE_ORPHAN_GRACE_PERIOD: Duration = Duration::from_secs(24 * 60 * 60);
 
 #[derive(Debug, Clone, Copy)]
 pub struct SourceFileImportOptions {
@@ -182,6 +186,300 @@ impl PreparedSourceArtifactSnapshot {
     }
 }
 
+#[derive(Default)]
+struct SourceFileCleanupReferences {
+    original_paths: HashSet<PathBuf>,
+    sha256_values: HashSet<String>,
+    source_file_ids: HashSet<String>,
+}
+
+struct SourceFileCleanupCandidate {
+    path: PathBuf,
+    canonical_parent: PathBuf,
+}
+
+struct OwnedOriginalArtifact {
+    sha256: String,
+    target_file_name: String,
+}
+
+struct OwnedThumbnailArtifact {
+    source_file_id: String,
+}
+
+pub(crate) fn cleanup_source_file_crash_orphans(
+    connection: &Connection,
+    paths: &AppPaths,
+) -> AppResult<()> {
+    cleanup_source_file_crash_orphans_at(connection, paths, SystemTime::now())
+}
+
+fn cleanup_source_file_crash_orphans_at(
+    connection: &Connection,
+    paths: &AppPaths,
+    now: SystemTime,
+) -> AppResult<()> {
+    let references = load_source_file_cleanup_references(connection, paths)?;
+    let mut candidates = collect_original_cleanup_candidates(paths, &references, now)?;
+    candidates.extend(collect_thumbnail_cleanup_candidates(
+        paths,
+        &references,
+        now,
+    )?);
+
+    for candidate in candidates {
+        remove_expired_regular_file(&candidate.path, &candidate.canonical_parent, now)?;
+    }
+    Ok(())
+}
+
+fn load_source_file_cleanup_references(
+    connection: &Connection,
+    paths: &AppPaths,
+) -> AppResult<SourceFileCleanupReferences> {
+    let mut statement = connection.prepare(
+        "SELECT id, original_path_in_library, sha256, original_extension FROM source_files",
+    )?;
+    let rows = statement.query_map([], |row| {
+        Ok((
+            row.get::<_, String>(0)?,
+            row.get::<_, String>(1)?,
+            row.get::<_, String>(2)?,
+            row.get::<_, String>(3)?,
+        ))
+    })?;
+    let mut references = SourceFileCleanupReferences::default();
+
+    for row in rows {
+        let (source_file_id, stored_path, sha256, extension) = row?;
+        if source_file_id.is_empty()
+            || source_file_id.chars().any(char::is_control)
+            || !is_lower_hex(&sha256, 64)
+            || !is_owned_original_extension(&extension)
+        {
+            return Err(AppError::new(
+                "source_cleanup",
+                "source_files 메타데이터가 예상 형식과 달라 고아 파일 정리를 건너뜁니다.",
+            ));
+        }
+
+        let expected_path = original_library_path(paths, &sha256, &extension);
+        if Path::new(&stored_path) != expected_path {
+            return Err(AppError::new(
+                "source_cleanup",
+                "DB의 원본 경로가 관리 원본 폴더와 일치하지 않아 고아 파일 정리를 건너뜁니다.",
+            ));
+        }
+
+        references.original_paths.insert(expected_path);
+        references.sha256_values.insert(sha256);
+        references.source_file_ids.insert(source_file_id);
+    }
+
+    Ok(references)
+}
+
+fn collect_original_cleanup_candidates(
+    paths: &AppPaths,
+    references: &SourceFileCleanupReferences,
+    now: SystemTime,
+) -> AppResult<Vec<SourceFileCleanupCandidate>> {
+    let canonical_root = canonical_regular_directory(&paths.originals_dir)?;
+    let mut candidates = Vec::new();
+
+    for entry in fs::read_dir(&paths.originals_dir)? {
+        let entry = entry?;
+        let bucket_name = entry.file_name();
+        let Some(bucket_name) = bucket_name.to_str() else {
+            continue;
+        };
+        if !is_lower_hex(bucket_name, 2) {
+            continue;
+        }
+
+        let bucket_path = entry.path();
+        let Ok(metadata) = fs::symlink_metadata(&bucket_path) else {
+            continue;
+        };
+        if !metadata.file_type().is_dir() || metadata.file_type().is_symlink() {
+            continue;
+        }
+        let Ok(canonical_bucket) = bucket_path.canonicalize() else {
+            continue;
+        };
+        if canonical_bucket != canonical_root.join(bucket_name) {
+            continue;
+        }
+
+        for artifact_entry in fs::read_dir(&bucket_path)? {
+            let artifact_entry = artifact_entry?;
+            let artifact_name = artifact_entry.file_name();
+            let Some(artifact_name) = artifact_name.to_str() else {
+                continue;
+            };
+            let Some(owned) = parse_owned_original_artifact(artifact_name, bucket_name) else {
+                continue;
+            };
+            let target_path = bucket_path.join(&owned.target_file_name);
+            if references.sha256_values.contains(&owned.sha256)
+                || references.original_paths.contains(&target_path)
+            {
+                continue;
+            }
+
+            let artifact_path = artifact_entry.path();
+            if is_expired_regular_file(&artifact_path, now) {
+                candidates.push(SourceFileCleanupCandidate {
+                    path: artifact_path,
+                    canonical_parent: canonical_bucket.clone(),
+                });
+            }
+        }
+    }
+
+    Ok(candidates)
+}
+
+fn collect_thumbnail_cleanup_candidates(
+    paths: &AppPaths,
+    references: &SourceFileCleanupReferences,
+    now: SystemTime,
+) -> AppResult<Vec<SourceFileCleanupCandidate>> {
+    let canonical_root = canonical_regular_directory(&paths.source_file_thumbnails_dir)?;
+    let mut candidates = Vec::new();
+
+    for entry in fs::read_dir(&paths.source_file_thumbnails_dir)? {
+        let entry = entry?;
+        let artifact_name = entry.file_name();
+        let Some(artifact_name) = artifact_name.to_str() else {
+            continue;
+        };
+        let Some(owned) = parse_owned_thumbnail_artifact(artifact_name) else {
+            continue;
+        };
+        if references.source_file_ids.contains(&owned.source_file_id) {
+            continue;
+        }
+
+        let artifact_path = entry.path();
+        if is_expired_regular_file(&artifact_path, now) {
+            candidates.push(SourceFileCleanupCandidate {
+                path: artifact_path,
+                canonical_parent: canonical_root.clone(),
+            });
+        }
+    }
+
+    Ok(candidates)
+}
+
+fn canonical_regular_directory(path: &Path) -> AppResult<PathBuf> {
+    let metadata = fs::symlink_metadata(path)?;
+    if !metadata.file_type().is_dir() || metadata.file_type().is_symlink() {
+        return Err(AppError::new(
+            "source_cleanup",
+            "고아 파일 정리 루트가 실제 관리 디렉터리가 아니어서 정리를 건너뜁니다.",
+        ));
+    }
+    Ok(path.canonicalize()?)
+}
+
+fn parse_owned_original_artifact(
+    file_name: &str,
+    bucket_name: &str,
+) -> Option<OwnedOriginalArtifact> {
+    let target_file_name = strip_owned_transient_suffix(file_name)?;
+    let (sha256, extension) = target_file_name.rsplit_once('.')?;
+    if !is_lower_hex(sha256, 64)
+        || sha256.get(..2)? != bucket_name
+        || !is_owned_original_extension(extension)
+    {
+        return None;
+    }
+
+    Some(OwnedOriginalArtifact {
+        sha256: sha256.to_string(),
+        target_file_name: target_file_name.to_string(),
+    })
+}
+
+fn parse_owned_thumbnail_artifact(file_name: &str) -> Option<OwnedThumbnailArtifact> {
+    let target_file_name = strip_owned_transient_suffix(file_name)?;
+    let source_file_id = target_file_name.strip_suffix(".png")?;
+    if !is_generated_source_file_id(source_file_id) {
+        return None;
+    }
+    Some(OwnedThumbnailArtifact {
+        source_file_id: source_file_id.to_string(),
+    })
+}
+
+fn strip_owned_transient_suffix(file_name: &str) -> Option<&str> {
+    if let Some(transient_name) = file_name.strip_prefix('.') {
+        return transient_name
+            .strip_suffix(".incoming")
+            .or_else(|| transient_name.strip_suffix(".repair-backup"));
+    }
+    Some(file_name)
+}
+
+fn is_owned_original_extension(extension: &str) -> bool {
+    matches!(extension, "jpg" | "jpeg" | "png" | "gif")
+}
+
+fn is_generated_source_file_id(value: &str) -> bool {
+    let Some(suffix) = value.strip_prefix("source_") else {
+        return false;
+    };
+    let Some((timestamp, counter)) = suffix.split_once('_') else {
+        return false;
+    };
+    is_lower_hex(timestamp, 32) && is_lower_hex(counter, 8)
+}
+
+fn is_lower_hex(value: &str, expected_len: usize) -> bool {
+    value.len() == expected_len
+        && value
+            .bytes()
+            .all(|byte| byte.is_ascii_digit() || (b'a'..=b'f').contains(&byte))
+}
+
+fn is_expired_regular_file(path: &Path, now: SystemTime) -> bool {
+    let Ok(metadata) = fs::symlink_metadata(path) else {
+        return false;
+    };
+    if !metadata.file_type().is_file() || metadata.file_type().is_symlink() {
+        return false;
+    }
+    let Ok(modified) = metadata.modified() else {
+        return false;
+    };
+    now.duration_since(modified)
+        .map(|age| age >= SOURCE_FILE_ORPHAN_GRACE_PERIOD)
+        .unwrap_or(false)
+}
+
+fn remove_expired_regular_file(
+    path: &Path,
+    expected_canonical_parent: &Path,
+    now: SystemTime,
+) -> AppResult<()> {
+    if !is_expired_regular_file(path, now) {
+        return Ok(());
+    }
+    let Some(parent) = path.parent() else {
+        return Ok(());
+    };
+    let Ok(canonical_parent) = parent.canonicalize() else {
+        return Ok(());
+    };
+    if canonical_parent != expected_canonical_parent {
+        return Ok(());
+    }
+
+    fs::remove_file(path)?;
+    Ok(())
+}
 pub fn import_source_file_from_bytes(
     transaction: &Transaction<'_>,
     paths: &AppPaths,
@@ -786,7 +1084,7 @@ fn original_library_path(paths: &AppPaths, sha256: &str, extension: &str) -> Pat
         .join(format!("{sha256}.{extension}"))
 }
 
-fn source_thumbnail_path(paths: &AppPaths, source_file_id: &str) -> PathBuf {
+pub(crate) fn source_thumbnail_path(paths: &AppPaths, source_file_id: &str) -> PathBuf {
     paths
         .source_file_thumbnails_dir
         .join(format!("{source_file_id}.png"))
@@ -801,15 +1099,15 @@ mod tests {
     use std::fs;
     use std::io::Cursor;
     use std::path::Path;
-    use std::time::{SystemTime, UNIX_EPOCH};
+    use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
     use image::codecs::gif::GifEncoder;
     use image::{Delay, DynamicImage, Frame, ImageBuffer, ImageFormat, Rgba};
-    use rusqlite::Connection;
+    use rusqlite::{params, Connection};
 
     use super::{
-        commit_prepared_source_file, decoded_has_alpha, ensure_original_bytes,
-        prepare_source_file_from_bytes, sha256_hex, SourceFileImportOptions,
+        cleanup_source_file_crash_orphans_at, commit_prepared_source_file, decoded_has_alpha,
+        ensure_original_bytes, prepare_source_file_from_bytes, sha256_hex, SourceFileImportOptions,
     };
     use crate::models::ImportImageFilePayload;
     use crate::paths::AppPaths;
@@ -995,6 +1293,215 @@ mod tests {
         let parent = path.parent().unwrap();
         assert!(!parent.join(".original.bin.incoming").exists());
         assert!(!parent.join(".original.bin.repair-backup").exists());
+        fs::remove_dir_all(paths.root).unwrap();
+    }
+    fn cleanup_test_paths(label: &str) -> AppPaths {
+        let suffix = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap()
+            .as_nanos();
+        AppPaths::prepare(std::env::temp_dir().join(format!(
+            "pmtconcon-source-cleanup-{label}-{}-{suffix}",
+            std::process::id()
+        )))
+        .unwrap()
+    }
+
+    fn create_cleanup_source_files_table(connection: &Connection) {
+        connection
+            .execute_batch(
+                "CREATE TABLE source_files (
+                   id TEXT PRIMARY KEY,
+                   original_path_in_library TEXT NOT NULL,
+                   sha256 TEXT NOT NULL,
+                   original_extension TEXT NOT NULL
+                 );",
+            )
+            .unwrap();
+    }
+
+    #[test]
+    fn cleanup_removes_only_old_unreferenced_owned_artifacts_and_is_idempotent() {
+        let paths = cleanup_test_paths("old-unreferenced");
+        let connection = Connection::open_in_memory().unwrap();
+        create_cleanup_source_files_table(&connection);
+
+        let hash = "a".repeat(64);
+        let bucket = paths.originals_dir.join("aa");
+        fs::create_dir_all(&bucket).unwrap();
+        let original_name = format!("{hash}.png");
+        let original_paths = [
+            bucket.join(&original_name),
+            bucket.join(format!(".{original_name}.incoming")),
+            bucket.join(format!(".{original_name}.repair-backup")),
+        ];
+        for path in &original_paths {
+            fs::write(path, b"orphan-original").unwrap();
+        }
+
+        let source_id = format!("source_{}_{}", "1".repeat(32), "2".repeat(8));
+        let thumbnail_name = format!("{source_id}.png");
+        let thumbnail_paths = [
+            paths.source_file_thumbnails_dir.join(&thumbnail_name),
+            paths
+                .source_file_thumbnails_dir
+                .join(format!(".{thumbnail_name}.incoming")),
+            paths
+                .source_file_thumbnails_dir
+                .join(format!(".{thumbnail_name}.repair-backup")),
+        ];
+        for path in &thumbnail_paths {
+            fs::write(path, b"orphan-thumbnail").unwrap();
+        }
+
+        let unknown_original = bucket.join("keep-me.txt");
+        let unknown_thumbnail = paths.source_file_thumbnails_dir.join("keep-me.png");
+        fs::write(&unknown_original, b"unknown").unwrap();
+        fs::write(&unknown_thumbnail, b"unknown").unwrap();
+        let outside_dir = paths.root.join("outside-managed-source-roots");
+        fs::create_dir_all(&outside_dir).unwrap();
+        let outside_file = outside_dir.join(&original_name);
+        fs::write(&outside_file, b"outside").unwrap();
+
+        let future = SystemTime::now()
+            .checked_add(Duration::from_secs(26 * 60 * 60))
+            .unwrap();
+        cleanup_source_file_crash_orphans_at(&connection, &paths, future).unwrap();
+
+        for path in original_paths.iter().chain(thumbnail_paths.iter()) {
+            assert!(
+                !path.exists(),
+                "old unreferenced artifact survived: {path:?}"
+            );
+        }
+        assert!(unknown_original.exists());
+        assert!(unknown_thumbnail.exists());
+        assert!(outside_file.exists());
+
+        cleanup_source_file_crash_orphans_at(&connection, &paths, future).unwrap();
+        assert!(unknown_original.exists());
+        assert!(unknown_thumbnail.exists());
+        assert!(outside_file.exists());
+        fs::remove_dir_all(paths.root).unwrap();
+    }
+
+    #[test]
+    fn cleanup_preserves_old_referenced_and_new_unreferenced_artifacts() {
+        let paths = cleanup_test_paths("preserve");
+        let connection = Connection::open_in_memory().unwrap();
+        create_cleanup_source_files_table(&connection);
+
+        let referenced_hash = "b".repeat(64);
+        let referenced_bucket = paths.originals_dir.join("bb");
+        fs::create_dir_all(&referenced_bucket).unwrap();
+        let referenced_original_name = format!("{referenced_hash}.png");
+        let referenced_original_paths = [
+            referenced_bucket.join(&referenced_original_name),
+            referenced_bucket.join(format!(".{referenced_original_name}.incoming")),
+            referenced_bucket.join(format!(".{referenced_original_name}.repair-backup")),
+        ];
+        for path in &referenced_original_paths {
+            fs::write(path, b"referenced-original").unwrap();
+        }
+
+        let referenced_source_id = format!("source_{}_{}", "3".repeat(32), "4".repeat(8));
+        let referenced_thumbnail_name = format!("{referenced_source_id}.png");
+        let referenced_thumbnail_paths = [
+            paths
+                .source_file_thumbnails_dir
+                .join(&referenced_thumbnail_name),
+            paths
+                .source_file_thumbnails_dir
+                .join(format!(".{referenced_thumbnail_name}.incoming")),
+            paths
+                .source_file_thumbnails_dir
+                .join(format!(".{referenced_thumbnail_name}.repair-backup")),
+        ];
+        for path in &referenced_thumbnail_paths {
+            fs::write(path, b"referenced-thumbnail").unwrap();
+        }
+        connection
+            .execute(
+                "INSERT INTO source_files (
+                   id, original_path_in_library, sha256, original_extension
+                 ) VALUES (?1, ?2, ?3, ?4)",
+                params![
+                    referenced_source_id,
+                    referenced_original_paths[0].to_string_lossy().to_string(),
+                    referenced_hash,
+                    "png"
+                ],
+            )
+            .unwrap();
+
+        let old_future = SystemTime::now()
+            .checked_add(Duration::from_secs(26 * 60 * 60))
+            .unwrap();
+        cleanup_source_file_crash_orphans_at(&connection, &paths, old_future).unwrap();
+        for path in referenced_original_paths
+            .iter()
+            .chain(referenced_thumbnail_paths.iter())
+        {
+            assert!(path.exists(), "referenced artifact was removed: {path:?}");
+        }
+
+        let new_hash = "c".repeat(64);
+        let new_bucket = paths.originals_dir.join("cc");
+        fs::create_dir_all(&new_bucket).unwrap();
+        let new_original = new_bucket.join(format!("{new_hash}.png"));
+        fs::write(&new_original, b"new-original").unwrap();
+        let new_source_id = format!("source_{}_{}", "5".repeat(32), "6".repeat(8));
+        let new_thumbnail = paths
+            .source_file_thumbnails_dir
+            .join(format!("{new_source_id}.png"));
+        fs::write(&new_thumbnail, b"new-thumbnail").unwrap();
+
+        let new_future = SystemTime::now()
+            .checked_add(Duration::from_secs(23 * 60 * 60))
+            .unwrap();
+        cleanup_source_file_crash_orphans_at(&connection, &paths, new_future).unwrap();
+        assert!(new_original.exists());
+        assert!(new_thumbnail.exists());
+        fs::remove_dir_all(paths.root).unwrap();
+    }
+
+    #[test]
+    fn cleanup_fails_closed_when_database_reference_is_uncertain() {
+        let paths = cleanup_test_paths("uncertain-reference");
+        let connection = Connection::open_in_memory().unwrap();
+        create_cleanup_source_files_table(&connection);
+
+        let orphan_hash = "d".repeat(64);
+        let bucket = paths.originals_dir.join("dd");
+        fs::create_dir_all(&bucket).unwrap();
+        let orphan = bucket.join(format!("{orphan_hash}.png"));
+        fs::write(&orphan, b"must-survive-failed-cleanup").unwrap();
+
+        let uncertain_hash = "e".repeat(64);
+        let uncertain_source_id = format!("source_{}_{}", "7".repeat(32), "8".repeat(8));
+        let outside_path = paths
+            .root
+            .join("not-originals")
+            .join(format!("{uncertain_hash}.png"));
+        connection
+            .execute(
+                "INSERT INTO source_files (
+                   id, original_path_in_library, sha256, original_extension
+                 ) VALUES (?1, ?2, ?3, ?4)",
+                params![
+                    uncertain_source_id,
+                    outside_path.to_string_lossy().to_string(),
+                    uncertain_hash,
+                    "png"
+                ],
+            )
+            .unwrap();
+
+        let future = SystemTime::now()
+            .checked_add(Duration::from_secs(26 * 60 * 60))
+            .unwrap();
+        assert!(cleanup_source_file_crash_orphans_at(&connection, &paths, future).is_err());
+        assert!(orphan.exists());
         fs::remove_dir_all(paths.root).unwrap();
     }
 }

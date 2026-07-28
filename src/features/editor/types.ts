@@ -19,7 +19,8 @@ export type PresetPosition =
   | "bottom"
   | "bottom_right"
   | "custom";
-export type GifLoopMode = "preserve" | "infinite" | "once" | "count" | "pingpong";
+export type GifLoopMode =
+  "preserve" | "infinite" | "once" | "count" | "pingpong";
 
 interface EffectBase {
   id: string;
@@ -244,9 +245,140 @@ export interface EffectiveVisualSource {
 }
 
 export type AiManualServiceSurface =
-  | "gemini_web"
-  | "novelai_web"
-  | "other_manual";
+  "gemini_web" | "novelai_web" | "other_manual";
+
+export type AiProvider = "novelai" | "gemini";
+
+export type AiServiceSurface =
+  AiManualServiceSurface | "novelai_api" | "gemini_api";
+
+export type AiWebHandoffServiceSurface = Extract<
+  AiManualServiceSurface,
+  "gemini_web" | "novelai_web"
+>;
+
+export type AiWebHandoffValidationIssueCode =
+  | "unsupported_format"
+  | "decode_failed"
+  | "file_too_large"
+  | "canvas_size_mismatch"
+  | "transparency_lost"
+  | "page_count_mismatch"
+  | "item_count_mismatch"
+  | "grid_geometry_mismatch"
+  | "frame_count_mismatch"
+  | "source_state_changed"
+  | "handoff_expired"
+  | "result_missing";
+
+export interface AiWebHandoffSession {
+  requestId: string;
+  kind: "static_icon_sheet";
+  layoutMode: "single";
+  operation: "edit";
+  serviceSurface: AiWebHandoffServiceSurface;
+  finalPrompt: string;
+  uploadFileName: "upload.png";
+  uploadPreviewPath: string;
+  expectedWidth: number;
+  expectedHeight: number;
+  expectedHasAlpha: boolean;
+  createdAt: string;
+  expiresAt: string;
+  canExtend: boolean;
+  nativeDragSupported: boolean;
+  warnings: string[];
+}
+
+export interface AiWebHandoffValidationIssue {
+  code: string;
+  severity: "blocking" | "warning" | "manual_review";
+  message: string;
+  expected: string | null;
+  actual: string | null;
+  suggestedPrompt?: string | null;
+  localAction?: string | null;
+}
+
+export interface AiWebHandoffResultInspection {
+  accepted: boolean;
+  issues: AiWebHandoffValidationIssue[];
+  validationSignature: string | null;
+  expectedWidth: number;
+  expectedHeight: number;
+  expectedHasAlpha: boolean;
+  actualWidth: number | null;
+  actualHeight: number | null;
+  actualHasAlpha: boolean | null;
+  reviewState: AiReviewState | null;
+}
+
+export interface AiWebHandoffDragResult {
+  started: boolean;
+  nativeDragSupported: boolean;
+  message: string;
+}
+
+export interface AiWebHandoffDeleteResult {
+  sessionClosed: boolean;
+  payloadDeleted: boolean;
+  cleanupDeferred: boolean;
+}
+
+export interface PrepareAiWebHandoffInput {
+  iconId: string;
+  serviceSurface: AiWebHandoffServiceSurface;
+  userPrompt: string;
+}
+
+export interface AiProviderSessionStatus {
+  novelAiConfigured: boolean;
+  geminiConfigured: boolean;
+}
+
+export type AiOfficialResource =
+  | "user_manual"
+  | "novelai_app"
+  | "novelai_pat"
+  | "novelai_docs"
+  | "novelai_terms"
+  | "gemini_ai_studio"
+  | "gemini_image_docs"
+  | "gemini_pricing"
+  | "gemini_terms";
+
+export interface AiImageEditOptions {
+  negativePrompt?: string;
+  action?: string;
+  width?: number;
+  height?: number;
+  steps?: number;
+  scale?: number;
+  strength?: number;
+  noise?: number;
+}
+
+export interface AiImageEditConsent {
+  humanActionConfirmed: boolean;
+  rightsConfirmed: boolean;
+  costConfirmed: boolean;
+  requestContentConfirmed: boolean;
+  contractOverrideConfirmed: boolean;
+  adultConfirmed: boolean;
+  under18AudienceExcludedConfirmed: boolean;
+  professionalBusinessConfirmed: boolean;
+  supportedRegionConfirmed: boolean;
+  paidServiceConfirmed: boolean;
+}
+
+export interface AiImageEditInput {
+  iconId: string;
+  provider: AiProvider;
+  prompt: string;
+  model: string;
+  options: AiImageEditOptions;
+  consent: AiImageEditConsent;
+}
 
 export interface AiCandidateUsageSummary {
   createdIconCount: number;
@@ -257,7 +389,7 @@ export interface AiCandidate {
   id: string;
   requestId: string;
   candidateIndex: number;
-  serviceSurface: AiManualServiceSurface;
+  serviceSurface: AiServiceSurface;
   source: SourceFileSummary;
   createdAt: string;
   isMaterialized: boolean;

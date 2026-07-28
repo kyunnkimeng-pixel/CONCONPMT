@@ -306,7 +306,7 @@ describe("AiWorkspaceDialog", () => {
     expect(html).toContain('aria-labelledby="ai-workspace-tab-review"');
     expect(html.match(/role="(?:status|alert)"/g)).toHaveLength(1);
     expect(html).toContain('role="status"');
-    expect(html).toContain("결과 가져오기");
+    expect(html).toContain("AI 수정·가져오기");
     expect(html).toContain("후보 검토");
     expect(html).toContain("소스 이력");
 

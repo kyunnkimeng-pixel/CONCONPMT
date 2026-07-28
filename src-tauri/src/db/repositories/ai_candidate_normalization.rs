@@ -314,8 +314,15 @@ fn load_candidate(
             "SELECT candidate.raw_source_file_id,
                     request.payload_input_signature,
                     COALESCE(
-                      request.origin_icon_id = ?2
-                      AND request.origin_collection_id = ?3,
+                      (
+                        request_item.id IS NOT NULL
+                        AND request_item.origin_icon_id = ?2
+                        AND request.origin_collection_id = ?3
+                      ) OR (
+                        request_item.id IS NULL
+                        AND request.origin_icon_id = ?2
+                        AND request.origin_collection_id = ?3
+                      ),
                       0
                     ) AS is_direct_origin,
                     EXISTS (
@@ -327,10 +334,18 @@ fn load_candidate(
                     ) AS has_non_base_version
              FROM ai_candidates candidate
              JOIN ai_requests request ON request.id = candidate.request_id
+             LEFT JOIN ai_request_items request_item
+               ON request_item.id = candidate.request_item_id
              WHERE candidate.id = ?1
                AND (
                  (
-                   request.origin_icon_id = ?2
+                   request_item.id IS NOT NULL
+                   AND request_item.origin_icon_id = ?2
+                   AND request.origin_collection_id = ?3
+                 )
+                 OR (
+                   request_item.id IS NULL
+                   AND request.origin_icon_id = ?2
                    AND request.origin_collection_id = ?3
                  )
                  OR EXISTS (
@@ -338,6 +353,12 @@ fn load_candidate(
                    FROM icon_ai_versions owned_version
                    WHERE owned_version.icon_id = ?2
                      AND owned_version.candidate_id = candidate.id
+                 )
+                 OR EXISTS (
+                   SELECT 1
+                   FROM ai_icon_root_creations owned_root
+                   WHERE owned_root.icon_id = ?2
+                     AND owned_root.candidate_id = candidate.id
                  )
                )",
             params![candidate_id, icon_id, collection_id],

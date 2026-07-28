@@ -1,4 +1,5 @@
 pub mod auto_detect;
+pub mod composer;
 pub mod exporter;
 pub mod frame_sheet_gif;
 pub mod gif_frames;
@@ -9,6 +10,7 @@ pub mod presets;
 pub mod preview;
 pub mod reimport;
 pub mod slices;
+pub mod splitter;
 
 #[cfg(test)]
 mod real_qa;

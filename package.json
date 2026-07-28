@@ -1,7 +1,7 @@
 {
   "name": "pmtconcon-studio",
   "private": true,
-  "version": "0.3.0-alpha.1",
+  "version": "0.3.0-alpha.3",
   "description": "PMTCONCON Studio desktop app",
   "license": "MIT",
   "type": "module",
@@ -50,6 +50,7 @@
     "@types/react": "^19.1.8",
     "@types/react-dom": "^19.1.6",
     "@vitejs/plugin-react": "^4.6.0",
+    "happy-dom": "20.11.1",
     "typescript": "~5.8.3",
     "vite": "^7.0.4",
     "vitest": "^4.1.5"

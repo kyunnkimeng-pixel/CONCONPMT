@@ -184,7 +184,8 @@ fn rebase_clone_preview_path(path: &Path, staging: &Path, final_dir: &Path) -> A
 ///
 /// Requests and candidates are immutable provenance/cost records and are therefore shared,
 /// never duplicated. Version IDs, parent links, lineage fields, and the active state are owned
-/// by the target icon so subsequent activation and rollback are independent.
+/// by the target icon so subsequent activation and rollback are independent. Ordinary icon
+/// duplication pairs this with clone_source_free_root_provenance; AI new-icon creation does not.
 pub(crate) fn clone_current_ai_lineage(
     transaction: &Transaction<'_>,
     source_icon_id: &str,
@@ -515,6 +516,36 @@ pub(crate) fn clone_current_ai_lineage(
         ));
     }
 
+    Ok(())
+}
+
+/// Preserve source-free candidate ownership for an ordinary icon or collection clone.
+/// Source-edit roots already remain discoverable through cloned icon AI versions.
+pub(crate) fn clone_source_free_root_provenance(
+    transaction: &Transaction<'_>,
+    source_icon_id: &str,
+    target_icon_id: &str,
+) -> AppResult<()> {
+    let inserted = transaction.execute(
+        "INSERT INTO ai_icon_root_creations (
+           icon_id, source_icon_id, candidate_id, request_item_id, creation_kind,
+           normalization_recipe_hash, created_at
+         )
+         SELECT ?1, ?2, candidate_id, request_item_id, 'clone',
+                normalization_recipe_hash, strftime('%Y-%m-%dT%H:%M:%fZ', 'now')
+         FROM ai_icon_root_creations
+         WHERE icon_id = ?2
+           AND creation_kind IN ('source_free', 'clone')
+           AND request_item_id IS NOT NULL
+           AND normalization_recipe_hash IS NULL",
+        params![target_icon_id, source_icon_id],
+    )?;
+    if inserted > 1 {
+        return Err(AppError::new(
+            "ai_clone_root_conflict",
+            "복제할 AI 루트 provenance가 하나보다 많습니다.",
+        ));
+    }
     Ok(())
 }
 

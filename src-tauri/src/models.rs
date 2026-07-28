@@ -284,6 +284,61 @@ pub struct ImportAiCandidatePayload {
     pub file: ImportImageFilePayload,
 }
 
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct AiProviderSessionStatusDto {
+    pub novel_ai_configured: bool,
+    pub gemini_configured: bool,
+}
+
+#[derive(Clone, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct SetAiSessionCredentialPayload {
+    pub provider: String,
+    pub credential: String,
+}
+
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct AiImageEditOptionsPayload {
+    pub negative_prompt: Option<String>,
+    pub action: Option<String>,
+    pub width: Option<i64>,
+    pub height: Option<i64>,
+    pub steps: Option<i64>,
+    pub scale: Option<f64>,
+    pub strength: Option<f64>,
+    pub noise: Option<f64>,
+}
+
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct AiImageEditConsentPayload {
+    pub human_action_confirmed: bool,
+    pub rights_confirmed: bool,
+    pub cost_confirmed: bool,
+    pub request_content_confirmed: bool,
+    pub contract_override_confirmed: bool,
+    pub adult_confirmed: bool,
+    pub under18_audience_excluded_confirmed: bool,
+    pub professional_business_confirmed: bool,
+    pub supported_region_confirmed: bool,
+    pub paid_service_confirmed: bool,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ExecuteAiImageEditPayload {
+    pub icon_id: String,
+    pub provider: String,
+    pub prompt: String,
+    pub model: String,
+    #[serde(default)]
+    pub options: AiImageEditOptionsPayload,
+    #[serde(default)]
+    pub consent: AiImageEditConsentPayload,
+}
+
 #[derive(Debug, Clone, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct ActivateAiCandidatePayload {

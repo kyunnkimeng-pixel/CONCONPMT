@@ -16,6 +16,7 @@ import {
   sortableKeyboardCoordinates,
 } from "@dnd-kit/sortable";
 
+import { getAiGridEditDisabledReason } from "@/features/ai-grid/ai-grid-eligibility";
 import type {
   CollectionSummary,
   IconPieceSummary,
@@ -53,6 +54,7 @@ interface IconGridProps {
   onDeleteIcons: (iconIds: string[]) => Promise<boolean>;
   onDuplicateIcon: (iconId: string) => Promise<void>;
   onEditIcon: (iconId: string) => boolean;
+  onAiGridEdit: (iconIds: string[]) => void;
   onExportSelectedSheet: (iconIds: string[]) => void;
   onExportGifFrameSheet: (iconId: string) => void;
   onUpdateIconNote: (iconId: string, note: string) => Promise<boolean>;
@@ -86,6 +88,7 @@ export function IconGrid({
   onDeleteIcons,
   onDuplicateIcon,
   onEditIcon,
+  onAiGridEdit,
   onExportSelectedSheet,
   onExportGifFrameSheet,
   onUpdateIconNote,
@@ -300,6 +303,11 @@ export function IconGrid({
         ? [targetIcon.id]
         : [];
   const contextAltSelectionCount = altPieceCountForIconIds(icons, contextSelectionIds);
+  const aiGridEditDisabledReason = getAiGridEditDisabledReason(
+    collection,
+    icons,
+    contextSelectionIds,
+  );
 
   return (
     <>
@@ -369,6 +377,7 @@ export function IconGrid({
           isGifIcon={isGifIcon(targetIcon)}
           selectionCount={contextSelectionIds.length}
           altSelectionCount={contextAltSelectionCount}
+          aiGridEditDisabledReason={aiGridEditDisabledReason}
           x={contextMenu.x}
           y={contextMenu.y}
           onClose={() => setContextMenu(null)}
@@ -382,6 +391,7 @@ export function IconGrid({
             void onDuplicateIcon(targetIcon.id);
           }}
           onEdit={() => onEditIcon(targetIcon.id)}
+          onAiGridEdit={() => onAiGridEdit(contextSelectionIds)}
           onEditNote={() => handleEditNote(targetIcon.id)}
           onClearNote={() => {
             void onClearIconNote(targetIcon.id);

@@ -2,8 +2,9 @@ use std::collections::{HashMap, HashSet};
 
 use crate::db::repositories::clone_artifacts::{
     cleanup_cloned_collection_previews, clone_current_ai_lineage, clone_effective_active_variants,
-    clone_frame_sheet_gif_recipe, materialize_clone_native_preview,
-    validate_collection_clone_sources, validate_icon_clone_target,
+    clone_frame_sheet_gif_recipe, clone_source_free_root_provenance,
+    materialize_clone_native_preview, validate_collection_clone_sources,
+    validate_icon_clone_target,
 };
 use rusqlite::{params, Connection, OptionalExtension, Row, Transaction};
 
@@ -203,6 +204,17 @@ pub fn delete_collection(connection: &mut Connection, collection_id: &str) -> Ap
     if changed == 0 {
         return Err(AppError::not_found("삭제할 모음을 찾을 수 없습니다."));
     }
+
+    transaction.execute(
+        "UPDATE ai_requests
+         SET status = 'cancelled',
+             superseded_at = strftime('%Y-%m-%dT%H:%M:%fZ', 'now'),
+             superseded_reason = 'target_collection_deleted',
+             updated_at = strftime('%Y-%m-%dT%H:%M:%fZ', 'now')
+         WHERE origin_collection_id = ?1
+           AND status IN ('draft', 'prepared', 'awaiting_result', 'running', 'layout_review_pending')",
+        params![collection_id],
+    )?;
 
     transaction.execute(
         "UPDATE icons
@@ -1062,6 +1074,7 @@ fn duplicate_icons(
         duplicate_icon_motion_recipe(transaction, &icon.id, &duplicate_icon_id)?;
         clone_frame_sheet_gif_recipe(transaction, &icon.id, &duplicate_icon_id)?;
         clone_current_ai_lineage(transaction, &icon.id, &duplicate_icon_id)?;
+        clone_source_free_root_provenance(transaction, &icon.id, &duplicate_icon_id)?;
         validate_icon_clone_target(transaction, target_collection_id, &duplicate_icon_id)?;
         materialize_clone_native_preview(
             transaction,

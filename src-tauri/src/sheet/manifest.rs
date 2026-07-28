@@ -419,6 +419,7 @@ pub fn validate_gif_manifest(manifest: &GifFrameSheetManifest) -> AppResult<()> 
             "GIF 프레임 매니페스트의 frame_count와 frames 목록이 올바르지 않습니다.",
         ));
     }
+    validate_gif_manifest_loop(manifest)?;
     let workload_width = u32::try_from(manifest.frame_cell_width).map_err(|_| {
         AppError::new(
             "manifest_workload",
@@ -555,6 +556,23 @@ pub fn validate_gif_manifest(manifest: &GifFrameSheetManifest) -> AppResult<()> 
         ));
     }
     Ok(())
+}
+
+fn validate_gif_manifest_loop(manifest: &GifFrameSheetManifest) -> AppResult<()> {
+    let valid = match manifest.loop_mode.as_str() {
+        "once" | "infinite" | "pingpong" | "preserve" => manifest.loop_count.is_none(),
+        "count" => manifest
+            .loop_count
+            .is_some_and(|count| (1..=i64::from(u16::MAX)).contains(&count)),
+        _ => false,
+    };
+    if valid {
+        return Ok(());
+    }
+    Err(AppError::new(
+        "manifest_validation",
+        "GIF 반복 설정은 once/infinite/pingpong/preserve 또는 1~65535회의 count여야 합니다.",
+    ))
 }
 
 fn read_limited_manifest_file(path: &Path) -> AppResult<Vec<u8>> {
@@ -1007,6 +1025,42 @@ mod tests {
             validate_gif_manifest(&reserved_page).unwrap_err().code,
             "manifest_path"
         );
+    }
+
+    #[test]
+    fn gif_manifest_rejects_invalid_loop_and_count_combinations() {
+        for (loop_mode, loop_count) in [
+            ("unsupported", None),
+            ("once", Some(1)),
+            ("infinite", Some(1)),
+            ("pingpong", Some(1)),
+            ("preserve", Some(1)),
+            ("count", None),
+            ("count", Some(0)),
+            ("count", Some(i64::from(u16::MAX) + 1)),
+        ] {
+            let mut manifest = valid_gif_manifest();
+            manifest.loop_mode = loop_mode.to_string();
+            manifest.loop_count = loop_count;
+            assert_eq!(
+                validate_gif_manifest(&manifest).unwrap_err().code,
+                "manifest_validation"
+            );
+        }
+
+        for (loop_mode, loop_count) in [
+            ("once", None),
+            ("infinite", None),
+            ("pingpong", None),
+            ("preserve", None),
+            ("count", Some(1)),
+            ("count", Some(i64::from(u16::MAX))),
+        ] {
+            let mut manifest = valid_gif_manifest();
+            manifest.loop_mode = loop_mode.to_string();
+            manifest.loop_count = loop_count;
+            validate_gif_manifest(&manifest).unwrap();
+        }
     }
 
     #[test]

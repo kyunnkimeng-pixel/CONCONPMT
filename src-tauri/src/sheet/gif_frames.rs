@@ -2,7 +2,7 @@ use std::borrow::Cow;
 use std::collections::{HashMap, HashSet};
 use std::fmt::Write as FmtWrite;
 use std::fs::{self, File};
-use std::io::{BufReader, BufWriter, Cursor};
+use std::io::{self, BufReader, BufWriter, Cursor, Write};
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::time::{SystemTime, UNIX_EPOCH};
@@ -51,6 +51,48 @@ use super::manifest::{
 use super::path_string;
 
 const MAX_REIMPORT_TOTAL_ENCODED_BYTES: usize = MAX_IMPORT_FILE_BYTES;
+const MAX_REIMPORT_GIF_OUTPUT_BYTES: usize = MAX_IMPORT_FILE_BYTES;
+
+struct OutputSizeLimitedWriter<W> {
+    inner: W,
+    written: usize,
+    max_bytes: usize,
+    exceeded: bool,
+}
+
+impl<W> OutputSizeLimitedWriter<W> {
+    fn new(inner: W, max_bytes: usize) -> Self {
+        Self {
+            inner,
+            written: 0,
+            max_bytes,
+            exceeded: false,
+        }
+    }
+}
+
+impl<W: Write> Write for OutputSizeLimitedWriter<W> {
+    fn write(&mut self, buffer: &[u8]) -> io::Result<usize> {
+        let Some(next_len) = self.written.checked_add(buffer.len()) else {
+            self.exceeded = true;
+            return Err(io::Error::other("reimported GIF size overflow"));
+        };
+        if next_len > self.max_bytes {
+            self.exceeded = true;
+            return Err(io::Error::other("reimported GIF exceeds output limit"));
+        }
+        let written = self.inner.write(buffer)?;
+        self.written = self.written.checked_add(written).ok_or_else(|| {
+            self.exceeded = true;
+            io::Error::other("reimported GIF size overflow")
+        })?;
+        Ok(written)
+    }
+
+    fn flush(&mut self) -> io::Result<()> {
+        self.inner.flush()
+    }
+}
 
 #[derive(Debug, Clone, Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -286,8 +328,14 @@ pub fn analyze_gif_frame_sheet_export(
 pub fn export_gif_frame_sheet(
     connection: &Connection,
     paths: &AppPaths,
-    request: GifFrameSheetExportRequest,
+    mut request: GifFrameSheetExportRequest,
 ) -> AppResult<GifFrameSheetExportResult> {
+    // A manifest names the clean pages used for deterministic reimport. Never emit
+    // a manifest without those pages, even if a stale or hand-written client sends
+    // includeCleanSheet=false.
+    if request.settings.include_manifest {
+        request.settings.include_clean_sheet = true;
+    }
     validate_export_settings(&request.settings)?;
     let icon = load_gif_icon(connection, &request.icon_id)?;
     let decoded = decode_rendered_frames(&icon, &request.settings)?;
@@ -1387,77 +1435,42 @@ fn resolve_page_sources(
         .map(|path| PathBuf::from(path.trim()))
         .filter(|path| !path.as_os_str().is_empty())
         .collect::<Vec<_>>();
+    let by_name = paths
+        .into_iter()
+        .filter_map(|path| {
+            path.file_name()
+                .and_then(|name| name.to_str())
+                .map(|name| (name.to_string(), path.clone()))
+        })
+        .collect::<HashMap<_, _>>();
     let mut output = HashMap::new();
+    let manifest_dir = manifest_path.parent().unwrap_or_else(|| Path::new("."));
 
-    if paths.len() == manifest.pages.len() {
-        let mut pages = manifest.pages.iter().collect::<Vec<_>>();
-        pages.sort_by_key(|page| page.page_index);
-        for (page, path) in pages.into_iter().zip(paths) {
-            output.insert(page.page_index, PageImageSource::Path(path));
+    for page in &manifest.pages {
+        if let Some(path) = by_name.get(&page.clean_sheet_file) {
+            output.insert(page.page_index, PageImageSource::Path(path.clone()));
+            continue;
         }
-    } else {
-        let by_name = paths
-            .iter()
-            .filter_map(|path| {
-                path.file_name()
-                    .and_then(|name| name.to_str())
-                    .map(|name| (name.to_string(), path.clone()))
-            })
-            .collect::<HashMap<_, _>>();
-        let manifest_dir = manifest_path.parent().unwrap_or_else(|| Path::new("."));
-        for page in &manifest.pages {
-            if let Some(path) = by_name.get(&page.clean_sheet_file) {
-                output.insert(page.page_index, PageImageSource::Path(path.clone()));
-                continue;
-            }
-            if allow_sibling_lookup {
-                if let Some(same_dir) =
-                    contained_manifest_sibling(manifest_dir, &page.clean_sheet_file)
-                {
-                    output.insert(page.page_index, PageImageSource::Path(same_dir));
-                }
+        if allow_sibling_lookup {
+            if let Some(same_dir) = contained_manifest_sibling(manifest_dir, &page.clean_sheet_file)
+            {
+                output.insert(page.page_index, PageImageSource::Path(same_dir));
             }
         }
     }
 
-    if explicit_files.len() == manifest.pages.len() {
-        let all_names_match = manifest.pages.iter().all(|page| {
-            explicit_files
-                .iter()
-                .any(|file| file.original_filename == page.clean_sheet_file)
-        });
-        if all_names_match {
-            let mut files = explicit_files
-                .into_iter()
-                .map(|file| (file.original_filename, file.bytes))
-                .collect::<HashMap<_, _>>();
-            for page in &manifest.pages {
-                if let Some(bytes) = files.remove(&page.clean_sheet_file) {
-                    output.insert(page.page_index, PageImageSource::Bytes(bytes));
-                }
-            }
-        } else {
-            let mut pages = manifest.pages.iter().collect::<Vec<_>>();
-            pages.sort_by_key(|page| page.page_index);
-            for (page, file) in pages.into_iter().zip(explicit_files) {
-                output.insert(page.page_index, PageImageSource::Bytes(file.bytes));
-            }
-        }
-    } else {
-        let mut files = explicit_files
-            .into_iter()
-            .map(|file| (file.original_filename, file.bytes))
-            .collect::<HashMap<_, _>>();
-        for page in &manifest.pages {
-            if let Some(bytes) = files.remove(&page.clean_sheet_file) {
-                output.insert(page.page_index, PageImageSource::Bytes(bytes));
-            }
+    let mut files = explicit_files
+        .into_iter()
+        .map(|file| (file.original_filename, file.bytes))
+        .collect::<HashMap<_, _>>();
+    for page in &manifest.pages {
+        if let Some(bytes) = files.remove(&page.clean_sheet_file) {
+            output.insert(page.page_index, PageImageSource::Bytes(bytes));
         }
     }
 
     output
 }
-
 fn contained_manifest_sibling(manifest_dir: &Path, file_name: &str) -> Option<PathBuf> {
     let canonical_root = fs::canonicalize(manifest_dir).ok()?;
     let candidate = fs::canonicalize(manifest_dir.join(file_name)).ok()?;
@@ -1615,22 +1628,60 @@ fn write_gif_atomic(
     frames: Vec<Frame>,
     repeat: GifOutputRepeat,
 ) -> AppResult<()> {
-    if let Some(parent) = temp_path.parent() {
-        fs::create_dir_all(parent)?;
-    }
-    let file = File::create(temp_path)?;
-    let mut encoder = GifEncoder::new(BufWriter::new(file));
-    match repeat {
-        GifOutputRepeat::Infinite => encoder.set_repeat(ImageGifRepeat::Infinite)?,
-        GifOutputRepeat::Finite(count) => encoder.set_repeat(ImageGifRepeat::Finite(count))?,
-        GifOutputRepeat::Once => {}
-    }
-    encoder.encode_frames(frames.into_iter())?;
-    drop(encoder);
-    move_temp_file(temp_path, final_path)?;
-    Ok(())
+    write_gif_atomic_with_limit(
+        temp_path,
+        final_path,
+        frames,
+        repeat,
+        MAX_REIMPORT_GIF_OUTPUT_BYTES,
+    )
 }
 
+fn write_gif_atomic_with_limit(
+    temp_path: &Path,
+    final_path: &Path,
+    frames: Vec<Frame>,
+    repeat: GifOutputRepeat,
+    max_bytes: usize,
+) -> AppResult<()> {
+    let result = (|| -> AppResult<()> {
+        if let Some(parent) = temp_path.parent() {
+            fs::create_dir_all(parent)?;
+        }
+        let file = File::create(temp_path)?;
+        let mut writer = OutputSizeLimitedWriter::new(BufWriter::new(file), max_bytes);
+        let encode_result = {
+            let mut encoder = GifEncoder::new(&mut writer);
+            let repeat_result = match repeat {
+                GifOutputRepeat::Infinite => encoder.set_repeat(ImageGifRepeat::Infinite),
+                GifOutputRepeat::Finite(count) => encoder.set_repeat(ImageGifRepeat::Finite(count)),
+                GifOutputRepeat::Once => Ok(()),
+            };
+            repeat_result.and_then(|_| encoder.encode_frames(frames.into_iter()))
+        };
+        if writer.exceeded {
+            return Err(AppError::new(
+                "gif_output_size",
+                "재조립한 GIF가 앱의 64MiB 출력 한도를 초과해 저장하지 않았습니다.",
+            ));
+        }
+        encode_result?;
+        writer.flush()?;
+        move_temp_file(temp_path, final_path)?;
+        Ok(())
+    })();
+
+    if let Err(error) = result {
+        if let Some(output_dir) = final_path.parent() {
+            cleanup_failed_gif_variant(temp_path, final_path, output_dir);
+        } else {
+            let _ = fs::remove_file(temp_path);
+            let _ = fs::remove_file(final_path);
+        }
+        return Err(error);
+    }
+    Ok(())
+}
 fn crop_and_resize(
     image: &RgbaImage,
     crop_x: f64,
@@ -1930,10 +1981,11 @@ fn default_true() -> bool {
 #[cfg(test)]
 mod tests {
     use std::io::Cursor;
+    use std::path::Path;
     use std::sync::Arc;
     use std::time::{SystemTime, UNIX_EPOCH};
 
-    use image::{AnimationDecoder, DynamicImage, ImageBuffer, ImageFormat, Rgba};
+    use image::{AnimationDecoder, Delay, DynamicImage, Frame, ImageBuffer, ImageFormat, Rgba};
     use rusqlite::Connection;
 
     use crate::db::migrations;
@@ -1942,6 +1994,7 @@ mod tests {
     use crate::db::repositories::imports::import_image_files;
     use crate::db::repositories::motion::upsert_motion_recipe;
     use crate::imaging::effects::{EffectRecipe, EffectStep, ToneMode, EFFECT_RECIPE_VERSION};
+    use crate::imaging::gif_pipeline::{inspect_gif_bytes, GifOutputRepeat};
     use crate::imaging::motion::{static_motion_schedule, MotionRecipe, SpatialMotion};
     use crate::models::ImportImageFilePayload;
     use crate::paths::AppPaths;
@@ -1950,7 +2003,7 @@ mod tests {
         analyze_gif_frame_sheet_export, crop_reimport_frames, decode_rendered_frames,
         export_gif_frame_sheet, load_gif_icon, load_page_image_source, reimport_gif_frame_sheet,
         shared_static_source_frames, validate_gif_frame_sheet_reimport, validate_reimport_inputs,
-        AnalyzeGifFrameSheetExportRequest, GifFrameSheetExportRequest,
+        write_gif_atomic_with_limit, AnalyzeGifFrameSheetExportRequest, GifFrameSheetExportRequest,
         GifFrameSheetReimportRequest, GifFrameSheetSettings, PageImageSource,
         ValidateGifFrameSheetReimportRequest, MAX_REIMPORT_TOTAL_ENCODED_BYTES,
     };
@@ -2100,6 +2153,68 @@ mod tests {
     }
 
     #[test]
+    fn manifest_only_export_includes_clean_pages_and_roundtrips() {
+        let mut connection = connection();
+        let paths = temp_paths("pmtconcon-gif-frame-manifest-roundtrip");
+        let (icon_id, _) = seed_gif_icon(&mut connection, &paths);
+        let mut export_settings = settings();
+        export_settings.include_clean_sheet = false;
+        export_settings.include_guide_sheet = false;
+        export_settings.include_manifest = true;
+
+        let export = export_gif_frame_sheet(
+            &connection,
+            &paths,
+            GifFrameSheetExportRequest {
+                icon_id: icon_id.clone(),
+                settings: export_settings,
+            },
+        )
+        .unwrap();
+
+        assert_eq!(export.frame_sheet_paths.len(), export.page_count as usize);
+        assert!(export.guide_sheet_paths.is_empty());
+        assert!(export
+            .frame_sheet_paths
+            .iter()
+            .all(|path| Path::new(path).is_file()));
+        let manifest_path = export.manifest_path.unwrap();
+        assert!(Path::new(&manifest_path).is_file());
+
+        let validation = validate_gif_frame_sheet_reimport(ValidateGifFrameSheetReimportRequest {
+            manifest_path: manifest_path.clone(),
+            manifest_file: None,
+            edited_frame_sheet_paths: export.frame_sheet_paths.clone(),
+            edited_frame_sheet_files: Vec::new(),
+        })
+        .unwrap();
+        assert!(validation.errors.is_empty());
+        assert_eq!(validation.detected_frame_count, export.frame_count);
+
+        let result = reimport_gif_frame_sheet(
+            &connection,
+            &paths,
+            GifFrameSheetReimportRequest {
+                manifest_path,
+                manifest_file: None,
+                edited_frame_sheet_paths: export.frame_sheet_paths,
+                edited_frame_sheet_files: Vec::new(),
+                target_icon_id: icon_id,
+                create_variant: true,
+                set_active_variant: false,
+                target_profile_id: None,
+            },
+        )
+        .unwrap();
+        assert!(result.errors.is_empty());
+        assert!(result
+            .output_path
+            .is_some_and(|path| Path::new(&path).is_file()));
+
+        std::fs::remove_dir_all(paths.root).unwrap();
+    }
+
+    #[test]
     fn gif_frame_sheet_loads_and_applies_persisted_effect_recipe() {
         let mut connection = connection();
         let paths = temp_paths("pmtconcon-gif-frame-effects");
@@ -2221,18 +2336,22 @@ mod tests {
         let output_path = result.output_path.unwrap();
         assert!(std::path::Path::new(&output_path).is_file());
 
-        let file = std::fs::File::open(output_path).unwrap();
+        let file = std::fs::File::open(&output_path).unwrap();
         let decoder = image::codecs::gif::GifDecoder::new(std::io::BufReader::new(file)).unwrap();
         let frames = decoder.into_frames().collect_frames().unwrap();
         assert_eq!(frames.len(), 4);
-        let total_ms = frames
+        let frame_delays = frames
             .iter()
             .map(|frame| {
                 let (numerator, denominator) = frame.delay().numer_denom_ms();
                 numerator / denominator.max(1)
             })
-            .sum::<u32>();
-        assert_eq!(total_ms, 260);
+            .collect::<Vec<_>>();
+        assert_eq!(frame_delays, vec![50, 60, 70, 80]);
+        assert_eq!(frame_delays.iter().sum::<u32>(), 260);
+        let inspection = inspect_gif_bytes(&std::fs::read(&output_path).unwrap()).unwrap();
+        assert_eq!(inspection.loop_mode, "infinite");
+        assert_eq!(inspection.loop_count, None);
 
         let original_path: String = connection
             .query_row(
@@ -2243,6 +2362,87 @@ mod tests {
             .unwrap();
         assert_eq!(std::fs::read(original_path).unwrap(), source_bytes);
 
+        std::fs::remove_dir_all(paths.root).unwrap();
+    }
+
+    #[test]
+    fn gif_frame_reimport_restores_once_infinite_and_count_loop_metadata() {
+        for (index, loop_mode, loop_count, expected_mode, expected_count) in [
+            (0, "once", None, "once", None),
+            (1, "infinite", None, "infinite", None),
+            (2, "count", Some(3), "count", Some(3)),
+        ] {
+            let mut connection = connection();
+            let paths = temp_paths(&format!("pmtconcon-gif-frame-loop-{index}"));
+            let (icon_id, _) = seed_gif_icon(&mut connection, &paths);
+            connection
+                .execute(
+                    "UPDATE icons SET gif_loop_mode = ?1, gif_loop_count = ?2 WHERE id = ?3",
+                    rusqlite::params![loop_mode, loop_count, icon_id],
+                )
+                .unwrap();
+            let export = export_gif_frame_sheet(
+                &connection,
+                &paths,
+                GifFrameSheetExportRequest {
+                    icon_id: icon_id.clone(),
+                    settings: settings(),
+                },
+            )
+            .unwrap();
+            let result = reimport_gif_frame_sheet(
+                &connection,
+                &paths,
+                GifFrameSheetReimportRequest {
+                    manifest_path: export.manifest_path.unwrap(),
+                    manifest_file: None,
+                    edited_frame_sheet_paths: export.frame_sheet_paths,
+                    edited_frame_sheet_files: Vec::new(),
+                    target_icon_id: icon_id,
+                    create_variant: true,
+                    set_active_variant: false,
+                    target_profile_id: None,
+                },
+            )
+            .unwrap();
+            let output_path = result.output_path.unwrap();
+            let inspection = inspect_gif_bytes(&std::fs::read(output_path).unwrap()).unwrap();
+            assert_eq!(inspection.loop_mode, expected_mode);
+            assert_eq!(inspection.loop_count, expected_count);
+
+            std::fs::remove_dir_all(paths.root).unwrap();
+        }
+    }
+
+    #[test]
+    fn gif_reimport_writer_rejects_oversized_output_without_orphan_files() {
+        let paths = temp_paths("pmtconcon-gif-frame-output-limit");
+        let output_dir = paths
+            .processed_variants_dir
+            .join("gif_frame_reimports")
+            .join("icon_limit");
+        let final_path = output_dir.join("variant_limit.gif");
+        let temp_path = final_path.with_extension("gif.tmp");
+        let frame = Frame::from_parts(
+            ImageBuffer::from_pixel(4, 4, Rgba([255, 0, 0, 255])),
+            0,
+            0,
+            Delay::from_numer_denom_ms(50, 1),
+        );
+
+        let error = write_gif_atomic_with_limit(
+            &temp_path,
+            &final_path,
+            vec![frame],
+            GifOutputRepeat::Infinite,
+            1,
+        )
+        .unwrap_err();
+
+        assert_eq!(error.code, "gif_output_size");
+        assert!(!temp_path.exists());
+        assert!(!final_path.exists());
+        assert!(!output_dir.exists());
         std::fs::remove_dir_all(paths.root).unwrap();
     }
 
@@ -2359,6 +2559,42 @@ mod tests {
             .unwrap();
         assert!(stale_profile_id.is_none());
 
+        std::fs::remove_dir_all(paths.root).unwrap();
+    }
+
+    #[test]
+    fn gif_frame_reimport_requires_manifest_page_file_names_instead_of_picker_order() {
+        let mut connection = connection();
+        let paths = temp_paths("pmtconcon-gif-frame-strict-page-names");
+        let (icon_id, _) = seed_gif_icon(&mut connection, &paths);
+        let export = export_gif_frame_sheet(
+            &connection,
+            &paths,
+            GifFrameSheetExportRequest {
+                icon_id,
+                settings: settings(),
+            },
+        )
+        .unwrap();
+        let validation = validate_gif_frame_sheet_reimport(ValidateGifFrameSheetReimportRequest {
+            manifest_path: export.manifest_path.unwrap(),
+            manifest_file: None,
+            edited_frame_sheet_paths: Vec::new(),
+            edited_frame_sheet_files: export
+                .frame_sheet_paths
+                .iter()
+                .enumerate()
+                .map(|(index, path)| ImportImageFilePayload {
+                    original_filename: format!("renamed_page_{index}.png"),
+                    bytes: std::fs::read(path).unwrap(),
+                })
+                .collect(),
+        })
+        .unwrap();
+
+        assert_eq!(validation.detected_frame_count, 0);
+        assert_eq!(validation.missing_pages, vec![0, 1]);
+        assert_eq!(validation.errors.len(), 3);
         std::fs::remove_dir_all(paths.root).unwrap();
     }
 

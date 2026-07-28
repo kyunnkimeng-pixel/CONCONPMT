@@ -353,27 +353,53 @@ Stage Gate를 통과해야 하며 미래 기능을 동작하지 않는 메뉴로
   이력·active pointer·로컬 rollback을 지우지 않는다.
 - PMTCONCON Studio의 MIT license는 앱 코드에만 적용된다. 모델·workflow·공급자
   약관·attribution과 생성물의 이용 권리는 별도이며 앱이 이를 보증하지 않는다.
-- 홈페이지 연계는 handoff package, prompt 복사, 공식 사이트 열기, 사용자가
-  받은 결과 가져오기로 제한한다. 로그인/DOM/cookie와 결과 다운로드를
+- 홈페이지 연계는 비밀값이 없는 prompt/source 안내 화면, 검토된
+  공식 사이트 열기, 사용자가 직접 수행하는 업로드·생성·다운로드·결과 가져오기로
+  제한한다. 로그인, DOM, cookie/session, 자동 업로드, scraping과 결과 다운로드를
   자동화하지 않는다.
-- 첫 자동 provider는 NovelAI Image API이다. 사용자가 NovelAI Account 화면에서
-  직접 발급한 Persistent API Token만 session-only로 받고 로그인·이메일·비밀번호나
-  primary account API는 다루지 않는다. 한 번의 명시적 사용자 동작당 한 장만
-  요청하며 background batch, 연쇄 생성, provider 자동 fallback과 자동 retry를
-  금지한다. 공식 지원 확인과 소액 live pilot 전에는 조건부 주 provider로 표시한다.
-  새 PAT 발급은 이전 PAT를 무효화하고 token은 한 번만 표시되므로 입력 전달 뒤
-  frontend state를 비우며 `401`을 재시도하지 않고 PAT 교체를 안내한다.
-- NovelAI 첫 범위는 text-to-image, img2img와 mask 기반 inpaint이다. 일반 Opus 0
-  ImageAnlas 생성 조건은 한 장·28 steps 이하·normal-size 범위·base image 없음이다.
-  공식 웹 Inpaint 문서는 Opus의 Focused Inpainting이 큰 이미지 영역에서 0 Anlas일
-  수 있다고 별도 설명하지만 공개 Image API의 Focused action/payload 지원과 차감
-  동일성은 명시하지 않는다. 따라서 확인 전에는 모든 API inpaint를 `공급자에서
-  확인`으로 표시하고 무료라고 보장하지 않으며 provider unit을 USD actual/billed로
-  추측 환산하지 않는다.
-- Gemini API는 현재 image generation free tier가 없고 나이·대상 사용자·
-  professional/business·지원 지역·유료 서비스 조건이 있으므로 기본 provider로
-  선택하지 않는다. OpenAI Image API와 함께 별도 비용·배포 적합성 검토 뒤의
-  선택형 후속 후보로만 다룬다.
+- production WebView의 `connect-src`는 Tauri IPC만 허용하고 일반
+  `opener:default` 권한을 두지 않는다. frontend는 임의 URL을 전달하지 않고 검토된
+  resource enum만 Rust에 보내며, Rust가 compile-time official HTTPS constant로
+  변환해 연다. provider API HTTP도 별도의 Rust exact-endpoint allowlist와 redirect
+  금지를 적용한다.
+- API key/PAT는 현재 앱 실행 중에만 Rust 쪽 session credential로 보관한다. DB,
+  설정, local storage, AI 이력과 로그에 기록하거나 frontend로 다시 보내지 않으며,
+  사용자가 연결 해제하거나 앱을 종료하면 폐기한다. 한 번의 명시적 사용자 클릭은
+  정확히 한 요청만 만들고 background batch, 연쇄 생성, 자동 retry와 provider
+  fallback을 금지한다. immutable request와 실제 provider-ready 입력 SHA를 먼저
+  `running`으로 저장하고 HTTP 직전 `awaiting_result`를 원자 claim한다. 취소가 먼저
+  이기면 HTTP는 0회다. 앱은 single-instance이며 재시작은 진행 요청을 재전송하지
+  않는다. 파일 생성 직후 강제종료 고아는 24시간·DB 참조·관리 경로를 확인한 뒤
+  fail-closed startup sweep으로만 정리한다.
+- 2026-07-28 첫 자동 provider pilot은 NovelAI Image API의 **기존 정적 이미지
+  편집 한 장**으로 축소한다. text-to-image, mask inpaint, GIF, sprite와 multi-frame
+  처리는 이번 gate에 포함하지 않는다. 사용자가 NovelAI Account 화면에서 직접
+  발급한 Persistent API Token만 session-only로 받고 로그인·이메일·비밀번호나
+  primary account API는 다루지 않는다. exact endpoint는
+  `https://image.novelai.net:443/ai/generate-image`이며 초기 응답 계약은 bounded
+  JSON만 허용하고 ZIP은 거부한다.
+- NovelAI 공개 OpenAPI는 request의 `action`과 `model`에 enum을 제공하지 않는다.
+  따라서 앱이 사용하는 두 값은 공식 enum이라고 부르지 않고 versioned experimental
+  contract string으로 취급한다. 요청마다 정확한 값과 전송 source/prompt를 사용자에게
+  보여주고 확인받으며, 알 수 없는 값이나 응답 schema drift는 추측하지 않고
+  fail closed 한다. 새 PAT 발급은 이전 PAT를 무효화하고 token은 한 번만 표시되므로
+  입력 전달 뒤 frontend state를 비우며 `401`을 재시도하지 않고 PAT 교체를 안내한다.
+- Gemini API는 일반 소비자용 기본 기능이 아니다. 2026-07-28 기준 image model은
+  free tier가 없으므로, 비공개 정적 이미지 편집 pilot도 18세 이상, 미성년자 대상이
+  아님, 지원 지역, professional/business 목적, 사용자의 유료 key와 비용 확인,
+  해당 surface의 data-policy 검토를 모두 통과한 경우에만 명시적으로 열 수 있다.
+  현재 Interactions allowlist는 `gemini-2.5-flash-image`와
+  `gemini-3.1-flash-image`이며 inline `image/jpeg` 1K만 요청·검증해 `.jpg`
+  후보로 저장한다. 이 조건을 확인하지 않은 일반 배포에서는 Gemini API key 입력과
+  실행을 숨기거나 비활성화하고 Gemini 공식 웹 수동 handoff만 제공한다.
+- 기준일과 제한의 근거는
+  [NovelAI Image API schema](https://image.novelai.net/docs/doc.json),
+  [NovelAI Account/PAT 안내](https://docs.novelai.net/en/text/usersettings/account/),
+  [Gemini Interactions API](https://ai.google.dev/api/interactions-api?hl=en),
+  [Gemini image generation](https://ai.google.dev/gemini-api/docs/image-generation),
+  [Gemini API pricing](https://ai.google.dev/gemini-api/docs/pricing),
+  [Gemini API Additional Terms](https://ai.google.dev/gemini-api/terms)이다. 모델,
+  가격, schema와 약관은 바뀔 수 있으므로 live pilot과 release마다 다시 확인한다.
 - provider 변경은 새 request, exact payload 확인과 consent를 요구한다. adapter
   비활성화, session token clear 또는 향후 persistent binding 삭제 뒤에도 기존
   candidate/version/source와 active pointer 및 provider 없는 로컬 복귀를 보존한다.
@@ -382,9 +408,9 @@ Stage Gate를 통과해야 하며 미래 기능을 동작하지 않는 메뉴로
   외부 유료 API를 호출할 수 있음을 실행 전에 알린다.
 - cloud adapter는 코드 소유 exact HTTPS origin(scheme/host/port/path-prefix)만
   허용하고 사용자의 URL override와 redirect를 거부한다.
-- 첫 AI MVP는 정적 이미지와 명시적 GIF poster-frame 후보를 다룬다. GIF 전체
-  프레임 및 sprite sheet AI는 기존 frame-sheet manifest를 활용하는 opt-in
-  실험 단계로 분리한다.
+- 첫 automated provider pilot은 기존 정적 JPG/PNG 한 장 편집만 다룬다. GIF
+  poster-frame, 전체 frame, sprite sheet, text-to-image와 inpaint는 모두 별도
+  opt-in 실험 Stage Gate로 분리한다.
 - 실제 flow가 구현되기 전에는 AI 메뉴나 탭을 노출하지 않는다.
 - 아이콘/collection 복제는 request·candidate·source bytes를 공유하되 새 lineage와
   version/state/preview ownership을 만든다. 모든 과거 lineage를 서로 다른 새 lineage로
@@ -459,10 +485,47 @@ Stage Gate를 통과해야 하며 미래 기능을 동작하지 않는 메뉴로
   document-wide 단일 live-region, reduced-motion과 browser continuity를 구현했다.
   1200×760/800×760 headed browser QA 13/13과 후속 GET·예상 밖 network 0을
   통과했다.
-- provider 요청, prompt, token, consent와 자동 생성 UI는 구현되지 않았으며
-  노출하지 않는다. 수동 웹 handoff와 NovelAI API는 각각 F138/F139의 별도
-  계획 단계다.
+- AI-UX-3 checkpoint에는 provider 요청, prompt, token, consent와 외부 전송 UI가
+  포함되지 않았다. F138/F150–F151의 정적 단일 JPG/PNG 수동 웹 왕복은
+  `ai/handoffs/<request-id>`의 관리형 `upload.png`·manifest·prompt package,
+  검증된 Windows 파일 드래그와 Explorer fallback, 7일 보관/1회 30일 연장,
+  15분 주기 정리, 256MiB 총량 제한, 최근 전달 이력, 결과 구조 검사와 같은
+  request의 비활성 후보 저장을 지원한다. 원본과 활성 소스는 자동 변경하지 않는다.
+  로그인·DOM·cookie·자동 생성/다운로드/결과 판정은 계속 금지한다. F148–F149는
+  선택한 정적 단일 아이콘 2–16개 수동 웹 그리드 수정과 원본 없는 단일/그리드
+  생성을 지원한다. F152의 GIF manifest 왕복은 정확한 frame delay/loop를 복원하지만,
+  provider 기반 animated/GIF 생성은 여전히 별도 Stage Gate다. F139 session-only
+  NovelAI 정적 이미지 편집 pilot은 mock·보안·license Stage Gate와 사용자 승인 live
+  test 전에는 일반 release 완료 기능으로 표시하지 않는다.
+
+### 컬렉션 AI grid 요구사항 (2026-07-28)
+
+- 모음 화면에서 원본 없는 새 아이콘 한 개 또는 여러 개를 만들 수 있어야 한다.
+  한 개 생성은 grid를 강제하지 않고, 여러 개 생성은 최대 4×4 한 페이지 clean
+  grid와 local manifest를 사용한다.
+- 정적 단일콘 여러 개를 선택해 `선택 N개 AI로 수정`할 수 있어야 한다. 선택
+  순서, 각 아이콘의 lineage, effective source hash, native recipe와 activation
+  revision을 요청 전에 고정한다.
+- AI 입력 시트에는 번호·라벨·guide 선을 굽지 않고, 사람이 보는 local overlay와
+  manifest에만 cell 번호와 target mapping을 둔다.
+- 결과 grid는 자동 적용하지 않는다. 전체 시트와 각 cell의 bounds, 빈 cell,
+  순서와 target mapping을 사용자가 검토한 뒤에만 비활성 후보 또는 새 아이콘으로
+  저장한다. grid가 어긋나면 기존 overlay/직접 Slice 방식으로 수동 보정할 수 있다.
+- 선택이 비어 있을 때 전체 모음 요청으로 바꾸지 않는다. 2페이지 이상, GIF,
+  가로/세로 이중콘과 provider별 검증 한도를 넘는 요청은 HTTP 전에 정확한 사유로
+  차단한다.
+- 원본 없는 생성에 투명 placeholder icon이나 가짜 source/lineage를 만들지 않는다.
+  승인된 candidate cell이 새 icon의 최초 immutable source가 되고 생성 provenance를
+  기록한다.
+- 요청 한 번의 usage/cost를 N개 후보에 중복 합산하지 않는다. 호출 수가 줄어도
+  공급자 과금 절감을 보장하지 않는다.
+- 한 사용자 동작은 HTTP 요청 한 번만 만들며 자동 retry, fallback과 background
+  batch를 금지한다. 다시 시도는 새 request, 새 snapshot과 새 비용 확인을 요구한다.
+- 첫 구현은 정적 single JPG/PNG 2~16개를 위한 provider-free grid foundation과
+  mock UI부터 시작한다. Gemini 1K live 계약은 품질상 기본 3×3 이하로 제한하고,
+  GIF/다중콘/더 큰 grid는 별도 Stage Gate에서 검증한다.
 
 세부 데이터 모델, provider 경계, 롤백 transaction과 단계별 수용 기준은
 `docs/AI_INTEGRATION_DESIGN.md`, 화면 흐름과 deterministic normalization 계약은
-`docs/AI_WORKSPACE_UX_DESIGN.md`를 따른다.
+`docs/AI_WORKSPACE_UX_DESIGN.md`, collection grid 계약은
+`docs/AI_GRID_WORKFLOW_DESIGN.md`를 따른다.

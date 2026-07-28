@@ -267,6 +267,12 @@ Decision:
 - Keep PMTCONCON Studio free/MIT and do not operate a shared provider account, shared
   credential, metered proxy or paid AI service. Each user's provider subscription, credits,
   charges and compliance remain on that user's account.
+
+> **Historical scope note (superseded):** The provider execution bullets below record the
+> 2026-07-26 design. ADR-016 supersedes their capability and release scope for the
+> 2026-07-28 implementation; the immutable candidate/version/rollback decisions above remain
+> unchanged.
+
 - Use NovelAI Image API as the first automated adapter and conditional primary. Accept only
   a user-issued Persistent API Token, session-first, and initially allow only exact
   `https://image.novelai.net:443/ai/generate-image`. Do not accept account login credentials
@@ -391,3 +397,151 @@ Reasoning:
 Tradeoffs:
 - Pre-016 direct creates are not counted. This is more honest than presenting inferred
   history as exact, and future explicit creates become precise immediately.
+
+## ADR-016: Provider execution is a session-only static-edit pilot with safe web handoff
+
+Date: 2026-07-28
+
+Decision:
+- The first automated scope is one semantic edit of the currently selected static JPG/PNG
+  image. Text-to-image, mask inpaint, GIF/poster/frame batch, sprite/n-up and multi-result
+  generation remain separate future gates. Every output enters the existing inactive
+  candidate review and never changes the icon on provider success.
+- NovelAI remains the first automated BYOT pilot, but the public OpenAPI schema does not
+  enumerate request `action` or `model`. The adapter therefore treats its exact values as
+  versioned experimental contract strings, shows both plus source/prompt/options before
+  every send, and requires explicit per-request confirmation. Unknown values or schema
+  drift fail closed. The pilot accepts one bounded JSON response only and rejects ZIP or an
+  unexpected content type.
+- NovelAI PATs and eligible Gemini keys are session-only secrets. They never enter SQLite,
+  settings, local storage, AI history, telemetry or logs and are never echoed to the
+  frontend. The frontend input is cleared after invoke; explicit disconnect or app exit
+  clears the session secret. Persistent credential storage remains a separate future gate.
+- One visible click causes exactly one HTTP request and at most one inactive candidate.
+  Background queues, chained generation, automatic retry and provider fallback are
+  prohibited. `401`, `429`, timeout, 5xx and contract mismatch return sanitized errors
+  without retransmission. The request and exact provider-ready input hash are persisted as
+  `running`; an atomic `awaiting_result` dispatch claim prevents a pre-send cancellation from
+  creating HTTP. Startup recovery never replays either state.
+- PMTCONCON Studio registers Tauri's official single-instance plugin before setup so another
+  process cannot invalidate a live request during recovery. A separate 24-hour, DB-reference-
+  aware, fail-closed startup sweep removes only recognized app-owned source/thumbnail crash
+  orphans left between filesystem creation and transaction commit.
+- Safe website integration uses the bounded request-linked transfer package in ADR-017,
+  opens a reviewed official site, and leaves login, upload, generation and download under
+  user control. The package never contains credentials, cookies or browser session state.
+  PMTCONCON Studio never automates login, DOM, cookie/session access, upload, scraping,
+  result polling or download.
+- Production WebView `connect-src` is limited to Tauri IPC and the frontend has no general
+  `opener:default` capability. Official help, policy and provider sites are selected by a
+  typed enum and mapped by Rust to compile-time HTTPS constants. Cloud HTTP uses separate
+  provider-specific Rust commands with exact endpoint constants and redirects disabled.
+- The Gemini static-image-edit adapter/UI is only a mock-tested private pilot, not a
+  generally enabled or advertised consumer release feature. As reviewed on 2026-07-28,
+  Gemini image models have no free tier. The exact Interactions adapter allows the two dated
+  official image model resource names and JPEG-only inline `1K` output; it validates
+  `completed` plus `image/jpeg` before saving a `.jpg` candidate. Live use requires explicit
+  confirmation of 18+,
+  no under-18 audience, supported region, professional/business purpose, a user-owned paid
+  key, request cost and the applicable data policy. If any gate is absent, API execution is
+  unavailable and the official Gemini web handoff remains the supported route.
+
+Reasoning:
+- This narrower slice exercises the complete credential, consent, transport, candidate and
+  rollback boundary without simultaneously guessing undocumented NovelAI enums or adding
+  mask, animation and batch cost ambiguity.
+- A browser handoff remains useful without relying on brittle DOM automation or taking
+  custody of provider accounts and sessions.
+- Shipping a mock-tested Gemini adapter behind an explicit private-pilot gate preserves
+  technical learning while respecting the current no-free-tier and distribution terms.
+
+Consequences:
+- F138 is complete only for the static-single manual-web slice described in ADR-017.
+  GIF/grid/source-free generation and native app-to-browser drag remain later gates. F139's
+  implementation, mock, security, license, UI and packaging gates can complete independently;
+  its live-success claim still requires a user-provided PAT and explicit approval of one
+  potentially charged request.
+- F140 stays partial/private-pilot-gated even when adapter/UI mocks pass; it is not “done”
+  for broad release without a renewed dated eligibility and live-test decision.
+- Provider model names, prices, schemas and terms are release-time inputs, not durable
+  product promises. Recheck the official sources before every live pilot and release.
+
+Official references reviewed 2026-07-28:
+- [NovelAI Image API](https://image.novelai.net/docs/index.html)
+- [NovelAI OpenAPI schema](https://image.novelai.net/docs/doc.json)
+- [NovelAI Persistent API Token](https://docs.novelai.net/en/text/usersettings/account/)
+- [NovelAI subscriptions and ImageAnlas](https://docs.novelai.net/en/subscription/)
+- [Gemini Interactions API](https://ai.google.dev/api/interactions-api?hl=en)
+- [Gemini image generation](https://ai.google.dev/gemini-api/docs/image-generation)
+- [Gemini API pricing](https://ai.google.dev/gemini-api/docs/pricing)
+- [Gemini API Additional Terms](https://ai.google.dev/gemini-api/terms)
+- [Gemini API key security](https://ai.google.dev/gemini-api/docs/api-key)
+- [Gemini API billing](https://ai.google.dev/gemini-api/docs/billing)
+
+## ADR-017: Manual web AI uses a bounded request-linked transfer package
+
+For `static_icon_sheet/single/edit`, create one managed transfer package at
+`ai/handoffs/<request-id>` containing `upload.png`, `manifest.json`, and `prompt.txt`.
+
+Decision:
+- The package is an expiring convenience copy, never the source of truth. Original source,
+  candidates, versions and active pointers remain in their existing content-addressed model.
+- `prompt.txt` contains the deterministic structural prompt plus the user's requested edit so
+  the exact handoff can be resumed. SQLite stores hashes, fixed filenames, expected geometry/
+  alpha and lifecycle metadata, not raw prompt text, credentials or arbitrary paths.
+- The default lifetime is seven days with one exact thirty-day extension. Commit, explicit
+  close or expiry records terminal request state and cleanup intent before deleting files;
+  startup, panel access and new preparation retry interrupted cleanup.
+- Resolve files from validated request IDs under the managed root only. Reject traversal,
+  symlinks and Windows reparse escapes, and verify file hashes before use.
+- The Windows release exposes Explorer selection as the upload fallback. It does not claim
+  native app-to-browser drag, provider upload success, DOM control, login automation, scraping
+  or automatic download.
+- A returned JPG/PNG is validated and attached to the same request as an inactive candidate.
+  It never auto-activates or overwrites the original.
+
+Consequences:
+- The latest live request for an icon can be restored after a panel change or app restart, and
+  the user can close it explicitly. A newly prepared package closes the panel's previous live
+  request.
+- Expiry is enforced on startup, panel access/direct request access and new preparation. A
+  continuously running app does not yet have a precise periodic purge timer or global handoff
+  storage quota; those remain follow-up reliability work and must be disclosed as such.
+- GIF frame sheets, selected-icon grids and source-free generation require their own candidate/
+  version and all-or-none review contracts and are not implied by this ADR.
+
+## ADR-018: Collection AI grids use immutable request items and provider-free reviewed artifacts
+
+Date: 2026-07-29
+
+Decision:
+- GRID-1 is a provider-free persistence and rendering foundation. It adds no collection menu,
+  workspace, credential flow, provider dispatch, browser automation or network request.
+- Grid edit accepts exactly 2–16 ordered static single-shape targets. Source-free single/grid
+  review accepts 1–16 items. Animated GIFs, double icons, implicit whole-collection fallback,
+  multi-page layouts and unreviewed geometry fail before any future HTTP boundary.
+- Each request owns immutable ordered request items and bounded input/output artifacts under
+  schema `pmtcon-ai-grid-v1`. Candidates point to request items; legacy single-icon history may
+  use the request-level snapshot fallback. Retry always creates a new request and is allowed
+  only after failed, cancelled or expired terminal state. Startup never replays work.
+- The native clean-grid composer is deterministic and row-major, with no labels or grid lines.
+  The bounded reviewed splitter accepts explicit mapping geometry and writes canonical PNG
+  cells all-or-none. Edit results remain inactive candidates and never replace originals or
+  current sources.
+- Source-free requests create no placeholder icon or source. Their reviewed cells stay
+  `layout_review_pending` until GRID-2 atomically creates immutable new-icon roots and icons.
+  Ordinary icon/collection duplication preserves source-free root ownership with clone roots;
+  existing source-edit direct-create lineage keeps its established semantics.
+- Target deletion/replacement cancels pending grid work, stale snapshots abort the entire
+  candidate batch, managed-file cleanup treats artifact paths as live references, and actual
+  database close/reopen tests cover request/item/candidate/artifact persistence.
+
+Consequences:
+- The GRID-1 repository and composer/splitter are intentionally not exposed by production
+  commands yet, so Rust may report dead-code warnings until GRID-2 connects complete handlers.
+- GRID-2 may build the mock/local collection workspace on a tested contract without exposing a
+  dead menu. It must still implement manual full-sheet/cell review and atomic source-free icon
+  creation before provider adapters are eligible.
+- GRID-3 remains the first provider/network stage and must retain one user action/one request,
+  explicit consent/cost confirmation, session-only credentials, no automatic retry/fallback and
+  mock transport tests before any separately approved paid pilot.

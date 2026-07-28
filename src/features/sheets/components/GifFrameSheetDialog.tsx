@@ -2,7 +2,7 @@ import { useEffect, useRef, useState } from "react";
 import type { DragEvent, ReactNode } from "react";
 
 import type { CollectionSummary, IconSummary } from "@/features/collections/types";
-import { listExportProfiles } from "@/features/export/api";
+import { listExportProfiles, openExportPath } from "@/features/export/api";
 import type { ExportProfile } from "@/features/export/types";
 import {
   analyzeGifFrameSheetExport,
@@ -25,6 +25,7 @@ import type {
   GifFrameSheetSettings,
   SheetBackground,
 } from "@/features/sheets/types";
+import { filePathToAssetUrl } from "@/lib/asset-url";
 import { getCommandErrorMessage } from "@/lib/tauri";
 import { useModalFocus } from "@/lib/use-modal-focus";
 
@@ -74,7 +75,7 @@ export function GifFrameSheetDialog({
               {activeMode === "export" ? "GIF 프레임 시트로 내보내기" : "GIF 프레임 시트 다시 가져오기"}
             </h2>
             <p className="mt-1 truncate text-sm text-muted">
-              {icon.displayName} · GIF · 원본은 보존되고 결과는 processed variant로 생성됩니다.
+              {icon.displayName} · GIF · 원본은 그대로 유지되며 결과는 내보내기용 GIF 처리 버전으로 저장됩니다.
             </p>
           </div>
           <button
@@ -118,7 +119,7 @@ export function GifFrameSheetDialog({
   );
 }
 
-function GifFrameExportPanel({
+export function GifFrameExportPanel({
   collectionId,
   icon,
   settings,
@@ -243,6 +244,7 @@ function GifFrameExportPanel({
             <CheckField label="Clean frame sheet PNG" checked={settings.includeCleanSheet} onChange={(checked) => onSettingsChange({ ...settings, includeCleanSheet: checked })} />
             <CheckField label="Guide frame sheet PNG" checked={settings.includeGuideSheet} onChange={(checked) => onSettingsChange({ ...settings, includeGuideSheet: checked })} />
             <CheckField label="Manifest JSON" checked={settings.includeManifest} onChange={(checked) => onSettingsChange({ ...settings, includeManifest: checked })} />
+            <CheckField label="완료 후 폴더 열기" checked={settings.openOutputFolder} onChange={(checked) => onSettingsChange({ ...settings, openOutputFolder: checked })} />
           </div>
         </section>
       </div>
@@ -269,17 +271,13 @@ function GifFrameExportPanel({
           {isWorking ? "내보내는 중" : "GIF 프레임 시트 내보내기"}
         </button>
         {result ? (
-          <ResultBlock
-            title="내보내기 완료"
-            rows={[
-              ["Output", result.outputDirectory],
-              ["Clean", `${result.frameSheetPaths.length} files`],
-              ["Guide", `${result.guideSheetPaths.length} files`],
-              ["Manifest", result.manifestPath ?? "-"],
-              ["Frames", String(result.frameCount)],
-              ["Pages", String(result.pageCount)],
-            ]}
-            warnings={result.warnings}
+          <GifFrameExportResultPanel
+            result={result}
+            onOpenFolder={(path) =>
+              openExportPath(path).catch((error) =>
+                setErrorMessage(getCommandErrorMessage(error)),
+              )
+            }
           />
         ) : null}
       </aside>
@@ -366,7 +364,7 @@ function GifFrameReimportPanel({
       >
         <h3 className="text-sm font-semibold">수정된 프레임 시트 선택</h3>
         <p className="mt-2 text-sm text-muted">
-          frames_manifest.json과 수정한 frames_sheet PNG 파일을 선택하거나 이 영역으로 드래그해서 놓습니다.
+          frames_manifest.json과 수정한 frames_sheet PNG를 함께 놓으세요. frames_sheet_001.png 같은 파일명을 바꾸면 안전을 위해 가져오지 않습니다.
         </p>
         <div className="mt-4 grid gap-3 sm:grid-cols-2">
           <label className="flex flex-col gap-1 text-xs font-medium text-muted">
@@ -409,14 +407,14 @@ function GifFrameReimportPanel({
       </section>
 
       <aside className="rounded-md border border-border bg-white p-4">
-        <h3 className="text-sm font-semibold">Reimport 결과</h3>
+        <h3 className="text-sm font-semibold">내보내기용 GIF 결과</h3>
         <p className="mt-2 text-sm text-muted">
-          새 GIF processed variant를 만들고 원본 GIF는 변경하지 않습니다.
+          새 GIF 처리 버전은 선택한 export profile에서만 사용할 수 있으며 원본과 현재 편집 소스는 바뀌지 않습니다.
         </p>
         <div className="mt-4 grid gap-3">
           <CheckField
             disabled={!canSetActive}
-            label={canSetActive ? "Export 활성 variant로 설정" : "single GIF만 export 활성 설정 가능"}
+            label={canSetActive ? "선택한 export profile에서 사용" : "single GIF만 export용으로 설정 가능"}
             checked={setActiveVariant && canSetActive}
             onChange={(checked) => setSetActiveVariant(checked)}
           />
@@ -463,23 +461,104 @@ function GifFrameReimportPanel({
               .finally(() => setIsWorking(false));
           }}
         >
-          {isWorking ? "다시 가져오는 중" : "GIF variant 만들기"}
+          {isWorking ? "다시 가져오는 중" : "내보내기용 GIF 처리 버전 만들기"}
         </button>
         {result ? (
-          <ResultBlock
-            title="다시 가져오기 완료"
-            rows={[
-              ["Variant", result.variantId ?? "-"],
-              ["Output", result.outputPath ?? "-"],
-              ["Frames", String(result.frameCount)],
-              ["Duration", `${result.durationMs}ms`],
-              ["Active", result.activeVariantSet ? "set" : "not set"],
-            ]}
-            warnings={result.warnings}
-            errors={result.errors}
+          <GifFrameVariantResult
+            result={result}
+            onOpenPath={(path) =>
+              openExportPath(path).catch((error) =>
+                setErrorMessage(getCommandErrorMessage(error)),
+              )
+            }
           />
         ) : null}
       </aside>
+    </div>
+  );
+}
+
+export function GifFrameExportResultPanel({
+  result,
+  onOpenFolder,
+}: {
+  result: GifFrameSheetExportResult;
+  onOpenFolder: (path: string) => Promise<void> | void;
+}) {
+  return (
+    <div data-testid="gif-frame-export-result">
+      <ResultBlock
+        title="내보내기 완료"
+        rows={[
+          ["Output", result.outputDirectory],
+          ["Clean", `${result.frameSheetPaths.length} files`],
+          ["Guide", `${result.guideSheetPaths.length} files`],
+          ["Manifest", result.manifestPath ?? "-"],
+          ["Frames", String(result.frameCount)],
+          ["Pages", String(result.pageCount)],
+        ]}
+        warnings={result.warnings}
+      />
+      <button
+        className="mt-3 w-full rounded-md border border-border bg-white px-3 py-2 text-sm font-semibold hover:bg-menu-hover focus-visible:outline focus-visible:outline-2 focus-visible:outline-focus"
+        data-testid="gif-frame-export-open-folder"
+        type="button"
+        onClick={() => void onOpenFolder(result.outputDirectory)}
+      >
+        결과 폴더 열기
+      </button>
+    </div>
+  );
+}
+
+export function GifFrameVariantResult({
+  result,
+  onOpenPath,
+}: {
+  result: GifFrameSheetReimportResult;
+  onOpenPath: (path: string) => Promise<void> | void;
+}) {
+  const previewUrl = filePathToAssetUrl(result.outputPath, result.variantId);
+
+  return (
+    <div data-testid="gif-frame-variant-result">
+      <ResultBlock
+        title="다시 가져오기 완료"
+        rows={[
+          ["Variant", result.variantId ?? "-"],
+          ["Output", result.outputPath ?? "-"],
+          ["Frames", String(result.frameCount)],
+          ["Duration", `${result.durationMs}ms`],
+          ["Export", result.activeVariantSet ? "선택한 profile에서 사용" : "아직 사용 안 함"],
+        ]}
+        warnings={result.warnings}
+        errors={result.errors}
+      />
+      {previewUrl ? (
+        <div className="mt-3 rounded-md border border-border bg-canvas p-3">
+          <img
+            alt="재조립한 GIF 처리 버전 미리보기"
+            className="mx-auto max-h-48 max-w-full rounded border border-border bg-checker object-contain"
+            data-testid="gif-frame-variant-preview"
+            src={previewUrl}
+          />
+          <p className="mt-2 text-xs text-muted">
+            이 미리보기는 새 내보내기용 처리 버전입니다. 원본 GIF와 현재 편집 소스는 그대로 유지됩니다.
+          </p>
+          <button
+            className="mt-3 w-full rounded-md border border-border bg-white px-3 py-2 text-sm font-semibold hover:bg-menu-hover focus-visible:outline focus-visible:outline-2 focus-visible:outline-focus"
+            data-testid="gif-frame-variant-open-path"
+            type="button"
+            onClick={() => {
+              if (result.outputPath) {
+                void onOpenPath(result.outputPath);
+              }
+            }}
+          >
+            결과 GIF 위치 열기
+          </button>
+        </div>
+      ) : null}
     </div>
   );
 }

@@ -14,7 +14,7 @@ use crate::imaging::import_limits::{
 };
 use crate::paths::AppPaths;
 
-use super::exporter::current_static_sheet_render_guard;
+use super::composer::current_static_sheet_render_guard;
 use super::importer::{create_icons_from_png_cells, png_bytes_from_rgba, CellImportInput};
 use super::manifest::{
     read_static_manifest_bytes, ManifestVisualSource, StaticSheetManifest, StaticSheetManifestItem,

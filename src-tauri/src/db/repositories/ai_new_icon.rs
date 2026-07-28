@@ -225,8 +225,13 @@ fn insert_ai_icon_root_creation(
 ) -> AppResult<()> {
     let inserted = transaction.execute(
         "INSERT INTO ai_icon_root_creations (
-           icon_id, source_icon_id, candidate_id, normalization_recipe_hash, created_at
-         ) VALUES (?1, ?2, ?3, ?4, strftime('%Y-%m-%dT%H:%M:%fZ', 'now'))",
+           icon_id, source_icon_id, candidate_id, request_item_id, creation_kind,
+           normalization_recipe_hash, created_at
+         )
+         SELECT ?1, ?2, candidate.id, candidate.request_item_id, 'source_edit',
+                ?4, strftime('%Y-%m-%dT%H:%M:%fZ', 'now')
+         FROM ai_candidates candidate
+         WHERE candidate.id = ?3",
         params![
             target_icon_id,
             source_icon_id,

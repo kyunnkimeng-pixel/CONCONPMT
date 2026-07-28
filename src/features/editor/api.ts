@@ -8,6 +8,15 @@ import type {
   ActivateAiCandidateInput,
   AiCandidateUsageSummary,
   AiManualServiceSurface,
+  AiImageEditInput,
+  AiOfficialResource,
+  AiProvider,
+  AiProviderSessionStatus,
+  AiWebHandoffDeleteResult,
+  AiWebHandoffDragResult,
+  AiWebHandoffResultInspection,
+  AiWebHandoffServiceSurface,
+  AiWebHandoffSession,
   AiNormalizationPreview,
   AiReviewState,
   AiSourceMutationResult,
@@ -45,6 +54,143 @@ export function getAiReviewState(collectionId: string, iconId: string) {
   }).then(normalizeAiReviewState);
 }
 
+export function getAiProviderSessionStatus() {
+  return invokeCommand<AiProviderSessionStatus>(
+    "get_ai_provider_session_status",
+    {},
+  );
+}
+
+export function setAiSessionCredential(
+  provider: AiProvider,
+  credential: string,
+) {
+  return invokeCommand<AiProviderSessionStatus>("set_ai_session_credential", {
+    payload: { provider, credential },
+  });
+}
+
+export function clearAiSessionCredential(provider: AiProvider) {
+  return invokeCommand<AiProviderSessionStatus>("clear_ai_session_credential", {
+    provider,
+  });
+}
+
+export function executeAiImageEdit(
+  collectionId: string,
+  payload: AiImageEditInput,
+) {
+  return invokeCommand<AiReviewState>("execute_ai_image_edit", {
+    collectionId,
+    payload,
+  }).then(normalizeAiReviewState);
+}
+
+export function openAiOfficialResource(resource: AiOfficialResource) {
+  return invokeCommand<void>("open_ai_official_resource", { resource });
+}
+
+export function prepareAiWebHandoff(
+  collectionId: string,
+  iconId: string,
+  serviceSurface: AiWebHandoffServiceSurface,
+  userPrompt: string,
+) {
+  return invokeCommand<AiWebHandoffSession>("prepare_ai_web_handoff", {
+    collectionId,
+    payload: { iconId, serviceSurface, userPrompt },
+  }).then(normalizeAiWebHandoffSession);
+}
+
+export function getAiWebHandoff(requestId: string) {
+  return invokeCommand<AiWebHandoffSession>("get_ai_web_handoff", {
+    requestId,
+  }).then(normalizeAiWebHandoffSession);
+}
+
+export function getLatestAiWebHandoffForIcon(
+  collectionId: string,
+  iconId: string,
+) {
+  return invokeCommand<AiWebHandoffSession | null>(
+    "get_latest_ai_web_handoff_for_icon",
+    { collectionId, iconId },
+  ).then((session) =>
+    session ? normalizeAiWebHandoffSession(session) : null,
+  );
+}
+
+export function revealAiWebHandoffUpload(requestId: string) {
+  return invokeCommand<void>("reveal_ai_web_handoff_upload", { requestId });
+}
+
+export function startAiWebHandoffDrag(requestId: string) {
+  return invokeCommand<AiWebHandoffDragResult>("start_ai_web_handoff_drag", {
+    requestId,
+  });
+}
+
+export async function validateAiWebHandoffResult(
+  requestId: string,
+  file: File,
+) {
+  return invokeCommand<AiWebHandoffResultInspection>(
+    "validate_ai_web_handoff_result",
+    { requestId, file: await fileToImportPayload(file) },
+  ).then(normalizeAiWebHandoffResultInspection);
+}
+
+export async function commitAiWebHandoffResult(
+  requestId: string,
+  file: File,
+  expectedValidationSignature: string,
+) {
+  return invokeCommand<AiWebHandoffResultInspection>(
+    "commit_ai_web_handoff_result",
+    {
+      requestId,
+      file: await fileToImportPayload(file),
+      expectedValidationSignature,
+    },
+  ).then(normalizeAiWebHandoffResultInspection);
+}
+
+export async function inspectAndCommitAiWebHandoffResult(
+  requestId: string,
+  file: File,
+) {
+  const payload = await fileToImportPayload(file);
+  const validation = normalizeAiWebHandoffResultInspection(
+    await invokeCommand<AiWebHandoffResultInspection>(
+      "validate_ai_web_handoff_result",
+      { requestId, file: payload },
+    ),
+  );
+  if (!validation.accepted || !validation.validationSignature) {
+    return validation;
+  }
+  return invokeCommand<AiWebHandoffResultInspection>(
+    "commit_ai_web_handoff_result",
+    {
+      requestId,
+      file: payload,
+      expectedValidationSignature: validation.validationSignature,
+    },
+  ).then(normalizeAiWebHandoffResultInspection);
+}
+
+export function extendAiWebHandoffRetention(requestId: string) {
+  return invokeCommand<AiWebHandoffSession>("extend_ai_web_handoff_retention", {
+    requestId,
+  }).then(normalizeAiWebHandoffSession);
+}
+
+export function deleteAiWebHandoffPayload(requestId: string) {
+  return invokeCommand<AiWebHandoffDeleteResult>(
+    "delete_ai_web_handoff_payload",
+    { requestId },
+  );
+}
 export async function importLocalAiCandidate(
   collectionId: string,
   iconId: string,
@@ -93,7 +239,6 @@ export function previewAiCandidateNormalization(
   ).then(normalizeAiNormalizationPreview);
 }
 
-
 export function createAiIconRoot(
   collectionId: string,
   payload: CreateAiIconRootInput,
@@ -127,7 +272,10 @@ export function repairAiToOriginal(collectionId: string, iconId: string) {
   }).then(normalizeAiReviewState);
 }
 
-export function applyIconCrop(collectionId: string, payload: ApplyIconCropInput) {
+export function applyIconCrop(
+  collectionId: string,
+  payload: ApplyIconCropInput,
+) {
   return invokeCommand<IconSummary>("apply_icon_crop", {
     collectionId,
     payload,
@@ -216,6 +364,27 @@ function normalizeAiReviewState(state: AiReviewState): AiReviewState {
   };
 }
 
+function normalizeAiWebHandoffSession(
+  session: AiWebHandoffSession,
+): AiWebHandoffSession {
+  return {
+    ...session,
+    uploadPreviewPath:
+      filePathToAssetUrl(session.uploadPreviewPath, session.requestId) ?? "",
+  };
+}
+
+function normalizeAiWebHandoffResultInspection(
+  inspection: AiWebHandoffResultInspection,
+): AiWebHandoffResultInspection {
+  return {
+    ...inspection,
+    reviewState: inspection.reviewState
+      ? normalizeAiReviewState(inspection.reviewState)
+      : null,
+  };
+}
+
 function normalizeAiSourceMutationResult(
   result: AiSourceMutationResult,
 ): AiSourceMutationResult {
@@ -280,7 +449,8 @@ function normalizeMotionPreview(preview: MotionPreviewDto): MotionPreviewDto {
     ...preview,
     previewPath:
       filePathToAssetUrl(preview.previewPath, preview.generatedAt) ?? "",
-    posterPath: filePathToAssetUrl(preview.posterPath, preview.generatedAt) ?? "",
+    posterPath:
+      filePathToAssetUrl(preview.posterPath, preview.generatedAt) ?? "",
   };
 }
 

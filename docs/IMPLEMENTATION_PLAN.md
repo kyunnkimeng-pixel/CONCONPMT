@@ -1,5 +1,33 @@
 # IMPLEMENTATION_PLAN.md — Codex 실행 계획
 
+## Stage AI_FRICTIONLESS_WEB_HANDOFF (2026-07-28)
+
+1. 정적 단일 JPG/PNG 아이콘 편집에 한해 `웹 AI로 바로 준비` 한 번으로 request-linked
+   관리 package, 결정적 구조 prompt 복사와 검토된 공식 사이트 열기를 수행한다.
+2. package는 `ai/handoffs/<request-id>`에 사용자용 `upload.png`와 내부
+   `manifest.json`·`prompt.txt`로 둔다. credential은 저장하지 않고 DB에는 고정 파일명,
+   hash, 구조 metadata와 lifecycle만 저장한다.
+3. 현재 Windows 경로는 Explorer에서 업로드 파일을 선택해 사용자가 브라우저로 직접
+   끌어 놓는다. native app→browser drag-out이나 provider 업로드 성공은 주장하지 않는다.
+4. 내려받은 JPG/PNG를 drop/picker로 받아 format, decode, byte size, 정확한 canvas와
+   alpha를 검증한다. 성공 결과는 같은 request의 비활성 candidate로만 저장하고 원본과
+   active source는 변경하지 않는다.
+5. 구조 오류에는 typed 문제·영향·expected/actual·local action과 결정적 수정 문장만
+   제공한다. auth/quota/network/policy 오류는 prompt 문제로 꾸미거나 자동 재시도하지 않는다.
+6. 진행 중 최신 세션을 화면 전환·재시작 뒤 복원하고, 명시적 닫기·7일 기본 보존·한 번의
+   30일 연장과 crash-safe cleanup intent를 지원한다.
+7. GIF frame-sheet, 선택 아이콘 grid, source-free 생성, native drag-out, 주기적 timer cleanup과
+   전체 package quota는 F142/F147–F149 또는 별도 후속 Stage Gate로 남긴다.
+
+Done when: 정적 단일 아이콘이 package 준비→Explorer 업로드→prompt 붙여넣기→결과
+JPG/PNG drop→즉시 진단→같은 request의 rollback-safe 비활성 후보 저장까지 완료되고,
+재시작 복원·닫기·보존 규칙이 검증된다.
+
+Status: static-single vertical slice complete. Rust handoff tests 16/16 and full suite 270/270,
+frontend lifecycle tests 10/10 and full suite 297/297, lint, production build and license guards
+are the acceptance evidence. GIF/grid/source-free
+범위를 이 완료 상태에 포함하지 않는다.
+
 ## Phase 0 — Scaffold and safety rails
 1. Scaffold Tauri 2 + React + TypeScript + Vite project.
 2. Install Tailwind CSS v4, shadcn/ui, TanStack Router, Zustand, dnd-kit, react-konva.
@@ -492,13 +520,13 @@ frozen as mutable remote state in this plan.
 Done when: the app has one implementable non-destructive AI contract, no provider call
 or secret is required for the next stage, and no unimplemented AI surface is exposed.
 
-Status: complete (2026-07-26). `docs/AI_INTEGRATION_DESIGN.md` separates mutable provider
-execution requests, immutable candidates/source bytes, icon-scoped versions and a
-revisioned active-version pointer. The 2026-07-26 provider revision selects NovelAI Image
-API as the first automated/conditional-primary adapter, manual website handoff as a
-token-free fallback, Gemini and OpenAI only after separate eligibility/cost gates, literal
-loopback as a separate security stage, and poster-frame/native-motion before full GIF or
-sprite experiments. No API request, key, dependency or UI surface was added.
+Status: complete (2026-07-26), provider execution scope revised 2026-07-28.
+`docs/AI_INTEGRATION_DESIGN.md` separates mutable provider execution requests, immutable
+candidates/source bytes, icon-scoped versions and a revisioned active-version pointer. The
+original provider comparison remains historical; ADR-016 and the active stages below now
+limit automation to existing static-image edit, keep NovelAI action/model strings and JSON
+response experimental, add safe user-driven web handoff, and keep Gemini mock-tested but
+private-pilot eligibility-gated. No API request or key was part of the completed design stage.
 
 ## Stage AI_NONDESTRUCTIVE_FOUNDATION
 
@@ -652,11 +680,12 @@ AI-UX-3 completes the umbrella stage with same-transaction review/editor mutatio
 results, migration 016 direct-create provenance, explicit open/reveal/continue outcomes,
 duplicate-use count/latest guidance, typed tile/editor reveal, async dirty/busy handoff,
 topmost nested-modal keyboard ownership and one document-wide live region including
-background alt and dnd-kit announcement suppression. Provider request/generation remains
-outside this completed stage: NovelAI is the separate planned `AI_NOVELAI_IMAGE_API`
-stage, manual web handoff remains planned, and Gemini/OpenAI plus GIF/sprite AI remain
-future gated work. The detailed information architecture, labels, normalization math,
-DTO boundaries and acceptance criteria remain in `docs/AI_WORKSPACE_UX_DESIGN.md`.
+background alt and dnd-kit announcement suppression. Provider request/generation was
+outside that completed checkpoint. Its current 2026-07-28 status is tracked only by the
+separate F138-F140 stages below: the static-single safe web handoff is complete,
+NovelAI static edit is in progress, and Gemini is partial/private-pilot gated. OpenAI and GIF/sprite AI remain future
+work. The detailed information architecture, labels, normalization math, DTO boundaries
+and acceptance criteria remain in `docs/AI_WORKSPACE_UX_DESIGN.md`.
 
 
 AI-UX-2 status: complete (2026-07-27). The existing local candidate controller now
@@ -718,101 +747,146 @@ and unexpected command/network 0. Evidence is stored under `output/playwright/ai
    draft GitHub prerelease, verify remote asset metadata and downloaded checksum, then
    publish it as prerelease without replacing the 0.2.0 stable release.
 
-Status: in progress on 2026-07-28. The next feature stage remains blocked until this
-checkpoint gate reports `READY_FOR_NEXT_STEP: YES`.
+Status: complete on 2026-07-28 at the `v0.3.0-alpha.1` checkpoint. Its Stage Gate reported
+`READY_FOR_NEXT_STEP: YES`; the user then explicitly started the provider/key/web-handoff
+implementation described below.
 
 ## Stage AI_NOVELAI_IMAGE_API
 
-0. Persist immutable `input_stage` on provider requests/candidates independently from
-   `icon_ai_versions`, and reject unmaterialized non-`base_source` candidates in the
-   new-icon path. Extend startup cleanup to remove only validated, unreferenced empty AI
-   preview parents left by a process termination before DB commit.
-1. Add a license-reviewed Rust HTTP client and a NovelAI adapter for explicit single-image
-   text-to-image, img2img and mask-based inpaint behind the common provider capability
-   contract. Preserve provider-raw bytes/dimensions and deterministically normalize to the
-   PMTCONCON Studio canvas; never assume 200×200 output, alpha or animation support.
-2. Ask only for a Persistent API Token that the user generated in the official NovelAI
-   Account UI. Start with session-only/environment test paths, never accept email/password,
-   never call account login/token-creation APIs, and never return the token to the frontend.
-   New PAT creation invalidates the previous PAT and the token is shown only once: clear the
-   frontend input state immediately after passing it over the invoke boundary, never read the
-   clipboard automatically, and show explicit clipboard-clear/rotation guidance. Persistent
-   storage is outside this stage and requires a separate Stage Gate. That later migration
-   must add a secret-free `ai_credential_bindings` parent, nullable request FK with `ON DELETE
-   SET NULL`, adapter/provider consistency guards and a reviewed Windows Credential Manager
-   integration. Deletion marks the DB binding `deleting` to block new calls, deletes the vault
-   entry, then deletes the DB row; failures/crashes remain retryable repair states. Tests must
-   prove vault/DB compensation and request/candidate/version/source/active-pointer survival.
-   The token itself never enters SQLite.
-3. Restrict the first command to exact
-   `https://image.novelai.net:443/ai/generate-image`, strict CSP, no URL override and no
-   redirects. Add another NovelAI endpoint only with an independent capability fixture.
-4. Require one visible user action for one request and one sample. Prohibit background
-   queues, hidden chained generation, automatic provider fallback and automatic retry.
-   Store adapter-contract version plus requested/negotiated capability snapshots; reject
-   unknown model/action schema instead of guessing.
-5. Add 18+ service eligibility, exact-send, request-content logging/cache, rights and PAT
-   risk confirmation. Store only bounded versioned canonical allowlist policy/consent/data-
-   tier snapshots, never account ID, token, binary payload or complete provider response.
-6. Show settings and estimated provider units before every request. Explain the general Opus
-   0 ImageAnlas conditions: one image, no base image, normal-size range and at most 28 steps.
-   The official web Inpaint guide separately documents 0-Anlas Focused Inpainting for Opus
-   on regions of large images, but public Image API support and charging parity are not
-   documented. Mark every inpaint request `provider confirmation required` until official
-   clarification and a user-approved small live pilot establish API behavior. Never convert
-   subscription Anlas to USD `actual`/`billed`.
-7. Bound timeouts, ZIP/JSON response bytes, decoded dimensions and candidate count; sanitize
-   errors and define cancellation without promising charge reversal. Cover text-to-image,
-   img2img, inpaint, exact `Authorization: Bearer pst-<token>`, rotated-token `401` guidance,
-   429, schema drift, redirects, frontend-input clearing/non-echo, logging redaction and no-
-   retry with mock HTTP fixtures. Normal automated checks never contact NovelAI.
+Implementation scope frozen on 2026-07-28:
 
-Done when: an explicitly confirmed, human-initiated request creates one inactive candidate
-without exposing the PAT or changing the icon, and activation/rollback remains completely
-local and provider-independent.
+0. Keep all provider output inside the completed immutable candidate/version/rollback
+   foundation. A successful provider response creates an inactive candidate and never changes
+   the current icon automatically.
+1. Implement only one explicit edit of the currently selected static JPG/PNG source. Text-to-
+   image, mask inpaint, GIF/poster/frame batches, sprite/n-up and multi-result generation are
+   outside this gate. They must not appear as live controls.
+2. Accept only a Persistent API Token generated by the user in the official NovelAI Account
+   UI. Hold it in process memory for the current app session, clear the frontend field after
+   the invoke handoff, never echo it, and provide explicit clear/rotation guidance. Do not
+   persist it in SQLite, settings, local storage, AI snapshots or logs; do not accept login,
+   email or password and do not call account/token-creation APIs.
+3. Restrict Rust HTTP to exact
+   `https://image.novelai.net:443/ai/generate-image`; reject user URL overrides and redirects.
+   The production WebView `connect-src` remains Tauri IPC-only. Accept one bounded JSON image
+   response only; reject ZIP, unexpected content types, extra candidates, oversized bytes,
+   dimensions or pixel workloads.
+4. The public OpenAPI request schema does not enumerate `action` or `model`. Treat the
+   adapter's exact values as versioned experimental contract strings, not official enums.
+   Show both strings plus the exact source, prompt and scalar options before every request and
+   require per-request confirmation. Unknown strings, changed response shape or contract
+   version mismatch fail closed instead of guessing or silently switching models.
+5. One visible click creates exactly one HTTP request and at most one candidate. Prohibit
+   background queues, chained generation, automatic retry and provider fallback. `401`, `429`,
+   timeout, 5xx and schema drift return a sanitized error without retransmission. Persist the
+   canonical snapshots and provider-ready image hash as `running`, atomically claim
+   `awaiting_result` immediately before HTTP, and send nothing if cancellation wins that claim.
+   Never promise that cancellation after dispatch reverses a charge.
+6. Show service eligibility, potential ImageAnlas use, request-content/data-policy, rights and
+   PAT runtime-risk disclosures before send. Provider units remain `공급자에서 확인` unless
+   the API returns a documented value; never label a local estimate as actual or billed USD.
+7. Mock tests cover exact auth redaction, session clear/non-echo, URL/redirect rejection,
+   one-click/one-request, no retry/fallback, JSON-only bounded decode, exact action/model
+   confirmation, schema drift, inactive candidate creation and local activation/rollback.
+   Normal automated checks never contact NovelAI.
 
-Status: planned; after the non-destructive foundation Stage Gate this is the selected first
-automated-provider stage. Live traffic requires a separate approval and user-supplied PAT.
+Done when: the mock-tested human-initiated static edit creates one inactive candidate without
+exposing or persisting the PAT, and all failure paths preserve the current icon and local
+rollback history. Live traffic still requires an eligible adult user, an explicitly supplied
+session PAT and one separately approved small potentially charged request.
+
+Status: implementation, mock-contract, browser-flow and local persistence gates complete on
+2026-07-28; the stage remains in progress only until the user-approved one-image live pilot.
+This is deliberately narrower than the earlier text-to-image/img2img/inpaint proposal.
+The desktop is single-instance before startup recovery, and a fail-closed 24-hour source-file
+orphan sweep covers a hard crash between managed file creation and DB commit.
+
+Official dated references:
+[NovelAI Image API](https://image.novelai.net/docs/index.html),
+[OpenAPI schema](https://image.novelai.net/docs/doc.json),
+[Persistent API Token](https://docs.novelai.net/en/text/usersettings/account/), and
+[subscriptions/ImageAnlas](https://docs.novelai.net/en/subscription/).
 
 ## Stage AI_MANUAL_WEB_HANDOFF
 
-1. Record `service_surface`, `account_context` and dated typed official refs for terms,
-   privacy, data controls, pricing, model/license and attribution as applicable. Unknown
-   account context remains explicitly unverified.
-2. Package the exact source/mask/references, prompt and secret-free manifest; show that
-   payload, context-specific policy links and explicit confirmation before copying the
-   prompt and opening the selected official website.
-3. Let the user import downloaded output into the common candidate history, compare
-   provider-raw/normalized/original candidates, and default to adding a new working icon.
-   Treat manually declared or unknown model and uncomputable cost as normal provenance.
-4. Do not automate browser login, cookies, DOM upload, scraping or downloads.
-5. Delete handoff payload after import/cancel/failure, expire awaiting packages after 7 days
-   or one explicit 30-day retention, and expose separate payload/provenance/history cleanup
-   actions.
+1. frontend는 검토된 service-surface enum만 보내고 Rust는 compile-time HTTPS constant로
+   공식 사이트를 연다. general `opener:default`는 없고 production `connect-src`는
+   IPC-only다.
+2. 정적 단일 JPG/PNG source로 request-linked `ai/handoffs/<request-id>` package를 만든다.
+   한 user-facing `upload.png`, 내부 manifest/prompt와 hash·geometry·alpha snapshot을
+   사용하며 credential·cookie·session은 저장하지 않는다.
+3. 한 번의 명시적 준비 동작에서 최종 prompt를 복사하고 공식 사이트를 연다. 사용자는
+   Explorer fallback으로 직접 upload/login/generate/download한다. DOM·upload·scrape·
+   polling·download 자동화와 자동 retry/provider fallback은 없다.
+4. 내려받은 결과를 drop/picker로 검사하고 검증 signature를 같은 bytes에 묶는다. 정상
+   결과만 같은 request의 inactive candidate로 저장하며 원본·현재 적용 소스는 보존한다.
+5. 최신 진행 세션을 아이콘별로 복원하고, 이전 세션 교체·명시적 닫기·7일 보존·한 번의
+   30일 연장·startup/access/prepare cleanup을 제공한다.
+6. GIF/grid/source-free/native drag-out/periodic timer cleanup/storage quota는 완료 범위에서
+   제외하고 각각 후속 Stage Gate로 추적한다.
 
-Done when: the full no-API flow works without claiming automatic provenance, billing or
-result retrieval, and no sensitive transfer copy is retained indefinitely.
-
-Status: planned fallback; it may follow the foundation without blocking the selected
-NovelAI automated-provider stage.
+Status: complete for `static_icon_sheet/single/edit` on 2026-07-28. This is the generally
+available token-free Gemini/NovelAI web path. It does not claim verified provider model,
+billing, provenance or website upload success.
 
 ## Stage AI_PROVIDER_EXPANSION
 
-Do not assume a second cloud provider or automatically fail over to one. Evaluate Gemini
-only after recording that its current image model has a paid tier and the actual
-distribution satisfies age/audience, professional/business, supported-region and
-paid-service conditions, then run a surface-specific data-policy and adapter review.
+### Gemini private static-edit pilot
 
-Evaluate OpenAI Image API as a separate optional paid-cloud stage with its own project-key,
-desktop-secret, exact-origin, capability, data-policy and cost review. Neither provider may
-reuse another provider's consent snapshot.
+1. The Gemini static-image-edit adapter and UI may exist only as an eligibility-gated private
+   pilot. It is not enabled, advertised or claimed as a general consumer-public release
+   feature. As reviewed 2026-07-28, Gemini image models list no free tier.
+2. Before key entry or send, require explicit confirmation that the user is at least 18, the
+   app/request is not directed toward or likely accessed by under-18s, the user is in a
+   supported region, the use is professional/business, and the user owns a paid API key and
+   accepts request cost plus the applicable data policy. Any missing confirmation fails
+   closed and leaves the API path unavailable; the Gemini official web handoff remains.
+3. Keep the Gemini key session-only under the same no-persistence/no-log/non-echo/clear
+   contract. Keep provider endpoints/models in Rust-owned exact constants, show the selected
+   model and exact payload before send, and allow one click/one request/one inactive static
+   candidate with no retry, queue or provider fallback. The dated Interactions contract allows
+   `gemini-2.5-flash-image` and `gemini-3.1-flash-image`; request and validate
+   inline `image/jpeg` at `1K`, save it as `.jpg`, and reject other response MIME values.
+4. Mock-test eligibility denial, session key lifecycle, exact origin/model, error redaction,
+   bounded image response, no retry/fallback, inactive candidate import and provider-free
+   local rollback. Live traffic requires a user-supplied paid key and a separate explicit
+   potentially charged pilot approval.
 
-Evaluate a generic user-run endpoint in a separate stage. Accept only parsed literal
-`127.0.0.1`/`[::1]`, reject redirects and other addresses, bound timeout/response/pixel
-workload, and disclose that a local workflow can itself call external paid services. Do
-not bundle ComfyUI, another AI runtime, model weights, workflows or custom nodes.
+Status: partial (private-pilot gated) on 2026-07-28. Adapter/UI and mocks do not make the
+feature eligible for broad release, and no live success claim is made without the gate above.
 
-Status: future.
+Repair note (2026-07-28): the first two user-started Gemini canaries both returned HTTP 400.
+The app had copied the v1 resource-name form (`models/gemini-…`) into the v1beta Interactions
+REST body, while the v1beta image-generation examples and model enum require the unprefixed
+`gemini-…` ID. Canonical frontend/backend allowlists and exact-body tests now use the
+unprefixed form, and `adapter_contract_version` is bumped to private-pilot-2. Historical
+failed request snapshots remain immutable. A new user-approved potentially charged canary is
+still required before claiming live success.
+
+Official dated references:
+[Gemini Interactions API](https://ai.google.dev/api/interactions-api?hl=en),
+[Gemini image generation](https://ai.google.dev/gemini-api/docs/image-generation),
+[pricing](https://ai.google.dev/gemini-api/docs/pricing),
+[Additional Terms](https://ai.google.dev/gemini-api/terms),
+[API key security](https://ai.google.dev/gemini-api/docs/api-key), and
+[billing](https://ai.google.dev/gemini-api/docs/billing).
+
+OpenAI Image API and a generic user-run endpoint remain separate future stages. The latter
+must accept only parsed literal `127.0.0.1`/`[::1]`, reject redirects and other addresses,
+bound timeout/response/pixel workload, and disclose that a local workflow can itself call
+external paid services. Do not bundle ComfyUI, another AI runtime, model weights, workflows
+or custom nodes.
+
+Provider-stage verification before a completion claim:
+
+- `npm.cmd run lint`
+- `npm.cmd run test`
+- `npm.cmd run build`
+- `cargo test --manifest-path src-tauri/Cargo.toml`
+- `cargo fmt --manifest-path src-tauri/Cargo.toml -- --check`
+- dependency and license guard scripts required by the repository
+- headed browser QA for session-key clear, exact consent, handoff, candidate review, keyboard,
+  narrow layout, reduced motion and unexpected command/network counts
 
 ## Stage AI_ANIMATED_SPRITE_EXPERIMENTS
 
@@ -823,3 +897,139 @@ nullable provider-reported cost, frame consistency,
 grid-boundary and manifest fixtures. Do not infer cost savings from request count alone.
 
 Status: future.
+
+## Stage AI_COLLECTION_GRID_WORKSPACE_DESIGN
+
+1. Confirm the current gap: provider execution, candidate ownership and new-icon creation
+   all require one existing source icon.
+2. Reuse collection selection order, static-sheet native rendering, grid math, overlay,
+   cell review and atomic PNG-cell creation where their contracts match.
+3. Separate piece-based static-sheet behavior from first-slice AI behavior; accept only
+   static single icons, one page and an explicitly non-empty ordered selection.
+4. Define request scope/items/artifacts so one provider request owns multiple target
+   snapshots and usage is not duplicated across candidate cells.
+5. Define source-free generation without fake placeholder icons and require full-grid
+   review before inactive candidate or atomic new-icon creation.
+
+Status: complete on 2026-07-28. The frozen design is
+`docs/AI_GRID_WORKFLOW_DESIGN.md`. No menu or network behavior was added in this design
+stage.
+
+## Stage AI_COLLECTION_GRID_FOUNDATION
+
+1. Add a migration for request scope, immutable request items, input/output artifacts,
+   candidate-item ownership and explicit retry lineage. Rebuild nullable origin-only
+   snapshots with CHECK constraints instead of sentinel values.
+2. Refactor the existing static-sheet renderer into an in-memory one-page clean-grid
+   composer that returns PNG bytes and an immutable item map. Keep ordinary work-sheet
+   output byte-compatible.
+3. Add a bounded output splitter that accepts only reviewed manifest/manual grid geometry
+   and creates all cell sources/candidates or none.
+4. Extend normalization, stale checks, candidate history, cleanup and clone ownership to
+   request items and source-free roots while preserving legacy single-icon fallback.
+5. Add explicit pre-dispatch cancellation and new-request-only retry. This stage performs
+   no provider network request and exposes no unfinished menu.
+
+Done when: deterministic 2–16 static-single grids, source-free item snapshots, cleanup,
+restart, cancel, stale and all-or-none repository tests pass without changing current
+single-icon behavior.
+
+Status: complete on 2026-07-29 as GRID-1. The provider-free database/repository
+contract, deterministic one-page in-memory composer/splitter, immutable artifact and
+item ownership, cancellation/failure-only retry, restart recovery, stale rejection,
+cleanup and clone provenance are implemented. Reviewed cells are committed all-or-none
+as inactive candidates without changing originals or current sources. Source-free cells
+remain in `layout_review_pending`; atomic new-icon creation and all user-facing entry
+points belong to GRID-2. No collection toolbar menu, provider dispatch, credential flow,
+network request or automatic web action was added.
+
+Verification: Rust 293/293, targeted grid repository 9/9, migration 13/13, sheet 69/69,
+frontend 45 files and 297/297 tests, lint, production build, Rust formatting and license
+guardrails passed. The clean-grid golden PNG SHA-256 is
+`e242ba2e97344233dc5ef9c46dbb7d2bef7cc5144661f848804c5722835a3454`.
+
+Implementation boundary for this patch:
+
+- add migration `018` with a foreign-key-checked upgrade path for request scopes,
+  immutable request items/artifacts, item-owned candidates and explicit retry lineage
+- compose exactly 2–16 ordered, static, single-shape icons into one transparent
+  `pmtcon-ai-grid-v1` PNG using the existing native poster render path
+- persist input/output artifacts and create reviewed cell candidates all-or-none without
+  changing the current icon source or activation state
+- support origin-free item snapshots without placeholder icon/source rows
+- preserve legacy single-icon request/candidate behavior through request-level fallback
+- verify exact hashes, stale rejection, cancellation/retry, cleanup references, restart
+  recovery, and ordinary static-sheet byte compatibility
+
+## Stage AI_COLLECTION_GRID_WORKSPACE_MOCK
+
+1. Add `AI 만들기` to the collection toolbar and `선택 N개 AI로 수정` to the
+   multi-selection context menu only after the complete handlers exist.
+2. Implement a five-step `AiGridWorkspaceDialog` for target, layout, provider/prompt
+   confirmation, whole-sheet/cell review and save.
+3. Reuse grid presets/overlay/manual Slice review, but do not copy the obsolete visible
+   `pmtcon-sheet-v1` label; use the current schema contract.
+4. Use mock/local result sheets to verify inactive candidate creation and source-free
+   atomic icon creation before wiring paid providers.
+5. Verify keyboard/focus, one live region, reduced motion, 1200×760 and 800×760 layouts,
+   restart continuity and unexpected network count 0.
+
+Status: complete on 2026-07-29. The five-step collection workspace is user-facing with
+manual official-web handoff, restore/cancel, structural save blocking, all-or-none edit
+commit and atomic source-free generation. Mock/local files remain the non-paid acceptance
+path.
+
+## Stage AI_COLLECTION_GRID_PROVIDERS
+
+1. Add provider-specific text-to-image single/grid and selected-grid request contracts
+   without weakening exact endpoint, session credential, consent, no-retry or no-fallback
+   boundaries.
+2. Keep Gemini 1K live requests at 3×3 or below until a separately reviewed 2K/4K
+   contract passes price and quality gates. Clearly disclose JPEG alpha loss.
+3. Keep NovelAI action/model as user-confirmed experimental strings because the public
+   OpenAPI does not enumerate them; omit input image only for the explicit source-free
+   operation and keep `n_samples=1` for the grid flow.
+4. Persist one usage record per provider request, validate the raw output sheet, and wait
+   for user mapping review before creating candidates.
+5. Run mock transport tests by default. Any real paid request requires the user's
+   session credential and separate explicit small-pilot approval.
+
+Status: future and optional. The manual Gemini/NovelAI official-web flow is complete;
+provider-specific paid grid API execution still requires a separate explicit consent,
+cost and live-pilot gate.
+
+## Stage AI_WORKSPACE_AND_HANDOFF_COMPLETION
+
+1. Connect the finished GRID-1 repository contract to a collection-level five-step
+   workspace. Support ordered 2–16 static single-icon edits, whole-sheet plus per-cell
+   review, and one all-or-none save decision. Do not mutate an original or active source
+   while the request is prepared or reviewed.
+2. Support source-free generation for one icon or a 2–16-cell grid without placeholder
+   source icons. Create all accepted icons, pieces, crop metadata, source-free provenance
+   roots and collection ordering in one transaction, or create none.
+3. Harden the existing GIF frame-sheet roundtrip rather than duplicating it: deterministic
+   page-to-file matching, bounded output, exact per-frame delay and preserve/infinite/once/
+   finite loop restoration, visible export-folder action and post-import result preview.
+4. Add a user-initiated Windows native file drag-out from an already verified handoff
+   package. Keep Explorer selection as the stable fallback and do not automate browser
+   login, DOM access, cookies, downloads or provider result claims.
+5. Run handoff cleanup periodically while PMTCONCON Studio remains open. Enforce a bounded
+   total handoff-payload quota, preserve history rows after payload deletion, and expose a
+   global recent-delivery list with storage usage, lifecycle status and safe reveal/close
+   actions.
+6. Keep provider website execution manual and token-free by default. Mock/local output
+   files are the acceptance path; real paid provider traffic remains separately consented.
+
+Done when: grid edit and source-free single/grid creation survive restart and save
+atomically; GIF frames restore exact timing/loop behavior; verified files can be dragged
+to a browser or selected through Explorer; expired packages are cleaned while the app is
+open; quota and recent deliveries are visible; and frontend, Rust, license, build and
+packaging gates pass.
+
+Status: complete on 2026-07-29 as 0.3.0-alpha.3.
+
+Verification: frontend lint/build and 54 files·326 tests PASS; Rust formatting and
+322 all-target tests PASS; license generation/guards PASS; headed Chromium manual-web
+flows PASS at 1200×760 and 800×760 with console errors 0; NSIS package and SHA-256
+generated. MSI is not a prerelease artifact because its version format rejects the
+non-numeric `alpha` identifier.

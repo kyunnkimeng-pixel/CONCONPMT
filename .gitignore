@@ -29,6 +29,7 @@ docs/QA_*.md
 playwright-report/
 test-results/
 output/
+.playwright-cli/
 
 # Local Codex workflow files
 AGENTS.md

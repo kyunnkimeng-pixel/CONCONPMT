@@ -13,7 +13,7 @@ import {
 describe("AI workspace UI model", () => {
   it("keeps the fixed workspace tab order and Korean labels", () => {
     expect(AI_WORKSPACE_TABS).toEqual([
-      { value: "import", label: "결과 가져오기" },
+      { value: "import", label: "AI 수정·가져오기" },
       { value: "review", label: "후보 검토" },
       { value: "history", label: "소스 이력" },
     ]);

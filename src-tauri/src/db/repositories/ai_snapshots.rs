@@ -16,7 +16,7 @@ pub(crate) fn canonicalize(kind: &str, raw: &str) -> AppResult<String> {
         .map_err(|_| snapshot_error("AI 실행 스냅샷 JSON이 올바르지 않습니다."))?;
     validate_root(kind, &value)?;
     let mut nodes = 0;
-    validate_value(&value, 0, &mut nodes)?;
+    validate_value(kind, &value, 0, &mut nodes)?;
     let canonical = serde_json::to_string(&sort_json(&value))
         .map_err(|_| snapshot_error("AI 실행 스냅샷을 정규화할 수 없습니다."))?;
     if canonical.len() > MAX_BYTES {
@@ -49,16 +49,49 @@ fn validate_root(kind: &str, value: &Value) -> AppResult<()> {
         ],
         "data_tier" => &["schema", "source", "tier"],
         "retention" => &["schema", "source", "retention"],
-        "consent" => &["schema", "source", "confirmed"],
+        "consent" => &[
+            "schema",
+            "source",
+            "confirmed",
+            "humanActionConfirmed",
+            "rightsConfirmed",
+            "costConfirmed",
+            "requestContentConfirmed",
+            "contractOverrideConfirmed",
+            "adultConfirmed",
+            "under18AudienceExcludedConfirmed",
+            "professionalBusinessConfirmed",
+            "supportedRegionConfirmed",
+            "paidServiceConfirmed",
+        ],
         "prompt_options" => &[
             "schema",
             "importedResultOnly",
             "operation",
+            "provider",
+            "model",
+            "action",
             "prompt",
             "negativePrompt",
             "seed",
             "width",
             "height",
+            "steps",
+            "scale",
+            "strength",
+            "noise",
+            "outputCount",
+            "gridLayout",
+        ],
+        "provider_usage" => &[
+            "schema",
+            "provider",
+            "candidateIndex",
+            "seed",
+            "input_tokens_by_modality",
+            "output_tokens_by_modality",
+            "total_thought_tokens",
+            "total_tokens",
         ],
         _ => return Err(snapshot_error("알 수 없는 AI 스냅샷 종류입니다.")),
     };
@@ -70,7 +103,7 @@ fn validate_root(kind: &str, value: &Value) -> AppResult<()> {
     Ok(())
 }
 
-fn validate_value(value: &Value, depth: usize, nodes: &mut usize) -> AppResult<()> {
+fn validate_value(kind: &str, value: &Value, depth: usize, nodes: &mut usize) -> AppResult<()> {
     *nodes += 1;
     if depth > MAX_DEPTH || *nodes > MAX_NODES {
         return Err(snapshot_error("AI 실행 스냅샷 구조가 너무 복잡합니다."));
@@ -80,6 +113,7 @@ fn validate_value(value: &Value, depth: usize, nodes: &mut usize) -> AppResult<(
         Value::String(value) => {
             let lower = value.to_ascii_lowercase();
             if value.len() > 4096
+                || value.chars().any(char::is_control)
                 || lower.starts_with("data:")
                 || lower.contains("authorization:")
                 || lower.contains("bearer ")
@@ -94,32 +128,44 @@ fn validate_value(value: &Value, depth: usize, nodes: &mut usize) -> AppResult<(
         }
         Value::Array(values) => {
             for value in values {
-                validate_value(value, depth + 1, nodes)?;
+                validate_value(kind, value, depth + 1, nodes)?;
             }
             Ok(())
         }
         Value::Object(values) => {
             for (key, value) in values {
                 let lower = key.to_ascii_lowercase();
-                if [
-                    "authorization",
-                    "token",
-                    "cookie",
-                    "secret",
-                    "headers",
-                    "request",
-                    "response",
-                    "bytes",
-                    "base64",
-                ]
-                .iter()
-                .any(|forbidden| lower.contains(forbidden))
+                let consent_request_confirmation =
+                    kind == "consent" && key == "requestContentConfirmed";
+                let provider_usage_metric = kind == "provider_usage"
+                    && matches!(
+                        key.as_str(),
+                        "input_tokens_by_modality"
+                            | "output_tokens_by_modality"
+                            | "total_thought_tokens"
+                            | "total_tokens"
+                    );
+                if !consent_request_confirmation
+                    && !provider_usage_metric
+                    && [
+                        "authorization",
+                        "token",
+                        "cookie",
+                        "secret",
+                        "headers",
+                        "request",
+                        "response",
+                        "bytes",
+                        "base64",
+                    ]
+                    .iter()
+                    .any(|forbidden| lower.contains(forbidden))
                 {
                     return Err(snapshot_error(
                         "AI 실행 스냅샷에 비밀값 또는 전체 요청/응답 필드를 넣을 수 없습니다.",
                     ));
                 }
-                validate_value(value, depth + 1, nodes)?;
+                validate_value(kind, value, depth + 1, nodes)?;
             }
             Ok(())
         }

@@ -434,7 +434,7 @@
           <a href="#organize">정리 작업</a>
           <a href="#edit">편집</a>
           <a href="#sheets">작업 시트</a>
-          <a href="#ai-workspace">AI 후보</a>
+          <a href="#ai-workspace">AI 후보·그리드</a>
           <a href="#context-presets">메뉴와 프리셋</a>
           <a href="#preview">미리보기</a>
           <a href="#export">내보내기</a>
@@ -495,7 +495,7 @@
             <a href="#gif-sheets">10. GIF 프레임 작업 시트</a>
             <a href="#context-presets">11. 우클릭 메뉴, 메모, 프리셋</a>
             <a href="#auto-detect">12. 자동 감지 실험 기능</a>
-            <a href="#ai-workspace">13. AI 후보 작업공간과 원본 복귀</a>
+            <a href="#ai-workspace">13. AI 후보·그리드·웹 전달</a>
             <a href="#release">14. 릴리스 준비와 파일 보존</a>
           </div>
         </section>
@@ -504,7 +504,7 @@
           <h2>1. 화면 구성과 탐색</h2>
           <p>
             PMTCONCON Studio는 파일 탐색기처럼 모음을 열고, 아이콘을 격자로 보고, 선택한 항목을 편집하는 구조입니다.
-            상단에는 탐색, 썸네일만, 사용 미리보기, 내보내기, 정렬, 설정, 빈 디시콘, 대표 이미지, 폴더 추가, 이미지 추가가 배치됩니다.
+            상단에는 탐색, 썸네일만, 사용 미리보기, 내보내기, AI 아이콘 만들기, 시트 도구, 정렬, 설정, 빈 디시콘, 대표 이미지, 폴더 추가, 이미지 추가가 배치됩니다.
           </p>
           <figure class="shot">
             <img
@@ -961,7 +961,7 @@
                 <tr>
                   <td>GIF 프레임 시트 교체하기</td>
                   <td>수정된 frame sheet로 새 GIF variant 생성</td>
-                  <td>UI는 교체라고 표시하지만 원본 GIF는 덮어쓰지 않습니다.</td>
+                  <td>manifest의 페이지 파일명·프레임별 시간·once/infinite/finite 반복을 복원하고 원본 GIF는 덮어쓰지 않습니다.</td>
                 </tr>
               </tbody>
             </table>
@@ -1035,33 +1035,55 @@
         </section>
 
         <section id="ai-workspace" class="section">
-          <h2>13. AI 후보 작업공간과 원본 복귀</h2>
+          <h2>13. AI 후보·그리드·웹 전달</h2>
           <p>
-            편집 패널의 <strong>AI로 수정</strong>을 누르면 로컬에 저장해 둔 JPG/PNG 결과를
-            후보로 가져올 수 있습니다. 이 프리릴리스는 Gemini·NovelAI API나 웹 로그인을
-            사용하지 않으며, 파일을 선택하는 것만으로 현재 아이콘이 바뀌지는 않습니다.
+            편집 패널의 <strong>AI로 수정</strong>은 정적 아이콘 한 개를 비파괴 후보로 가져오는
+            작업공간입니다. 모음 도구의 <strong>AI 아이콘 만들기</strong>는 원본 없이 한 개 또는 최대
+            16개를 만들고, 정적 단일 아이콘 2–16개를 선택해 우클릭한
+            <strong>선택 N개 AI로 수정</strong>은 한 장의 clean grid로 일괄 편집합니다.
           </p>
 
           <div class="grid-3">
             <div class="panel">
-              <strong>결과 가져오기</strong>
-              <p>출처와 파일을 선택합니다. AI 원본은 그대로 보존되고 후보 검토 화면으로 이동합니다.</p>
+              <strong>1. 대상과 구조 준비</strong>
+              <p>선택 순서·셀 수·캔버스·투명 배경 규칙을 고정합니다. GIF, 이중콘, 빈 디시콘, 비정사각형 셀은 정확한 사유와 함께 이 흐름에서 제외됩니다.</p>
             </div>
             <div class="panel">
-              <strong>비교와 규격화</strong>
-              <p>원본·AI 원본·규격화 결과·최종 적용 모습을 비교하고, 전체 보이기 또는 빈틈 없이 채우기를 선택합니다.</p>
+              <strong>2. 웹에 전달</strong>
+              <p>프롬프트를 복사하고 공식 웹을 엽니다. Windows 마우스에서는 입력 파일을 직접 끌고, 키보드·비Windows·호환성 문제에는 탐색기 선택을 사용합니다.</p>
             </div>
             <div class="panel">
-              <strong>안전한 완료</strong>
-              <p>권장 동작은 새 아이콘 추가입니다. 호환 후보는 현재 아이콘에 사용할 수 있고 원본이나 이전 source로 복귀할 수 있습니다.</p>
+              <strong>3. 전체 검토와 저장</strong>
+              <p>내려받은 PNG/JPG를 놓고 전체 시트와 셀 매핑을 확인합니다. 구조 오류에는 추가할 수정 프롬프트가 표시됩니다.</p>
             </div>
           </div>
 
           <div class="callout">
-            <strong>현재 범위</strong>
+            <strong>전부 또는 없음</strong>
             <p>
-              API key 입력, 공급자 호출, 웹 자동 업로드·다운로드, GIF 전체 frame AI 변환은
-              포함되지 않습니다. 앱은 사용자가 고른 로컬 결과만 처리하며 원본 파일을 덮어쓰지 않습니다.
+              선택 아이콘 편집은 모든 셀을 함께 비활성 후보로 저장하며 하나라도 stale/손상되면 전부
+              취소됩니다. 원본 없는 생성은 승인한 셀의 source, icon, piece, crop, AI provenance,
+              순서와 첫 대표 이미지를 한 transaction으로 만들거나 아무것도 만들지 않습니다.
+              어떤 결과도 원본이나 현재 활성 이미지를 자동 교체하지 않습니다.
+            </p>
+          </div>
+
+          <div class="callout">
+            <strong>최근 AI 전달과 저장 공간</strong>
+            <p>
+              사이드바 <strong>최근 AI 전달</strong>에서 최근 30건, 만료/닫힘/정리 대기, 결과 수신 여부와
+              단일·그리드 입력/결과를 합친 256MiB 임시 전달 공간을 확인합니다. 앱 시작 시와 앱을 켜 둔 동안 15분마다 만료 정리를
+              다시 시도하며 기록과 원본은 남깁니다.
+            </p>
+          </div>
+
+          <div class="callout">
+            <strong>자동화 경계</strong>
+            <p>
+              앱의 직접 끌기는 검증된 로컬 파일을 운영체제 드래그로 전달하는 기능입니다. 로그인,
+              DOM, cookie, 웹 생성 완료, 자동 다운로드나 결과 품질 판정은 제어하지 않습니다.
+              NovelAI/Gemini API는 세션 키와 별도 비용 동의를 요구하는 제한된 pilot이며 자동
+              재시도하지 않습니다. provider 기반 animated GIF 생성은 아직 포함되지 않습니다.
             </p>
           </div>
         </section>
@@ -1069,7 +1091,7 @@
         <section id="release" class="section">
           <h2>14. 릴리스 준비와 파일 보존</h2>
           <p>
-            PMTCONCON Studio는 MIT License로 배포되며, 외부 업로드나 로그인 자동화 없이 로컬 파일과 앱 라이브러리에서 작업합니다.
+            PMTCONCON Studio는 MIT License로 배포되며 로그인·DOM 자동화 없이 로컬 파일과 앱 라이브러리에서 작업합니다. Windows의 검증 파일 끌기나 Explorer 선택으로 업로드 파일을 전달할 수 있지만 웹 생성 실행과 결과 다운로드는 사용자가 직접 수행합니다.
             원본 이미지와 원본 GIF는 보존되고, crop, sheet reimport, GIF frame reimport, 용량 최적화 결과는 별도 생성 파일이나 variant로 저장됩니다.
           </p>
 
