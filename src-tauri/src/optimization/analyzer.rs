@@ -5,6 +5,7 @@ use std::path::{Path, PathBuf};
 use image::AnimationDecoder;
 use rusqlite::{params, Connection, OptionalExtension};
 
+use crate::db::repositories::ai as ai_repository;
 use crate::db::repositories::optimization::{insert_variant, NewProcessedAssetVariant};
 use crate::error::{AppError, AppResult};
 use crate::ids::create_id;
@@ -69,11 +70,18 @@ pub fn load_target(
     piece_id: Option<&str>,
 ) -> AppResult<OptimizationTarget> {
     let raw_profile = load_profile(connection, profile_id)?;
+    // Resolve first so an invalid active AI pointer or managed artifact never
+    // falls back to the imported original during optimization.
+    ai_repository::resolve_effective_visual_source(
+        connection,
+        &raw_profile.profile.collection_id,
+        icon_id,
+    )?;
     let icon = connection
         .query_row(
             "SELECT
                i.id,
-               i.source_file_id,
+               evs.effective_source_file_id AS source_file_id,
                i.display_name,
                i.shape,
                i.cell_width_override,
@@ -105,7 +113,8 @@ pub fn load_target(
                er.effects_json AS effect_recipe_json,
                mr.motion_json AS motion_recipe_json
              FROM icons i
-             JOIN source_files s ON s.id = i.source_file_id
+             JOIN effective_visual_sources evs ON evs.icon_id = i.id
+             JOIN source_files s ON s.id = evs.effective_source_file_id
              JOIN crop_settings cs ON cs.icon_id = i.id
              LEFT JOIN icon_effect_recipes er ON er.icon_id = i.id
              LEFT JOIN icon_motion_recipes mr ON mr.icon_id = i.id

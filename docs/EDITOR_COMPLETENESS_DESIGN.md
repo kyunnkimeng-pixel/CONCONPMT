@@ -342,6 +342,19 @@ current/piece preview와 유효한 active optimization variant는 복제본 전�
 때만 복사하고, 새 profile/icon/piece ID를 기준으로 target hash를 다시 계산한다.
 오래됐거나 파일이 사라진 variant는 건너뛰어 저장된 비파괴 recipe 렌더로 fallback한다.
 optimization job과 `last_export_path`는 실행 이력이므로 초기화한다.
+향후 AI foundation이 들어오면 F134의 복제 원칙을 다음 순서로 확장한다. 먼저
+icon/piece와 durable recipe를 새 ID로 복제한다. 모든 distinct 과거 lineage는 서로
+다른 새 ID로 일대일 map하고 generation을 보존한 뒤 complete AI version DAG/state를
+만든다. base-source `새 아이콘으로 추가`이면 candidate child와 active pointer도 이
+state에 포함하고 나서 target effective source를 resolve한다. source/final-target의
+source hash, crop hash, output format과 ID/path를 제외한 output-affecting profile
+compatibility가 모두 같은 variant만 복제한다. 불일치 variant의 bytes/row를 target
+hash로 재라벨링하지 않고 promoted-preview remap도 건너뛴 뒤 final effective source의
+native recipe에서 재생성한다. 모두 같은 경우에만 promoted variant를 새 target path로
+remap한다. 이 순서와 path commit은 하나의 DB transaction/file-compensation
+protocol이어야 하며 실패 시 반쪽 icon을 남기지 않는다.
+`processed_asset_variants.source_file_id/source_hash`는 effective source를 뜻한다.
+pending request의 late candidate는 복제본에 자동 부착하지 않는다.
 
 도구막대와 context menu는 import 또는 복제가 진행 중일 때 복제를 비활성화하고,
 요청 ref guard로 같은 tick의 중복 실행도 차단한다. tooltip은 아이콘·편집 상태·내보내기
@@ -358,5 +371,6 @@ frame-sheet recipe와 시트 preset의 독립 수정, horizontal/vertical double
 - 범용 layer/brush/paint editor
 - Aseprite UI의 pixel-perfect 복제
 - 임의 JavaScript/shader effect plugin
-- AI 편집·생성
+- AI 편집·생성(이 문서의 v0.2 편집 완성도 범위에서는 제외하며,
+  `docs/AI_INTEGRATION_DESIGN.md`의 별도 비파괴 설계를 따른다)
 - 임의 각도 rotation, 자유형 liquify와 고비용 범용 warp 편집기

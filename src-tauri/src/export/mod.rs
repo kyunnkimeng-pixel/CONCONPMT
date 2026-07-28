@@ -3,6 +3,7 @@ use std::fs;
 use std::path::{Path, PathBuf};
 use std::time::{SystemTime, UNIX_EPOCH};
 
+use crate::db::repositories::ai as ai_repository;
 use rusqlite::{params, Connection, OptionalExtension};
 use serde::Serialize;
 
@@ -26,7 +27,7 @@ use crate::paths::AppPaths;
 
 pub fn validate_export_collection(
     connection: &Connection,
-    _paths: &AppPaths,
+    paths: &AppPaths,
     collection_id: &str,
     payload: &ExportRequestPayload,
 ) -> AppResult<ExportValidationResultDto> {
@@ -37,6 +38,7 @@ pub fn validate_export_collection(
     )?;
     let plan = load_export_plan(
         connection,
+        paths,
         collection_id,
         profile,
         &payload.excluded_piece_ids,
@@ -60,6 +62,7 @@ pub fn export_collection(
     )?;
     let mut plan = load_export_plan(
         connection,
+        paths,
         collection_id,
         profile,
         &payload.excluded_piece_ids,
@@ -148,7 +151,7 @@ pub fn export_collection(
 
 pub fn export_selected_collection_items(
     connection: &mut Connection,
-    _paths: &AppPaths,
+    paths: &AppPaths,
     collection_id: &str,
     payload: &ExportRequestPayload,
     selected_piece_ids: &[String],
@@ -182,6 +185,7 @@ pub fn export_selected_collection_items(
     )?;
     let mut plan = load_export_plan(
         connection,
+        paths,
         collection_id,
         profile,
         &payload.excluded_piece_ids,
@@ -356,6 +360,7 @@ struct IconExportRecord {
     id: String,
     display_name: String,
     shape: String,
+    source_file_id: String,
     cell_width_override: Option<i64>,
     cell_height_override: Option<i64>,
     transform_quarter_turns: i64,
@@ -401,6 +406,7 @@ struct PieceExportRecord {
 
 fn load_export_plan(
     connection: &Connection,
+    paths: &AppPaths,
     collection_id: &str,
     profile: ExportProfileDto,
     excluded_piece_ids: &[String],
@@ -478,6 +484,7 @@ fn load_export_plan(
             )?;
             let active_variant = optimization_repository::find_active_variant(
                 connection,
+                paths,
                 &icon.id,
                 &profile.id,
                 &piece.id,
@@ -486,6 +493,9 @@ fn load_export_plan(
                 &profile_hash,
                 &output_format,
             )?
+            .filter(|variant| {
+                variant.source_file_id.as_deref() == Some(icon.source_file_id.as_str())
+            })
             .map(|variant| ActiveExportVariant {
                 id: variant.id,
                 path: PathBuf::from(variant.path),
@@ -577,6 +587,29 @@ fn load_collection(
 }
 
 fn load_icons(connection: &Connection, collection_id: &str) -> AppResult<Vec<IconExportRecord>> {
+    let expected_icon_ids = {
+        let mut statement = connection.prepare(
+            "SELECT id
+             FROM icons
+             WHERE collection_id = ?1
+               AND deleted_at IS NULL
+               AND icon_kind = 'image'
+               AND readiness = 'complete'
+             ORDER BY order_index ASC, created_at ASC",
+        )?;
+        let ids = statement
+            .query_map(params![collection_id], |row| row.get::<_, String>(0))?
+            .collect::<Result<Vec<_>, _>>()?;
+        ids
+    };
+
+    // Resolve every exportable icon before the inner-join query below. This is
+    // intentionally fail-closed: a broken AI pointer or managed artifact must
+    // abort the batch instead of making the affected icon disappear silently.
+    for icon_id in &expected_icon_ids {
+        ai_repository::resolve_effective_visual_source(connection, collection_id, icon_id)?;
+    }
+
     let mut statement = connection.prepare(
         "SELECT
            i.id,
@@ -585,6 +618,7 @@ fn load_icons(connection: &Connection, collection_id: &str) -> AppResult<Vec<Ico
            i.cell_width_override,
            i.cell_height_override,
            i.transform_quarter_turns,
+           evs.effective_source_file_id AS source_file_id,
            i.transform_flip_horizontal,
            i.transform_flip_vertical,
            CASE WHEN i.gif_pingpong = 1 THEN 'pingpong' ELSE i.gif_loop_mode END AS gif_loop_mode,
@@ -616,7 +650,8 @@ fn load_icons(connection: &Connection, collection_id: &str) -> AppResult<Vec<Ico
            er.effects_json AS effect_recipe_json,
            mr.motion_json AS motion_recipe_json
          FROM icons i
-         JOIN source_files s ON s.id = i.source_file_id
+         JOIN effective_visual_sources evs ON evs.icon_id = i.id
+         JOIN source_files s ON s.id = evs.effective_source_file_id
          JOIN crop_settings cs ON cs.icon_id = i.id
          LEFT JOIN icon_effect_recipes er ON er.icon_id = i.id
          LEFT JOIN icon_motion_recipes mr ON mr.icon_id = i.id
@@ -637,6 +672,7 @@ fn load_icons(connection: &Connection, collection_id: &str) -> AppResult<Vec<Ico
                 cell_height_override: row.get("cell_height_override")?,
                 transform_quarter_turns: row.get("transform_quarter_turns")?,
                 transform_flip_horizontal: row.get::<_, i64>("transform_flip_horizontal")? != 0,
+                source_file_id: row.get("source_file_id")?,
                 transform_flip_vertical: row.get::<_, i64>("transform_flip_vertical")? != 0,
                 gif_loop_mode: row.get("gif_loop_mode")?,
                 gif_loop_count: row.get("gif_loop_count")?,
@@ -669,6 +705,13 @@ fn load_icons(connection: &Connection, collection_id: &str) -> AppResult<Vec<Ico
             })
         })?
         .collect::<Result<Vec<_>, _>>()?;
+
+    if icons.len() != expected_icon_ids.len() {
+        return Err(AppError::new(
+            "export_visual_state",
+            "내보낼 아이콘의 렌더 상태가 불완전합니다. 편집 상태를 복구한 뒤 다시 시도해 주세요.",
+        ));
+    }
 
     Ok(icons)
 }
@@ -2417,6 +2460,7 @@ mod tests {
     use crate::db::repositories::collections::create_collection;
     use crate::db::repositories::editor::apply_icon_crop;
     use crate::db::repositories::export_profiles::list_export_profiles;
+    use crate::db::repositories::icons::replace_icon_source;
     use crate::db::repositories::imports::import_image_files;
     use crate::imaging::transform::ImageTransform;
     use crate::models::{ApplyIconCropPayload, ExportRequestPayload, ImportImageFilePayload};
@@ -2657,23 +2701,17 @@ mod tests {
         let second_before = std::fs::read(&second_path).unwrap();
 
         let replacement_bytes = png_bytes_with_color(20, 20, Rgba([0, 0, 255, 255]));
-        let replacement_path = paths.root.join("replacement-two.png");
-        std::fs::write(&replacement_path, &replacement_bytes).unwrap();
-        connection
-            .execute(
-                "UPDATE source_files
-                 SET original_path_in_library = ?1,
-                     byte_size = ?2
-                 WHERE id = (
-                   SELECT source_file_id FROM icons WHERE id = ?3
-                 )",
-                params![
-                    replacement_path.to_string_lossy().to_string(),
-                    i64::try_from(replacement_bytes.len()).unwrap(),
-                    second_icon_id,
-                ],
-            )
-            .unwrap();
+        replace_icon_source(
+            &mut connection,
+            &paths,
+            &collection.id,
+            &second_icon_id,
+            ImportImageFilePayload {
+                original_filename: "replacement-two.png".to_string(),
+                bytes: replacement_bytes,
+            },
+        )
+        .unwrap();
 
         let second_result = export_selected_collection_items(
             &mut connection,
@@ -3103,9 +3141,9 @@ mod tests {
     }
 
     #[test]
-    fn one_item_render_failure_does_not_stop_the_whole_export() {
+    fn broken_effective_visual_source_aborts_batch_before_render() {
         let mut connection = connection();
-        let paths = temp_paths("pmtconcon-export-partial-render-failure");
+        let paths = temp_paths("pmtconcon-export-broken-effective-source");
         let collection =
             create_collection(&mut connection, Some("partial render".to_string())).unwrap();
         let imported = import_image_files(
@@ -3142,7 +3180,8 @@ mod tests {
             .unwrap();
 
         let custom_profile = custom_profile_id(&connection, &collection.id);
-        let result = export_collection(
+        let output_directory = paths.root.join("exports-out");
+        let error = export_collection(
             &mut connection,
             &paths,
             &collection.id,
@@ -3155,36 +3194,17 @@ mod tests {
                 filename_mode: "sequence".to_string(),
                 include_alt_txt: true,
                 strict_warnings: false,
-                output_directory: Some(
-                    paths.root.join("exports-out").to_string_lossy().to_string(),
-                ),
+                output_directory: Some(output_directory.to_string_lossy().to_string()),
                 open_folder_after_export: false,
                 open_alt_txt_after_export: false,
                 excluded_piece_ids: Vec::new(),
                 resize_filter: "lanczos3".to_string(),
             },
         )
-        .unwrap();
+        .unwrap_err();
 
-        let export_dir = Path::new(result.export_directory.as_ref().unwrap());
-        assert!(export_dir.join("files").join("001.png").is_file());
-        assert!(!export_dir.join("files").join("002.png").exists());
-        assert!(result
-            .validation
-            .items
-            .iter()
-            .any(|item| item.file_name == "001.png" && item.status == "written_ok"));
-        assert!(result
-            .validation
-            .items
-            .iter()
-            .any(|item| item.file_name == "002.png" && item.status == "failed_to_render"));
-        let alts = std::fs::read_to_string(result.alt_txt_path.as_ref().unwrap()).unwrap();
-        assert!(alts.contains("001.png"));
-        assert!(!alts.contains("002.png"));
-        let issues = std::fs::read_to_string(result.issues_csv_path.as_ref().unwrap()).unwrap();
-        assert!(issues.contains("002.png"));
-        assert!(issues.contains("render failed"));
+        assert_eq!(error.code, "ai_source_repair_required");
+        assert!(!output_directory.exists());
 
         std::fs::remove_dir_all(paths.root).unwrap();
     }

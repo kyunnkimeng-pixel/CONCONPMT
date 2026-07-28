@@ -13,8 +13,10 @@ use crate::imaging::import_limits::{
     MAX_IMPORT_DIMENSION, MAX_IMPORT_FILE_BYTES,
 };
 
-pub const STATIC_SHEET_SCHEMA: &str = "pmtcon-sheet-v1";
-pub const GIF_FRAME_SHEET_SCHEMA: &str = "pmtcon-gif-frame-sheet-v1";
+pub const STATIC_SHEET_SCHEMA: &str = "pmtcon-sheet-v2";
+pub const LEGACY_STATIC_SHEET_SCHEMA: &str = "pmtcon-sheet-v1";
+pub const GIF_FRAME_SHEET_SCHEMA: &str = "pmtcon-gif-frame-sheet-v2";
+pub const LEGACY_GIF_FRAME_SHEET_SCHEMA: &str = "pmtcon-gif-frame-sheet-v1";
 pub const APP_NAME: &str = "PMTCONCON Studio";
 
 const MAX_MANIFEST_ENTRIES: usize = 10_000;
@@ -76,6 +78,7 @@ pub struct StaticSheetManifestItem {
     pub source_hash: Option<String>,
     pub render_hash: Option<String>,
     #[serde(default)]
+    pub visual_source: Option<ManifestVisualSource>,
     pub render_recipe_hash: Option<String>,
 }
 
@@ -91,6 +94,8 @@ pub struct GifFrameSheetManifest {
     pub render_recipe_hash: Option<String>,
     pub display_name: String,
     pub loop_mode: String,
+    #[serde(default)]
+    pub visual_source: Option<ManifestVisualSource>,
     pub loop_count: Option<i64>,
     pub frame_count: i64,
     pub duration_ms: i64,
@@ -114,6 +119,16 @@ pub struct GifFrameSheetPage {
     pub guide_sheet_file: Option<String>,
     pub width: i64,
     pub height: i64,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct ManifestVisualSource {
+    pub original_source_file_id: String,
+    pub original_source_hash: String,
+    pub original_lineage_id: String,
+    pub original_lineage_generation: i64,
+    pub effective_source_file_id: String,
+    pub effective_source_hash: String,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -181,12 +196,16 @@ pub fn read_gif_manifest_bytes(bytes: &[u8]) -> AppResult<GifFrameSheetManifest>
 }
 
 pub fn validate_static_manifest(manifest: &StaticSheetManifest) -> AppResult<()> {
-    if manifest.schema != STATIC_SHEET_SCHEMA {
-        return Err(AppError::new(
-            "manifest_schema",
-            "pmtcon-sheet-v1 매니페스트가 아닙니다.",
-        ));
-    }
+    let is_v2 = match manifest.schema.as_str() {
+        STATIC_SHEET_SCHEMA => true,
+        LEGACY_STATIC_SHEET_SCHEMA => false,
+        _ => {
+            return Err(AppError::new(
+                "manifest_schema",
+                "지원하는 PMTCONCON Studio 정적 시트 매니페스트가 아닙니다.",
+            ))
+        }
+    };
     if manifest.app != APP_NAME {
         return Err(AppError::new(
             "manifest_app",
@@ -273,6 +292,27 @@ pub fn validate_static_manifest(manifest: &StaticSheetManifest) -> AppResult<()>
         if let Some(piece_id) = item.piece_id.as_deref() {
             validate_stable_id(piece_id, "조각 ID")?;
         }
+        match item.visual_source.as_ref() {
+            Some(visual_source) => {
+                validate_visual_source(visual_source)?;
+                if is_v2
+                    && item.source_hash.as_deref()
+                        != Some(visual_source.effective_source_hash.as_str())
+                {
+                    return Err(AppError::new(
+                        "manifest_provenance",
+                        "v2 정적 시트의 source_hash와 effective source hash가 다릅니다.",
+                    ));
+                }
+            }
+            None if is_v2 => {
+                return Err(AppError::new(
+                    "manifest_provenance",
+                    "v2 정적 시트 항목에 visual_source provenance가 없습니다.",
+                ));
+            }
+            None => {}
+        }
         if item.index < 0 || !item_indexes.insert(item.index) {
             return Err(AppError::new(
                 "manifest_validation",
@@ -308,12 +348,16 @@ pub fn validate_static_manifest(manifest: &StaticSheetManifest) -> AppResult<()>
 }
 
 pub fn validate_gif_manifest(manifest: &GifFrameSheetManifest) -> AppResult<()> {
-    if manifest.schema != GIF_FRAME_SHEET_SCHEMA {
-        return Err(AppError::new(
-            "manifest_schema",
-            "pmtcon-gif-frame-sheet-v1 매니페스트가 아닙니다.",
-        ));
-    }
+    let is_v2 = match manifest.schema.as_str() {
+        GIF_FRAME_SHEET_SCHEMA => true,
+        LEGACY_GIF_FRAME_SHEET_SCHEMA => false,
+        _ => {
+            return Err(AppError::new(
+                "manifest_schema",
+                "지원하는 PMTCONCON Studio GIF 프레임 시트 매니페스트가 아닙니다.",
+            ))
+        }
+    };
     if manifest.app != APP_NAME {
         return Err(AppError::new(
             "manifest_app",
@@ -323,6 +367,29 @@ pub fn validate_gif_manifest(manifest: &GifFrameSheetManifest) -> AppResult<()> 
     validate_stable_id(&manifest.icon_id, "아이콘 ID")?;
     if let Some(source_file_id) = manifest.source_file_id.as_deref() {
         validate_stable_id(source_file_id, "원본 파일 ID")?;
+    }
+    match manifest.visual_source.as_ref() {
+        Some(visual_source) => {
+            validate_visual_source(visual_source)?;
+            if is_v2
+                && (manifest.source_file_id.as_deref()
+                    != Some(visual_source.effective_source_file_id.as_str())
+                    || manifest.source_hash.as_deref()
+                        != Some(visual_source.effective_source_hash.as_str()))
+            {
+                return Err(AppError::new(
+                    "manifest_provenance",
+                    "v2 GIF 시트의 source ID/hash와 effective source provenance가 다릅니다.",
+                ));
+            }
+        }
+        None if is_v2 => {
+            return Err(AppError::new(
+                "manifest_provenance",
+                "v2 GIF 프레임 시트에 visual_source provenance가 없습니다.",
+            ));
+        }
+        None => {}
     }
     validate_manifest_dimensions(
         manifest.frame_cell_width,
@@ -596,6 +663,38 @@ fn validate_crop_bounds(
         )
     })
 }
+fn validate_visual_source(visual_source: &ManifestVisualSource) -> AppResult<()> {
+    validate_stable_id(
+        &visual_source.original_source_file_id,
+        "원본 source file ID",
+    )?;
+    validate_stable_id(&visual_source.original_lineage_id, "원본 lineage ID")?;
+    validate_stable_id(
+        &visual_source.effective_source_file_id,
+        "effective source file ID",
+    )?;
+    if visual_source.original_lineage_generation < 0 {
+        return Err(AppError::new(
+            "manifest_provenance",
+            "원본 lineage generation은 0 이상이어야 합니다.",
+        ));
+    }
+    for (hash, label) in [
+        (&visual_source.original_source_hash, "원본 source hash"),
+        (
+            &visual_source.effective_source_hash,
+            "effective source hash",
+        ),
+    ] {
+        if hash.len() != 64 || !hash.bytes().all(|byte| byte.is_ascii_hexdigit()) {
+            return Err(AppError::new(
+                "manifest_provenance",
+                format!("{label}가 올바른 SHA-256 형식이 아닙니다."),
+            ));
+        }
+    }
+    Ok(())
+}
 
 fn validate_stable_id(value: &str, label: &str) -> AppResult<()> {
     if value.is_empty()
@@ -671,9 +770,21 @@ fn validate_safe_file_name(value: &str, label: &str) -> AppResult<()> {
 mod tests {
     use super::{
         validate_gif_manifest, validate_static_manifest, GifFrameManifestItem,
-        GifFrameSheetManifest, GifFrameSheetPage, StaticSheetManifest, StaticSheetManifestItem,
-        StaticSheetPage, StaticSheetProfile, APP_NAME, GIF_FRAME_SHEET_SCHEMA, STATIC_SHEET_SCHEMA,
+        GifFrameSheetManifest, GifFrameSheetPage, ManifestVisualSource, StaticSheetManifest,
+        StaticSheetManifestItem, StaticSheetPage, StaticSheetProfile, APP_NAME,
+        GIF_FRAME_SHEET_SCHEMA, LEGACY_STATIC_SHEET_SCHEMA, STATIC_SHEET_SCHEMA,
     };
+
+    fn valid_visual_source() -> ManifestVisualSource {
+        ManifestVisualSource {
+            original_source_file_id: "source_original".to_string(),
+            original_source_hash: "a".repeat(64),
+            original_lineage_id: "lineage_1".to_string(),
+            original_lineage_generation: 0,
+            effective_source_file_id: "source_1".to_string(),
+            effective_source_hash: "b".repeat(64),
+        }
+    }
 
     #[test]
     fn static_manifest_schema_accepts_required_shape() {
@@ -717,9 +828,10 @@ mod tests {
                 alt: "가".to_string(),
                 icon_type: "single".to_string(),
                 format: "png".to_string(),
-                source_hash: Some("abc".to_string()),
+                source_hash: Some("b".repeat(64)),
                 render_hash: Some("def".to_string()),
                 render_recipe_hash: Some("recipe".to_string()),
+                visual_source: Some(valid_visual_source()),
             }],
         };
 
@@ -769,7 +881,7 @@ mod tests {
     #[test]
     fn static_manifest_legacy_item_without_render_recipe_hash_is_supported() {
         let json = serde_json::json!({
-            "schema": STATIC_SHEET_SCHEMA,
+            "schema": LEGACY_STATIC_SHEET_SCHEMA,
             "app": APP_NAME,
             "created_at": "2026-05-12T00:00:00Z",
             "collection_id": "collection_1",
@@ -825,8 +937,9 @@ mod tests {
             created_at: "2026-05-12T00:00:00Z".to_string(),
             icon_id: "icon_1".to_string(),
             source_file_id: Some("source_1".to_string()),
-            source_hash: None,
+            source_hash: Some("b".repeat(64)),
             render_recipe_hash: None,
+            visual_source: Some(valid_visual_source()),
             display_name: "icon".to_string(),
             loop_mode: "infinite".to_string(),
             loop_count: None,
@@ -940,6 +1053,7 @@ mod tests {
             source_file_id: None,
             source_hash: None,
             render_recipe_hash: None,
+            visual_source: None,
             display_name: "icon".to_string(),
             loop_mode: "infinite".to_string(),
             loop_count: None,
@@ -958,6 +1072,6 @@ mod tests {
         };
 
         assert!(validate_gif_manifest(&manifest).is_err());
-        assert_eq!(GIF_FRAME_SHEET_SCHEMA, "pmtcon-gif-frame-sheet-v1");
+        assert_eq!(GIF_FRAME_SHEET_SCHEMA, "pmtcon-gif-frame-sheet-v2");
     }
 }

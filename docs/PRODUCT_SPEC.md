@@ -285,3 +285,184 @@ Stage Gate를 통과해야 하며 미래 기능을 동작하지 않는 메뉴로
 
 세부 UX, 라이선스 경계와 단계별 수용 기준은
 `docs/EDITOR_COMPLETENESS_DESIGN.md`를 따른다.
+
+## 12. AI 지원 원칙
+
+- AI 기능은 optional이며 공급자와 무관하게 `요청 → 후보 → 검토 → 적용 → 복귀`
+  순서를 따른다. 생성 성공만으로 현재 아이콘을 바꾸지 않는다.
+- `icons.source_file_id`와 원본 바이트는 AI 작업으로 변경하거나 삭제하지 않는다.
+  공급자 결과는 불변 candidate, 특정 아이콘에 적용한 결과는 별도 AI version으로
+  저장하며, 정상 `icon_ai_state.active_version_id = NULL`일 때만 원본을 사용한다.
+- 원본 계보는 SHA/source ID와 별도인 `original_lineage_id` 및 증가만 하는
+  `original_lineage_generation`으로 식별한다. 일반 이미지 교체는 같은 바이트를
+  다시 선택해도 새 lineage ID를 발급하고 generation을 증가시킨다.
+- AI request/candidate/version·활성 상태·부모 계보·provenance는 앱 재시작 후에도
+  유지한다.
+  원본 또는 이전 AI 버전으로의 복귀는 저장된 파일을 사용하며 provider를 다시
+  호출하지 않는다.
+- 프로젝트 library가 남아 있고 사용자가 해당 AI 이력을 명시적으로 영구 삭제하지
+  않은 한 원본과 모든 저장 AI version으로 provider 호출 없이 언제든 복귀한다.
+  일반 cleanup은 rollback source를 보호하고, 영구 삭제는 잃는 지점과 공유 참조를
+  보여주는 별도 확인을 요구한다.
+- 모든 import, placeholder, duplicate, sheet commit과 clone은 icon·lineage·원본-only
+  AI state를 같은 transaction에서 만들며 state 없는 icon을 허용하지 않는다.
+- 일반 이미지 교체는 새 원본 계보를 시작하고 active AI 상태를 해제한다. 이전
+  원본의 후보는 이력으로 남지만 새 원본 위에 다시 활성화하지 않는다.
+- AI는 첫 단계에서 renderer의 base source만 바꾼다. crop, transform, text,
+  static effects, motion, shape, alt, 메모와 순서는 그대로 유지한다.
+- 기본 적용은 `새 아이콘으로 추가`이다. 현재 아이콘 적용은 canvas와 input
+  stage, animation kind, original lineage, activation revision과 전체 native recipe가
+  호환·최신일 때만 명시적으로 수행한다.
+  base-source 새 아이콘은 alt를 비우고 readiness를 `working`으로 설정한다.
+  candidate child/state를 effective source resolve와 variant/preview보다 먼저 포함해
+  새 icon 전체를 한 번에 commit하며 실패 시 반쪽 icon을 남기지 않는다.
+- editor는 `original_source`와 `effective_render_source`를 분리한다. 원본 정보/보기는
+  전자, canvas·preview·측정·저장·export는 후자를 사용한다. AI state pointer,
+  effective source 파일·SHA·decode metadata가 깨졌으면 원본으로 조용히 fallback하지
+  않고 복구 안내와 함께 render/export를 막는다.
+- `has_alpha`는 alpha 채널 존재가 아니라 실제 decoded/display-composited pixel의
+  투명도 사용을 뜻하며 animated source의 모든 표시 frame에서 검사한다.
+- `processed_asset_variants`의 source ID/hash는 effective render source를 뜻한다.
+  기존 nullable source ID는 original ID/SHA가 명확히 일치할 때만 backfill한다.
+  legacy artifact의 file/size/format/dimension을 bounded 검증해 `output_sha256`도
+  backfill한다. NULL·ID·SHA·file/decode/size 불일치는 inactive stale로 전환하고
+  promoted preview를 final effective source의 native preview로 교체한다. 새 variant는
+  non-null source ID/SHA와 output digest 일치를 요구한다.
+  static/GIF 작업 시트 v2도 original identity와 effective render identity를 분리하며,
+  AI 활성 또는 `original_lineage_generation >= 1` icon에 legacy v1 결과를 추측
+  적용하지 않는다.
+- 픽셀화, 색상 조정, 변형과 motion처럼 기존 native renderer가 처리하는 작업은
+  AI로 보내지 않고, AI는 그림체·캐릭터·배경·구성 변경과 새 이미지에 집중한다.
+- 요청 전 외부로 전송할 정확한 이미지·mask·reference·prompt, service surface와
+  account context, 그 조합에 적용되는 typed terms/privacy/data-controls/model-terms
+  참조를 보여주고 사용자의 확인을 받는다. API는 model과 근거 있는 예상 비용을
+  표시한다. 수동 웹 결과의 model·비용은 `검증되지 않음`·`계산 불가`일 수 있으며
+  이는 정상 상태이다.
+- PMTCONCON Studio 자체는 유료 AI 서비스, 공용 공급자 계정/key/token 또는 과금
+  중계 proxy를 운영하지 않는다. 앱은 무료·MIT로 배포하고 공급자 구독·크레딧·
+  과금은 각 사용자의 계정에 귀속한다.
+- API key/token/cookie는 DB, 설정 파일, AI 이력과 로그에 저장하지 않는다.
+  영속 BYOK는 OS 비밀 저장소를 사용하기 전까지 지원하지 않는다. OS 저장소도
+  desktop client의 런타임 key 탈취를 막는 완전한 해결책은 아니다.
+- foundation과 첫 NovelAI adapter는 `credential_mode_snapshot`만 기록하고 credential
+  binding table/column/FK를 만들지 않으며 `os_vault_ref`를 거부한다.
+- 영속 credential은 별도 향후 Stage Gate에서만 추가한다. 그때 비밀값 없는
+  `ai_credential_bindings` 부모, adapter/provider 일치 guard와 nullable request FK
+  `ON DELETE SET NULL`을 함께 만들고 token은 OS vault에만 둔다. 삭제는 DB `deleting`
+  표시 → vault entry 삭제 → DB row 삭제 순서와 retryable repair로 처리하며 기존 AI
+  이력·active pointer·로컬 rollback을 지우지 않는다.
+- PMTCONCON Studio의 MIT license는 앱 코드에만 적용된다. 모델·workflow·공급자
+  약관·attribution과 생성물의 이용 권리는 별도이며 앱이 이를 보증하지 않는다.
+- 홈페이지 연계는 handoff package, prompt 복사, 공식 사이트 열기, 사용자가
+  받은 결과 가져오기로 제한한다. 로그인/DOM/cookie와 결과 다운로드를
+  자동화하지 않는다.
+- 첫 자동 provider는 NovelAI Image API이다. 사용자가 NovelAI Account 화면에서
+  직접 발급한 Persistent API Token만 session-only로 받고 로그인·이메일·비밀번호나
+  primary account API는 다루지 않는다. 한 번의 명시적 사용자 동작당 한 장만
+  요청하며 background batch, 연쇄 생성, provider 자동 fallback과 자동 retry를
+  금지한다. 공식 지원 확인과 소액 live pilot 전에는 조건부 주 provider로 표시한다.
+  새 PAT 발급은 이전 PAT를 무효화하고 token은 한 번만 표시되므로 입력 전달 뒤
+  frontend state를 비우며 `401`을 재시도하지 않고 PAT 교체를 안내한다.
+- NovelAI 첫 범위는 text-to-image, img2img와 mask 기반 inpaint이다. 일반 Opus 0
+  ImageAnlas 생성 조건은 한 장·28 steps 이하·normal-size 범위·base image 없음이다.
+  공식 웹 Inpaint 문서는 Opus의 Focused Inpainting이 큰 이미지 영역에서 0 Anlas일
+  수 있다고 별도 설명하지만 공개 Image API의 Focused action/payload 지원과 차감
+  동일성은 명시하지 않는다. 따라서 확인 전에는 모든 API inpaint를 `공급자에서
+  확인`으로 표시하고 무료라고 보장하지 않으며 provider unit을 USD actual/billed로
+  추측 환산하지 않는다.
+- Gemini API는 현재 image generation free tier가 없고 나이·대상 사용자·
+  professional/business·지원 지역·유료 서비스 조건이 있으므로 기본 provider로
+  선택하지 않는다. OpenAI Image API와 함께 별도 비용·배포 적합성 검토 뒤의
+  선택형 후속 후보로만 다룬다.
+- provider 변경은 새 request, exact payload 확인과 consent를 요구한다. adapter
+  비활성화, session token clear 또는 향후 persistent binding 삭제 뒤에도 기존
+  candidate/version/source와 active pointer 및 provider 없는 로컬 복귀를 보존한다.
+- 사용자 실행 로컬 adapter는 literal `127.0.0.1`/`[::1]`만 허용하고 redirect를
+  금지한다. 외부 runtime, model, workflow는 번들하지 않으며 local workflow가
+  외부 유료 API를 호출할 수 있음을 실행 전에 알린다.
+- cloud adapter는 코드 소유 exact HTTPS origin(scheme/host/port/path-prefix)만
+  허용하고 사용자의 URL override와 redirect를 거부한다.
+- 첫 AI MVP는 정적 이미지와 명시적 GIF poster-frame 후보를 다룬다. GIF 전체
+  프레임 및 sprite sheet AI는 기존 frame-sheet manifest를 활용하는 opt-in
+  실험 단계로 분리한다.
+- 실제 flow가 구현되기 전에는 AI 메뉴나 탭을 노출하지 않는다.
+- 아이콘/collection 복제는 request·candidate·source bytes를 공유하되 새 lineage와
+  version/state/preview ownership을 만든다. 모든 과거 lineage를 서로 다른 새 lineage로
+  일대일 remap하고 generation을 보존해 과거 이력이 현재 clone 계보로 합쳐지지 않게
+  한다. durable recipe와 complete AI state를 먼저 매핑한다. source/crop hash와
+  ID/path를 제외한 output-affecting profile compatibility가 final target과 모두 같은
+  optimization variant만 복제하며, 불일치 bytes를 새 source hash로 재라벨링하지
+  않는다. 부적합 variant/promoted preview는 건너뛰고 final effective source에서
+  native 재생성한다. 전체를 하나의 transaction/file-compensation protocol로 commit한다.
+- pending request 중 복제한 경우 늦게 도착한 candidate를 복제본에 자동 부착하지
+  않으며 비용·usage는 distinct provider request 한 번으로만 계산한다.
+- 편집 패널에는 현재 AI source 상태와 `AI로 수정` 진입만 간결하게 두고, 후보
+  가져오기·큰 비교·규격화·적용·복귀는 앱 내부의 전용 AI 작업공간에서 수행한다.
+  기본 1200×760 창에서 header/tabs/status/action bar는 고정하고 후보·비교·설정
+  영역만 독립적으로 스크롤한다.
+- 공급자 또는 수동 작업이 반환한 임의 크기 JPG/PNG는 raw candidate로 그대로
+  보존한다. 적용 전 `전체 보이기(contain + pad)` 또는
+  `빈틈 없이 채우기(cover + crop)`, 3×3 정렬과 bounded resize filter로 현재
+  base-source canvas에 맞춘 별도 불변 source를 만들고 normalization recipe/hash를
+  AI version에 저장한다. 기본은 transparent pad를 쓰는 `전체 보이기`다.
+- 후보 검토는 `원본`, `AI 원본`, `규격화 결과`, `최종 적용 모습`을 큰 화면,
+  checkerboard와 실제 크기·alpha·잘림 경고로 비교한다. transparent padding은
+  AI 결과 내부의 불투명 배경 제거로 표현하지 않는다.
+- AI 완료 기본 동작은 `새 아이콘으로 추가`이며, 현재 아이콘 적용은 보이는
+  secondary action으로 제공한다. 새 아이콘 생성 뒤 `새 아이콘 열기`,
+  `목록에서 보기`, `계속 후보 비교`를 제공하고 빈 alt·`작업중` 상태를 알린다.
+- AI 작업공간은 한 개의 status/alert 영역, 고유한 후보 accessible name,
+  가시적인 비활성 이유, keyboard focus 복원과 reduced-motion을 지원한다.
+
+### AI-UX-1 구현 상태 (2026-07-27)
+
+- 로컬에서 가져온 임의 크기 정적 JPG/PNG를 불변 raw candidate로 보존하며,
+  가져오기만으로 현재 아이콘이나 원본 바이트를 바꾸지 않는다.
+- Rust native renderer가 `pmtcon-ai-normalization-v1` recipe에 따라
+  `전체 보이기(contain + transparent pad)`와
+  `빈틈 없이 채우기(cover + crop)`, 3×3 정렬, Lanczos3/Nearest filter를
+  결정적으로 적용한다. 규격화가 필요한 결과는 별도 불변 PNG source로 저장한다.
+- `원본`, `AI 원본`, `규격화 결과`, `최종 적용 모습`을 checkerboard와 함께
+  비교하고 실제 정규화 캔버스·최종 렌더·조각 크기, alpha,
+  padding/crop geometry 및 경고를 표시한다. 미리보기에서 실제 적용과 같은
+  조각 용량 제한을 검사하므로 준비 완료 뒤 같은 입력이 용량 때문에 새로
+  실패하지 않는다.
+- 미리보기 signature는 candidate SHA, target canvas, normalization recipe,
+  lineage/generation, activation revision과 native visual recipe를 묶는다. 현재
+  아이콘 적용과 새 아이콘 생성 시 Rust가 이를 다시 계산하여 오래된 미리보기를
+  거부한다.
+- 기본 `새 아이콘으로 추가`와 호환되는 `현재 아이콘에 적용` 모두 같은
+  normalization 계약을 사용한다. 적용 후에도 원본 및 이전 AI version으로의
+  로컬 복귀가 가능하며 provider 재호출은 필요하지 않다.
+- AI 소스 이력은 맞춤 방식·정렬·필터·원본→캔버스를 구분해 표시한다. 손상된
+  비활성 후보나 version은 숨기지 않고 `사용 불가` 사유와 함께 남기며 적용·복귀만
+  fail-closed로 차단한다. 저장 성공 뒤 편집기 표시 재조회만 실패한 경우에도
+  저장 실패로 오인시키지 않고 표시 새로고침을 별도로 재시도할 수 있다.
+- normalized source 또는 preview 승격이 실패하면 새로 만든 원본·썸네일·preview를
+  보상 정리한다. 관리 디렉터리는 component별 no-follow 검증과 Windows reparse
+  point 차단을 거친다.
+- 이 단계는 로컬 candidate 검토·규격화·적용 vertical slice이며, 전용 AI
+  작업공간 배치는 아래 AI-UX-2에서 구현했다.
+
+### AI-UX-2 구현 상태 (2026-07-27)
+
+- 편집 패널에는 compact 이미지 소스 요약과 AI 작업공간 진입만 남기고, 후보
+  가져오기·검토·소스 이력을 큰 앱 내부 modal dialog로 이동했다.
+- 작업공간은 `결과 가져오기`, `후보 검토`, `소스 이력` 세 탭만 제공하며,
+  원본·AI 원본·규격화 결과·최종 적용 모습·겹쳐 보기를 화면 맞춤/100%와
+  checkerboard로 비교한다.
+- header·탭·status·footer는 고정하고 본문만 스크롤한다. 1024px 미만에서는
+  후보를 가로 rail로 바꾸고 inspector를 비교 영역 아래에 배치한다.
+- dialog role, Escape 닫기와 진입 버튼 focus 복원의 기본 경계를 제공한다.
+- AI-UX-3에서 생성 후 새 아이콘 열기·목록 reveal·계속 비교, 직접 생성
+  provenance 기반 중복 안내, combined mutation DTO, 완전한 keyboard/focus,
+  document-wide 단일 live-region, reduced-motion과 browser continuity를 구현했다.
+  1200×760/800×760 headed browser QA 13/13과 후속 GET·예상 밖 network 0을
+  통과했다.
+- provider 요청, prompt, token, consent와 자동 생성 UI는 구현되지 않았으며
+  노출하지 않는다. 수동 웹 handoff와 NovelAI API는 각각 F138/F139의 별도
+  계획 단계다.
+
+세부 데이터 모델, provider 경계, 롤백 transaction과 단계별 수용 기준은
+`docs/AI_INTEGRATION_DESIGN.md`, 화면 흐름과 deterministic normalization 계약은
+`docs/AI_WORKSPACE_UX_DESIGN.md`를 따른다.

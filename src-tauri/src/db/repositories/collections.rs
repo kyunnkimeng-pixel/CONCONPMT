@@ -1,8 +1,9 @@
 use std::collections::{HashMap, HashSet};
 
 use crate::db::repositories::clone_artifacts::{
-    cleanup_cloned_collection_previews, clone_current_preview, clone_effective_active_variants,
-    clone_frame_sheet_gif_recipe, clone_piece_preview,
+    cleanup_cloned_collection_previews, clone_current_ai_lineage, clone_effective_active_variants,
+    clone_frame_sheet_gif_recipe, materialize_clone_native_preview,
+    validate_collection_clone_sources, validate_icon_clone_target,
 };
 use rusqlite::{params, Connection, OptionalExtension, Row, Transaction};
 
@@ -36,21 +37,32 @@ pub fn list_collections(connection: &Connection) -> AppResult<Vec<CollectionDto>
              WHERE i.collection_id = c.id
                AND i.deleted_at IS NULL
            ) AS icon_count,
-           COALESCE(
-             cover_icon.thumbnail_override_path,
-             cover_icon.current_preview_path,
-             cover_icon.thumbnail_path,
-             cover_source.original_path_in_library,
-             cover_icon_source.original_path_in_library
-           ) AS cover_image_url
+           CASE WHEN cover_icon.id IS NOT NULL THEN CASE
+             WHEN cover_icon.thumbnail_override_path IS NOT NULL
+               THEN cover_icon.thumbnail_override_path
+             WHEN cover_icon.current_preview_path IS NOT NULL
+               THEN cover_icon.current_preview_path
+             WHEN cover_ai_state.active_version_id IS NOT NULL
+               THEN NULL
+             ELSE COALESCE(
+               cover_icon.thumbnail_path,
+               cover_icon_source.original_path_in_library
+             )
+           END
+             ELSE cover_source.original_path_in_library
+           END AS cover_image_url
          FROM collections c
          LEFT JOIN icons cover_icon
            ON cover_icon.id = c.cover_icon_id
           AND cover_icon.deleted_at IS NULL
          LEFT JOIN source_files cover_source
            ON cover_source.id = c.cover_source_file_id
+         LEFT JOIN effective_visual_sources cover_visual
+           ON cover_visual.icon_id = cover_icon.id
          LEFT JOIN source_files cover_icon_source
-           ON cover_icon_source.id = cover_icon.source_file_id
+           ON cover_icon_source.id = cover_visual.effective_source_file_id
+         LEFT JOIN icon_ai_state cover_ai_state
+           ON cover_ai_state.icon_id = cover_icon.id
          WHERE c.deleted_at IS NULL
          ORDER BY c.order_index ASC, c.created_at ASC",
     )?;
@@ -84,21 +96,32 @@ pub fn get_collection(connection: &Connection, collection_id: &str) -> AppResult
                  WHERE i.collection_id = c.id
                    AND i.deleted_at IS NULL
                ) AS icon_count,
-               COALESCE(
-                 cover_icon.thumbnail_override_path,
-                 cover_icon.current_preview_path,
-                 cover_icon.thumbnail_path,
-                 cover_source.original_path_in_library,
-                 cover_icon_source.original_path_in_library
-               ) AS cover_image_url
+               CASE WHEN cover_icon.id IS NOT NULL THEN CASE
+                 WHEN cover_icon.thumbnail_override_path IS NOT NULL
+                   THEN cover_icon.thumbnail_override_path
+                 WHEN cover_icon.current_preview_path IS NOT NULL
+                   THEN cover_icon.current_preview_path
+                 WHEN cover_ai_state.active_version_id IS NOT NULL
+                   THEN NULL
+                 ELSE COALESCE(
+                   cover_icon.thumbnail_path,
+                   cover_icon_source.original_path_in_library
+                 )
+               END
+                 ELSE cover_source.original_path_in_library
+               END AS cover_image_url
              FROM collections c
              LEFT JOIN icons cover_icon
                ON cover_icon.id = c.cover_icon_id
               AND cover_icon.deleted_at IS NULL
              LEFT JOIN source_files cover_source
                ON cover_source.id = c.cover_source_file_id
+             LEFT JOIN effective_visual_sources cover_visual
+               ON cover_visual.icon_id = cover_icon.id
              LEFT JOIN source_files cover_icon_source
-               ON cover_icon_source.id = cover_icon.source_file_id
+               ON cover_icon_source.id = cover_visual.effective_source_file_id
+             LEFT JOIN icon_ai_state cover_ai_state
+               ON cover_ai_state.icon_id = cover_icon.id
              WHERE c.id = ?1
                AND c.deleted_at IS NULL",
             params![collection_id],
@@ -199,6 +222,7 @@ pub fn duplicate_collection(
     paths: &AppPaths,
     collection_id: &str,
 ) -> AppResult<CollectionDto> {
+    validate_collection_clone_sources(connection, collection_id)?;
     let duplicate_id = create_id("collection");
     let duplicate_result = (|| -> AppResult<CollectionDto> {
         let transaction = connection.transaction()?;
@@ -922,12 +946,6 @@ fn duplicate_icons(
 
     for icon in icons {
         let duplicate_icon_id = create_id("icon");
-        let cloned_preview_path = clone_current_preview(
-            paths,
-            target_collection_id,
-            &duplicate_icon_id,
-            icon.current_preview_path.as_deref(),
-        )?;
         transaction.execute(
             "INSERT INTO icons (
                id,
@@ -1012,7 +1030,7 @@ fn duplicate_icons(
                 icon.thumbnail_path,
                 icon.thumbnail_override_source_file_id,
                 icon.thumbnail_override_path,
-                cloned_preview_path,
+                Option::<String>::None,
                 icon.text_overlay_enabled,
                 icon.text_overlay_text,
                 icon.text_overlay_font_path,
@@ -1043,6 +1061,14 @@ fn duplicate_icons(
         duplicate_icon_effect_recipe(transaction, &icon.id, &duplicate_icon_id)?;
         duplicate_icon_motion_recipe(transaction, &icon.id, &duplicate_icon_id)?;
         clone_frame_sheet_gif_recipe(transaction, &icon.id, &duplicate_icon_id)?;
+        clone_current_ai_lineage(transaction, &icon.id, &duplicate_icon_id)?;
+        validate_icon_clone_target(transaction, target_collection_id, &duplicate_icon_id)?;
+        materialize_clone_native_preview(
+            transaction,
+            paths,
+            target_collection_id,
+            &duplicate_icon_id,
+        )?;
         clone_effective_active_variants(
             transaction,
             paths,
@@ -1095,8 +1121,8 @@ fn active_collection_names(connection: &Connection) -> AppResult<HashSet<String>
 
 fn duplicate_icon_pieces(
     transaction: &Transaction<'_>,
-    paths: &AppPaths,
-    target_collection_id: &str,
+    _paths: &AppPaths,
+    _target_collection_id: &str,
     source_icon_id: &str,
     target_icon_id: &str,
 ) -> AppResult<HashMap<String, String>> {
@@ -1130,13 +1156,7 @@ fn duplicate_icon_pieces(
     let mut piece_id_map = HashMap::new();
     for piece in pieces {
         let target_piece_id = create_id("piece");
-        let cloned_preview_path = clone_piece_preview(
-            paths,
-            target_collection_id,
-            target_icon_id,
-            piece.piece_index,
-            piece.generated_preview_path.as_deref(),
-        )?;
+        let cloned_preview_path = Option::<String>::None;
         transaction.execute(
             "INSERT INTO icon_pieces (
                id,
@@ -1362,6 +1382,7 @@ mod tests {
     use rusqlite::{params, Connection};
 
     use crate::db::migrations;
+    use crate::db::repositories::ai_activation;
     use crate::db::repositories::imports::import_image_files;
     use crate::models::{ImportImageFilePayload, UpdateCollectionSettingsPayload};
     use crate::paths::AppPaths;
@@ -1544,6 +1565,16 @@ mod tests {
             .unwrap();
 
         let duplicated = duplicate_collection(&mut connection, &paths, &created.id).unwrap();
+        let expected_preview_dir = paths
+            .ai_activation_staging_dir
+            .join("collection-clone-source-expected");
+        let expected_preview = ai_activation::render_effective_preview_to_directory(
+            &connection,
+            &expected_preview_dir,
+            &created.id,
+            &source_icon_id,
+        )
+        .unwrap();
         let (
             target_icon_id,
             target_preview,
@@ -1596,21 +1627,22 @@ mod tests {
         assert_ne!(target_piece, source_piece.to_string_lossy());
         assert_eq!(
             std::fs::read(&target_preview).unwrap(),
-            std::fs::read(&source_preview).unwrap()
+            std::fs::read(&expected_preview.current_preview_path).unwrap()
         );
         assert_eq!(
             std::fs::read(&target_piece).unwrap(),
-            std::fs::read(&source_piece).unwrap()
+            std::fs::read(&expected_preview.piece_paths[0]).unwrap()
         );
         assert!(std::path::Path::new(&target_preview).starts_with(
             paths
-                .collection_previews_dir
+                .ai_activation_previews_dir
                 .join(&duplicated.id)
                 .join(&target_icon_id)
-                .join("cloned")
+                .join("native-clone")
         ));
+        assert!(std::path::Path::new(&target_piece).is_file());
         assert_eq!(last_export, None);
-        assert_eq!(export_status, "not_exported");
+        assert_eq!(export_status, "ready");
         assert_eq!(icon_kind, "placeholder");
         assert_eq!(readiness, "working");
         assert_eq!(placeholder_text.as_deref(), Some("finish me"));

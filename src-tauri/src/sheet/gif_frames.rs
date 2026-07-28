@@ -14,6 +14,7 @@ use rusqlite::{params, Connection, OptionalExtension};
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 
+use crate::db::repositories::ai as ai_repository;
 use crate::db::repositories::optimization::{insert_variant, NewProcessedAssetVariant};
 use crate::error::{AppError, AppResult};
 use crate::ids::create_id;
@@ -44,7 +45,8 @@ use crate::paths::AppPaths;
 use super::grid::{split_pages, PageCellPlacement, PageSplitSettings};
 use super::manifest::{
     read_gif_manifest_bytes, validate_gif_manifest, write_gif_manifest, GifFrameManifestItem,
-    GifFrameSheetManifest, GifFrameSheetPage, APP_NAME, GIF_FRAME_SHEET_SCHEMA,
+    GifFrameSheetManifest, GifFrameSheetPage, ManifestVisualSource, APP_NAME,
+    GIF_FRAME_SHEET_SCHEMA, LEGACY_GIF_FRAME_SHEET_SCHEMA,
 };
 use super::path_string;
 
@@ -192,6 +194,11 @@ pub struct GifFrameTiming {
 #[derive(Debug)]
 struct GifIconRecord {
     id: String,
+    original_source_file_id: String,
+    original_source_hash: String,
+    original_lineage_id: String,
+    original_lineage_generation: i64,
+    active_version_id: Option<String>,
     source_file_id: String,
     display_name: String,
     source_path: String,
@@ -426,12 +433,7 @@ pub fn reimport_gif_frame_sheet(
     }
 
     let target_icon = load_gif_icon(connection, &request.target_icon_id)?;
-    if validation.manifest.source_file_id.as_deref() != Some(target_icon.source_file_id.as_str()) {
-        warnings.push(
-            "매니페스트의 원본 파일 ID가 현재 대상과 달라 DB의 현재 원본 관계를 사용했습니다."
-                .to_string(),
-        );
-    }
+    validate_manifest_visual_source(&validation.manifest, &target_icon)?;
 
     let settings_json = serde_json::json!({
         "source": "gif_frame_sheet_reimport",
@@ -638,6 +640,14 @@ fn build_gif_frame_manifest_plan(
         icon_id: icon.id.clone(),
         source_file_id: Some(icon.source_file_id.clone()),
         source_hash: Some(icon.source_hash.clone()),
+        visual_source: Some(ManifestVisualSource {
+            original_source_file_id: icon.original_source_file_id.clone(),
+            original_source_hash: icon.original_source_hash.clone(),
+            original_lineage_id: icon.original_lineage_id.clone(),
+            original_lineage_generation: icon.original_lineage_generation,
+            effective_source_file_id: icon.source_file_id.clone(),
+            effective_source_hash: icon.source_hash.clone(),
+        }),
         render_recipe_hash: Some(render_recipe_crop_hash(
             &icon.shape,
             &ExportCropRect {
@@ -678,12 +688,66 @@ fn build_gif_frame_manifest_plan(
     })
 }
 
+fn validate_manifest_visual_source(
+    manifest: &GifFrameSheetManifest,
+    icon: &GifIconRecord,
+) -> AppResult<()> {
+    if manifest.schema == LEGACY_GIF_FRAME_SHEET_SCHEMA {
+        let legacy_matches = icon.active_version_id.is_none()
+            && icon.original_lineage_generation == 0
+            && manifest.source_file_id.as_deref() == Some(icon.original_source_file_id.as_str())
+            && manifest.source_hash.as_deref() == Some(icon.original_source_hash.as_str());
+        if legacy_matches {
+            return Ok(());
+        }
+        return Err(AppError::new(
+            "manifest_stale",
+            "AI 버전이 활성화되었거나 원본 계보가 바뀐 아이콘에는 legacy v1 GIF 시트를 다시 가져올 수 없습니다.",
+        ));
+    }
+
+    let expected = ManifestVisualSource {
+        original_source_file_id: icon.original_source_file_id.clone(),
+        original_source_hash: icon.original_source_hash.clone(),
+        original_lineage_id: icon.original_lineage_id.clone(),
+        original_lineage_generation: icon.original_lineage_generation,
+        effective_source_file_id: icon.source_file_id.clone(),
+        effective_source_hash: icon.source_hash.clone(),
+    };
+    if manifest.visual_source.as_ref() != Some(&expected)
+        || manifest.source_file_id.as_deref() != Some(icon.source_file_id.as_str())
+        || manifest.source_hash.as_deref() != Some(icon.source_hash.as_str())
+    {
+        return Err(AppError::new(
+            "manifest_stale",
+            "GIF 프레임 시트를 내보낸 뒤 원본 계보 또는 AI 렌더 소스가 바뀌었습니다. 현재 상태에서 새 시트를 내보내세요.",
+        ));
+    }
+    Ok(())
+}
+
 fn load_gif_icon(connection: &Connection, icon_id: &str) -> AppResult<GifIconRecord> {
+    let collection_id = connection
+        .query_row(
+            "SELECT collection_id FROM icons WHERE id = ?1 AND deleted_at IS NULL",
+            params![icon_id],
+            |row| row.get::<_, String>(0),
+        )
+        .optional()?
+        .ok_or_else(|| {
+            AppError::not_found("GIF 프레임 시트로 내보낼 아이콘을 찾을 수 없습니다.")
+        })?;
+    ai_repository::resolve_effective_visual_source(connection, &collection_id, icon_id)?;
     connection
         .query_row(
             "SELECT
                i.id,
-               i.source_file_id,
+               evs.original_source_file_id,
+               evs.original_source_sha256,
+               evs.original_lineage_id,
+               evs.original_lineage_generation,
+               evs.active_version_id,
+               evs.effective_source_file_id AS source_file_id,
                i.display_name,
                s.original_path_in_library,
                s.original_extension,
@@ -713,7 +777,8 @@ fn load_gif_icon(connection: &Connection, icon_id: &str) -> AppResult<GifIconRec
                er.effects_json AS effect_recipe_json,
                mr.motion_json AS motion_recipe_json
              FROM icons i
-             JOIN source_files s ON s.id = i.source_file_id
+             JOIN effective_visual_sources evs ON evs.icon_id = i.id
+             JOIN source_files s ON s.id = evs.effective_source_file_id
              JOIN crop_settings cs ON cs.icon_id = i.id
              LEFT JOIN icon_effect_recipes er ON er.icon_id = i.id
              LEFT JOIN icon_motion_recipes mr ON mr.icon_id = i.id
@@ -725,6 +790,11 @@ fn load_gif_icon(connection: &Connection, icon_id: &str) -> AppResult<GifIconRec
                 Ok((
                     GifIconRecord {
                         id: row.get("id")?,
+                        original_source_file_id: row.get("original_source_file_id")?,
+                        original_source_hash: row.get("original_source_sha256")?,
+                        original_lineage_id: row.get("original_lineage_id")?,
+                        original_lineage_generation: row.get("original_lineage_generation")?,
+                        active_version_id: row.get("active_version_id")?,
                         source_file_id: row.get("source_file_id")?,
                         display_name: row.get("display_name")?,
                         source_path: row.get("original_path_in_library")?,
@@ -2015,7 +2085,8 @@ mod tests {
 
         let manifest: serde_json::Value =
             serde_json::from_slice(&std::fs::read(result.manifest_path.unwrap()).unwrap()).unwrap();
-        assert_eq!(manifest["schema"], "pmtcon-gif-frame-sheet-v1");
+        assert_eq!(manifest["schema"], "pmtcon-gif-frame-sheet-v2");
+        assert!(manifest["visual_source"].is_object());
         assert_eq!(manifest["frame_count"], 4);
         assert_eq!(manifest["duration_ms"], 260);
         assert_eq!(manifest["loop_mode"], "infinite");

@@ -6,7 +6,9 @@ PMTCONCON Studio는 DCInside 스타일 디시콘과 커스텀 이모티콘 모�
 
 상세 사용 설명서는 [PMTCONCON Studio 사용 설명서](https://kyunnkimeng-pixel.github.io/CONCONPMT/)에서 볼 수 있습니다.
 릴리스 전 확인 범위는 [Release Readiness](docs/RELEASE_READINESS.md)에 정리되어 있습니다.
-이번 버전의 주요 변경 사항은 [Release Notes 0.2.0](docs/RELEASE_NOTES_0.2.0.md)에서 볼 수 있습니다.
+AI 프리릴리스 검증 범위는 [Release Readiness 0.3.0-alpha.1](docs/RELEASE_READINESS_0.3.0-alpha.1.md)에 별도로 기록합니다.
+최신 안정 버전의 변경 사항은 [Release Notes 0.2.0](docs/RELEASE_NOTES_0.2.0.md)에서 볼 수 있습니다.
+AI 후보 작업공간 프리릴리스는 [Release Notes 0.3.0-alpha.1](docs/RELEASE_NOTES_0.3.0-alpha.1.md)에서 확인할 수 있습니다.
 
 ## 화면
 
@@ -136,8 +138,11 @@ npm.cmd run tauri:build
 - [아키텍처](docs/ARCHITECTURE.md)
 - [기술 결정 기록](docs/DECISIONS.md)
 - [Release Readiness](docs/RELEASE_READINESS.md)
+- [Release Readiness 0.3.0-alpha.1](docs/RELEASE_READINESS_0.3.0-alpha.1.md)
 - [Release Notes 0.2.0](docs/RELEASE_NOTES_0.2.0.md)
+- [Release Notes 0.3.0-alpha.1](docs/RELEASE_NOTES_0.3.0-alpha.1.md)
 - [Installer Distribution QA](docs/INSTALLER_DISTRIBUTION_QA.md)
+- [Installer Distribution QA 0.3.0-alpha.1](docs/INSTALLER_DISTRIBUTION_QA_0.3.0-alpha.1.md)
 - [라이선스 정책](docs/LICENSE_POLICY.md)
 - [서드파티 라이선스 고지 안내](docs/THIRD_PARTY_LICENSES_GUIDE.md)
 

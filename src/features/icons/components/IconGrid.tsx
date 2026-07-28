@@ -23,6 +23,12 @@ import type {
 } from "@/features/collections/types";
 import { IconContextMenu } from "@/features/icons/components/IconContextMenu";
 import { IconTile } from "@/features/icons/components/IconTile";
+import { resolveDndAccessibilityContainer } from "@/features/icons/icon-grid-accessibility";
+import {
+  focusRevealedEditorPanel,
+  shouldHandleIconRevealRequest,
+  type IconRevealRequest,
+} from "@/features/icons/icon-reveal";
 import { isGifIcon } from "@/features/sheets/sheet-ui-model";
 import {
   type IconSelectionState,
@@ -38,13 +44,15 @@ interface IconGridProps {
   thumbnailOnly: boolean;
   duplicatePieceIds: Set<string>;
   editRequest: { pieceId: string; requestKey: number } | null;
+  revealRequest: IconRevealRequest | null;
+  suppressBackgroundLiveRegions?: boolean;
   validateAltDraft: (pieceId: string, value: string) => string | null;
   validateCurrentAlt: (piece: IconPieceSummary) => string | null;
   onAltCommit: (pieceId: string, value: string) => Promise<boolean>;
   onBatchAltCommit: (iconIds: string[], value: string) => Promise<boolean>;
   onDeleteIcons: (iconIds: string[]) => Promise<boolean>;
   onDuplicateIcon: (iconId: string) => Promise<void>;
-  onEditIcon: (iconId: string) => void;
+  onEditIcon: (iconId: string) => boolean;
   onExportSelectedSheet: (iconIds: string[]) => void;
   onExportGifFrameSheet: (iconId: string) => void;
   onUpdateIconNote: (iconId: string, note: string) => Promise<boolean>;
@@ -69,6 +77,8 @@ export function IconGrid({
   thumbnailOnly,
   duplicatePieceIds,
   editRequest,
+  revealRequest,
+  suppressBackgroundLiveRegions = false,
   validateAltDraft,
   validateCurrentAlt,
   onAltCommit,
@@ -91,6 +101,14 @@ export function IconGrid({
   onSetThumbnailOverride,
 }: IconGridProps) {
   const gridRef = useRef<HTMLDivElement>(null);
+  const handledRevealRequestIdRef = useRef<number | null>(null);
+  const [suppressedDndAccessibilityContainer] = useState<Element | null>(() =>
+    typeof document === "undefined" ? null : document.createElement("div"),
+  );
+  const dndAccessibilityContainer = resolveDndAccessibilityContainer(
+    suppressBackgroundLiveRegions,
+    suppressedDndAccessibilityContainer,
+  );
   const orderedIds = useMemo(() => icons.map((icon) => icon.id), [icons]);
   const [selection, setSelection] = useState<IconSelectionState>({
     selectedIds: [],
@@ -137,6 +155,55 @@ export function IconGrid({
       return pruneSelection(current, orderedIds);
     });
   }, [orderedIds]);
+
+  useEffect(() => {
+    if (
+      !shouldHandleIconRevealRequest(
+        revealRequest,
+        handledRevealRequestIdRef.current,
+        orderedIds,
+      )
+    ) {
+      return;
+    }
+
+    const tile = findIconTile(gridRef.current, revealRequest.iconId);
+    if (!tile) {
+      return;
+    }
+
+    setContextMenu(null);
+    setSelection({
+      selectedIds: [revealRequest.iconId],
+      anchorId: revealRequest.iconId,
+    });
+
+    const animationFrame = window.requestAnimationFrame(() => {
+      const currentTile = findIconTile(gridRef.current, revealRequest.iconId);
+      if (!currentTile) {
+        return;
+      }
+
+      handledRevealRequestIdRef.current = revealRequest.requestId;
+      currentTile.scrollIntoView({
+        behavior: "auto",
+        block: "nearest",
+        inline: "nearest",
+      });
+      currentTile.focus({ preventScroll: true });
+
+      if (
+        revealRequest.action === "open_editor" &&
+        onEditIcon(revealRequest.iconId)
+      ) {
+        window.requestAnimationFrame(() => {
+          focusRevealedEditorPanel(document);
+        });
+      }
+    });
+
+    return () => window.cancelAnimationFrame(animationFrame);
+  }, [onEditIcon, orderedIds, revealRequest]);
 
   const updateSelection = (next: IconSelectionState) => {
     setSelection(next);
@@ -237,6 +304,11 @@ export function IconGrid({
   return (
     <>
       <DndContext
+        accessibility={
+          dndAccessibilityContainer
+            ? { container: dndAccessibilityContainer }
+            : undefined
+        }
         collisionDetection={closestCenter}
         sensors={sensors}
         onDragEnd={handleDragEnd}
@@ -274,6 +346,7 @@ export function IconGrid({
                 previewHeight={effectivePreviewHeight}
                 previewWidth={effectivePreviewWidth}
                 showDetails={!thumbnailOnly}
+                suppressBackgroundLiveRegions={suppressBackgroundLiveRegions}
                 validateAltDraft={validateAltDraft}
                 validateCurrentAlt={validateCurrentAlt}
                 onAltCommit={onAltCommit}
@@ -374,6 +447,18 @@ export function IconGrid({
         />
       ) : null}
     </>
+  );
+}
+
+function findIconTile(root: HTMLElement | null, iconId: string) {
+  if (!root) {
+    return null;
+  }
+
+  return (
+    Array.from(
+      root.querySelectorAll<HTMLElement>('[data-testid="icon-tile"]'),
+    ).find((tile) => tile.dataset.iconId === iconId) ?? null
   );
 }
 

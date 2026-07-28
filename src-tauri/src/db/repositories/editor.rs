@@ -5,6 +5,7 @@ use std::time::{Instant, SystemTime, UNIX_EPOCH};
 
 use rusqlite::{params, Connection, OptionalExtension, Transaction, TransactionBehavior};
 
+use crate::db::repositories::ai as ai_repository;
 use crate::db::repositories::effects as effect_repository;
 use crate::db::repositories::icons as icon_repository;
 use crate::db::repositories::motion as motion_repository;
@@ -39,7 +40,9 @@ pub fn get_icon_editor_state(
     icon_id: &str,
 ) -> AppResult<IconEditorStateDto> {
     let icon = icon_repository::get_icon(connection, collection_id, icon_id)?;
-    let source = source_file_for_icon(connection, collection_id, icon_id)?;
+    let visual_source =
+        ai_repository::resolve_effective_visual_source(connection, collection_id, icon_id)?;
+    let source = ai_repository::source_dto(&visual_source.render_source);
     let crop = crop_settings_for_icon(connection, icon_id)?;
     let text_overlay = text_overlay_for_icon(connection, collection_id, icon_id)?;
     let effects = effect_repository::effect_recipe_for_icon(connection, collection_id, icon_id)?;
@@ -48,6 +51,7 @@ pub fn get_icon_editor_state(
     Ok(IconEditorStateDto {
         icon,
         source,
+        visual_source: ai_repository::effective_source_dto(&visual_source),
         crop,
         text_overlay,
         effect_recipe: effects.recipe,
@@ -64,6 +68,7 @@ pub fn apply_icon_crop(
     payload: ApplyIconCropPayload,
 ) -> AppResult<IconDto> {
     validate_apply_payload(&payload)?;
+    ai_repository::resolve_effective_visual_source(connection, collection_id, &payload.icon_id)?;
     let apply_record = apply_record_for_icon(connection, collection_id, &payload.icon_id)?;
     let transform = payload_transform(&payload)?;
     let source_geometry = source_viewport_geometry(
@@ -139,6 +144,7 @@ pub fn update_icon_text_overlay(
     payload: UpdateIconTextOverlayPayload,
 ) -> AppResult<IconEditorStateDto> {
     validate_text_overlay_payload(&payload)?;
+    ai_repository::resolve_effective_visual_source(connection, collection_id, &payload.icon_id)?;
     let preview_record = text_overlay_preview_record(connection, collection_id, &payload.icon_id)?;
     let source_path = PathBuf::from(&preview_record.original_path_in_library);
     let text_overlay = text_overlay_render_spec_from_payload(&payload)?;
@@ -206,6 +212,7 @@ pub fn preview_icon_effects(
     payload: PreviewIconEffectsPayload,
 ) -> AppResult<EffectPreviewDto> {
     validate_effect_recipe(&payload.recipe)?;
+    ai_repository::resolve_effective_visual_source(connection, collection_id, &payload.icon_id)?;
     let record = text_overlay_preview_record(connection, collection_id, &payload.icon_id)?;
     let text_overlay =
         text_overlay_render_spec_for_icon(connection, collection_id, &payload.icon_id)?;
@@ -251,6 +258,7 @@ pub fn update_icon_effects(
     payload: UpdateIconEffectsPayload,
 ) -> AppResult<IconEditorStateDto> {
     validate_effect_recipe(&payload.recipe)?;
+    ai_repository::resolve_effective_visual_source(connection, collection_id, &payload.icon_id)?;
     if payload.expected_revision < 0 {
         return Err(AppError::new(
             "validation",
@@ -503,7 +511,8 @@ fn apply_record_for_icon(
                c.default_cell_height,
                c.max_bytes
              FROM icons i
-             JOIN source_files s ON s.id = i.source_file_id
+             JOIN effective_visual_sources evs ON evs.icon_id = i.id
+             JOIN source_files s ON s.id = evs.effective_source_file_id
              JOIN collections c ON c.id = i.collection_id
              WHERE i.id = ?1
                AND i.collection_id = ?2
@@ -587,7 +596,10 @@ fn source_file_for_icon(
                s.id,
                s.original_filename,
                s.original_path_in_library,
+               s.original_extension,
                s.mime_type,
+               s.sha256,
+               s.has_alpha,
                s.width,
                s.height,
                s.byte_size,
@@ -607,7 +619,12 @@ fn source_file_for_icon(
                     id: row.get("id")?,
                     original_filename: row.get("original_filename")?,
                     original_image_url: row.get("original_path_in_library")?,
+                    original_extension: row.get("original_extension")?,
                     mime_type: row.get("mime_type")?,
+                    sha256: row.get("sha256")?,
+                    has_alpha: row
+                        .get::<_, Option<i64>>("has_alpha")?
+                        .map(|value| value != 0),
                     width: row.get("width")?,
                     height: row.get("height")?,
                     byte_size: row.get("byte_size")?,
@@ -757,7 +774,8 @@ fn text_overlay_preview_record(
                cs.preset_position,
                c.max_bytes
              FROM icons i
-             JOIN source_files s ON s.id = i.source_file_id
+             JOIN effective_visual_sources evs ON evs.icon_id = i.id
+             JOIN source_files s ON s.id = evs.effective_source_file_id
              JOIN collections c ON c.id = i.collection_id
              JOIN crop_settings cs ON cs.icon_id = i.id
              WHERE i.id = ?1

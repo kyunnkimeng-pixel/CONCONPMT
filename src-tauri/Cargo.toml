@@ -1,6 +1,6 @@
 [package]
 name = "pmtconcon-studio"
-version = "0.2.0"
+version = "0.3.0-alpha.1"
 description = "PMTCONCON Studio desktop app"
 authors = ["PMTCONCON Studio"]
 edition = "2021"

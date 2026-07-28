@@ -47,6 +47,26 @@ const MIGRATIONS: &[(&str, &str)] = &[
         "011_icon_motion_recipes",
         include_str!("../../migrations/011_icon_motion_recipes.sql"),
     ),
+    (
+        "012_ai_nondestructive_foundation",
+        include_str!("../../migrations/012_ai_nondestructive_foundation.sql"),
+    ),
+    (
+        "013_ai_effective_variants",
+        include_str!("../../migrations/013_ai_effective_variants.sql"),
+    ),
+    (
+        "014_ai_lineage_registry",
+        include_str!("../../migrations/014_ai_lineage_registry.sql"),
+    ),
+    (
+        "015_ai_request_snapshot_immutability",
+        include_str!("../../migrations/015_ai_request_snapshot_immutability.sql"),
+    ),
+    (
+        "016_ai_icon_root_creations",
+        include_str!("../../migrations/016_ai_icon_root_creations.sql"),
+    ),
 ];
 
 pub fn run(connection: &mut Connection) -> AppResult<()> {
@@ -110,6 +130,12 @@ mod tests {
             "frame_sheet_gif_recipes",
             "icon_effect_recipes",
             "icon_motion_recipes",
+            "icon_ai_lineages",
+            "ai_requests",
+            "ai_candidates",
+            "icon_ai_versions",
+            "icon_ai_state",
+            "ai_icon_root_creations",
             "app_settings",
         ] {
             let exists: i64 = connection
@@ -308,5 +334,222 @@ mod tests {
                 "CASCADE".to_string(),
             )
         );
+    }
+
+    #[test]
+    fn ai_variant_migration_keeps_foreign_keys_clean_and_adds_digest_provenance() {
+        let mut connection = Connection::open_in_memory().unwrap();
+        connection
+            .pragma_update(None, "foreign_keys", "ON")
+            .unwrap();
+
+        run(&mut connection).unwrap();
+
+        let violations = connection
+            .prepare("PRAGMA foreign_key_check")
+            .unwrap()
+            .query_map([], |_| Ok(()))
+            .unwrap()
+            .collect::<Result<Vec<_>, _>>()
+            .unwrap();
+        assert!(violations.is_empty());
+
+        let columns = connection
+            .prepare("PRAGMA table_info(processed_asset_variants)")
+            .unwrap()
+            .query_map([], |row| row.get::<_, String>("name"))
+            .unwrap()
+            .collect::<Result<Vec<_>, _>>()
+            .unwrap();
+        assert!(columns.contains(&"output_sha256".to_string()));
+
+        let source_fk = connection
+            .prepare("PRAGMA foreign_key_list(processed_asset_variants)")
+            .unwrap()
+            .query_map([], |row| {
+                Ok((
+                    row.get::<_, String>("table")?,
+                    row.get::<_, String>("from")?,
+                    row.get::<_, String>("on_delete")?,
+                ))
+            })
+            .unwrap()
+            .collect::<Result<Vec<_>, _>>()
+            .unwrap()
+            .into_iter()
+            .find(|(_, from, _)| from == "source_file_id");
+        assert_eq!(
+            source_fk,
+            Some((
+                "source_files".to_string(),
+                "source_file_id".to_string(),
+                "RESTRICT".to_string(),
+            ))
+        );
+    }
+
+    #[test]
+    fn ai_lineage_registry_has_required_foreign_keys_and_version_guard() {
+        let mut connection = Connection::open_in_memory().unwrap();
+        connection
+            .pragma_update(None, "foreign_keys", "ON")
+            .unwrap();
+        run(&mut connection).unwrap();
+
+        let foreign_keys = connection
+            .prepare("PRAGMA foreign_key_list(icon_ai_lineages)")
+            .unwrap()
+            .query_map([], |row| {
+                Ok((
+                    row.get::<_, String>("table")?,
+                    row.get::<_, String>("from")?,
+                    row.get::<_, String>("on_delete")?,
+                ))
+            })
+            .unwrap()
+            .collect::<Result<Vec<_>, _>>()
+            .unwrap();
+        assert!(foreign_keys.contains(&(
+            "icons".to_string(),
+            "icon_id".to_string(),
+            "CASCADE".to_string(),
+        )));
+        assert!(foreign_keys.contains(&(
+            "source_files".to_string(),
+            "original_source_file_id".to_string(),
+            "RESTRICT".to_string(),
+        )));
+
+        let guard_sql: String = connection
+            .query_row(
+                "SELECT sql FROM sqlite_master
+                 WHERE type = 'trigger'
+                   AND name = 'trg_icon_ai_version_lineage_guard_before_insert'",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert!(guard_sql.contains("icon_ai_lineages"));
+        assert!(guard_sql.contains("original_source_file_id"));
+    }
+
+    #[test]
+    fn ai_request_provenance_snapshots_are_guarded_by_database_trigger() {
+        let mut connection = Connection::open_in_memory().unwrap();
+        run(&mut connection).unwrap();
+
+        let trigger_sql: String = connection
+            .query_row(
+                "SELECT sql FROM sqlite_master
+                 WHERE type = 'trigger'
+                   AND name = 'trg_ai_request_snapshots_immutable_before_update'",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
+
+        for snapshot_column in [
+            "adapter_contract_version",
+            "capability_snapshot_json",
+            "data_tier_snapshot_json",
+            "consent_snapshot_json",
+            "payload_input_signature",
+            "request_recipe_signature",
+            "activation_revision",
+        ] {
+            assert!(
+                trigger_sql.contains(snapshot_column),
+                "snapshot trigger must guard {snapshot_column}"
+            );
+        }
+        assert!(trigger_sql.contains("RAISE(ABORT"));
+
+        connection
+            .execute_batch(
+                "INSERT INTO ai_requests (
+                   id, provider_mode, service_surface, provider, adapter_id,
+                   adapter_contract_version, operation, provenance_trust,
+                   original_lineage_id, original_lineage_generation,
+                   original_source_sha256, effective_source_sha256,
+                   payload_input_signature, request_recipe_signature,
+                   activation_revision, status, created_at, updated_at
+                 ) VALUES (
+                   'request_guard_test', 'manual_web', 'other_manual',
+                   'manual', 'manual-import', '1', 'image_edit',
+                   'manual_unverified', 'lineage_guard_test', 0,
+                   'original-hash', 'effective-hash', 'payload-signature',
+                   'recipe-signature', 0, 'prepared',
+                   '2026-07-27T00:00:00Z', '2026-07-27T00:00:00Z'
+                 );",
+            )
+            .unwrap();
+        connection
+            .execute(
+                "UPDATE ai_requests
+                 SET status = 'completed',
+                     updated_at = '2026-07-27T00:00:01Z'
+                 WHERE id = 'request_guard_test'",
+                [],
+            )
+            .unwrap();
+        let immutable_update = connection.execute(
+            "UPDATE ai_requests
+             SET provider = 'rewritten'
+             WHERE id = 'request_guard_test'",
+            [],
+        );
+        assert!(immutable_update.is_err());
+    }
+    #[test]
+    fn ai_icon_root_creation_provenance_has_expected_foreign_keys() {
+        let mut connection = Connection::open_in_memory().unwrap();
+        connection
+            .pragma_update(None, "foreign_keys", "ON")
+            .unwrap();
+
+        run(&mut connection).unwrap();
+        run(&mut connection).unwrap();
+
+        let foreign_keys = connection
+            .prepare("PRAGMA foreign_key_list(ai_icon_root_creations)")
+            .unwrap()
+            .query_map([], |row| {
+                Ok((
+                    row.get::<_, String>("table")?,
+                    row.get::<_, String>("from")?,
+                    row.get::<_, String>("to")?,
+                    row.get::<_, String>("on_delete")?,
+                ))
+            })
+            .unwrap()
+            .collect::<Result<Vec<_>, _>>()
+            .unwrap();
+        assert!(foreign_keys.contains(&(
+            "icons".to_string(),
+            "icon_id".to_string(),
+            "id".to_string(),
+            "CASCADE".to_string(),
+        )));
+        assert!(foreign_keys.contains(&(
+            "icons".to_string(),
+            "source_icon_id".to_string(),
+            "id".to_string(),
+            "SET NULL".to_string(),
+        )));
+        assert!(foreign_keys.contains(&(
+            "ai_candidates".to_string(),
+            "candidate_id".to_string(),
+            "id".to_string(),
+            "RESTRICT".to_string(),
+        )));
+
+        let violations = connection
+            .prepare("PRAGMA foreign_key_check")
+            .unwrap()
+            .query_map([], |_| Ok(()))
+            .unwrap()
+            .collect::<Result<Vec<_>, _>>()
+            .unwrap();
+        assert!(violations.is_empty());
     }
 }

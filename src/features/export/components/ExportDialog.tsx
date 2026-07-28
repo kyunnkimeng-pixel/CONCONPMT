@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useRef, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import type { MouseEvent, ReactNode } from "react";
 import {
   AlertTriangle,
@@ -15,6 +15,7 @@ import {
 
 import type { CollectionSummary, IconSummary } from "@/features/collections/types";
 import { EditorPanel } from "@/features/editor/components/EditorPanel";
+import type { IconRevealAction } from "@/features/icons/icon-reveal";
 import {
   applyOptimizationCandidate,
   clearOptimizationCandidate,
@@ -67,7 +68,15 @@ interface ExportDialogProps {
   collection: CollectionSummary;
   onClose: () => void;
   onExported: () => Promise<void>;
-  onIconUpdated: (icon: IconSummary) => void;
+  onIconUpdated: (
+    icon: IconSummary,
+    options?: { silent?: boolean },
+  ) => void;
+  onRevealIcon: (
+    iconId: string,
+    action: IconRevealAction,
+  ) => boolean | Promise<boolean>;
+  onAiModalOpenChange?: (open: boolean) => void;
 }
 
 interface ExportDraft {
@@ -118,11 +127,28 @@ const FILTERS: ExportWorkspaceFilter[] = [
   "oversized",
 ];
 
+export function approveExportEditorExit({
+  isBusy,
+  hasUnsavedChanges,
+  confirmDiscard,
+}: {
+  isBusy: boolean;
+  hasUnsavedChanges: boolean;
+  confirmDiscard: () => boolean;
+}) {
+  if (isBusy) {
+    return false;
+  }
+  return !hasUnsavedChanges || confirmDiscard();
+}
+
 export function ExportDialog({
   collection,
   onClose,
   onExported,
   onIconUpdated,
+  onRevealIcon,
+  onAiModalOpenChange,
 }: ExportDialogProps) {
   const [profiles, setProfiles] = useState<ExportProfile[]>([]);
   const [draft, setDraft] = useState<ExportDraft | null>(null);
@@ -149,6 +175,9 @@ export function ExportDialog({
   const [optimizationError, setOptimizationError] = useState<string | null>(null);
   const [isOptimizing, setIsOptimizing] = useState(false);
   const [editingIconId, setEditingIconId] = useState<string | null>(null);
+  const [isEmbeddedEditorDirty, setIsEmbeddedEditorDirty] = useState(false);
+  const [isEmbeddedEditorBusy, setIsEmbeddedEditorBusy] = useState(false);
+  const [isAiDialogOpen, setIsAiDialogOpen] = useState(false);
   const dialogRef = useRef<HTMLDivElement>(null);
 
   useEffect(() => {
@@ -209,12 +238,32 @@ export function ExportDialog({
     return profiles.find((profile) => profile.id === draft.profileId) ?? null;
   }, [draft, profiles]);
 
-  const isBusy = isLoading || isSaving || isValidating || isExporting || isOptimizing;
-  useModalFocus(dialogRef, () => {
-    if (!isBusy) {
-      onClose();
+  const isBusy =
+    isLoading ||
+    isSaving ||
+    isValidating ||
+    isExporting ||
+    isOptimizing ||
+    isEmbeddedEditorBusy;
+  const requestClose = useCallback(() => {
+    const approved = approveExportEditorExit({
+      isBusy,
+      hasUnsavedChanges: Boolean(editingIconId && isEmbeddedEditorDirty),
+      confirmDiscard: () =>
+        window.confirm(
+          "저장하지 않은 편집 변경을 버리고 내보내기 작업공간을 닫을까요?",
+        ),
+    });
+    if (!approved) {
+      return false;
     }
-  });
+    onClose();
+    return true;
+  }, [editingIconId, isBusy, isEmbeddedEditorDirty, onClose]);
+  const { suppressFocusRestore, resumeFocusRestore } = useModalFocus(
+    dialogRef,
+    requestClose,
+  );
   const payload = draft ? payloadFromDraft(draft, excludedPieceIds) : null;
   const summary = useMemo(() => summarizeExportWorkspace(validation), [validation]);
   const filteredItems = useMemo(
@@ -685,14 +734,56 @@ export function ExportDialog({
     }
   };
 
-  const handleEditedIcon = (icon: IconSummary) => {
-    onIconUpdated(icon);
+  const handleEditedIcon = (
+    icon: IconSummary,
+    options?: { silent?: boolean },
+  ) => {
+    onIconUpdated(icon, options);
     if (draft) {
       void runValidation(draft, excludedPieceIds, {
         dirtyIconIds: new Set([icon.id]),
         preserveSession: Boolean(exportResult),
         quiet: true,
       });
+    }
+  };
+
+  const handleAiModalOpenChange = useCallback(
+    (open: boolean) => {
+      setIsAiDialogOpen(open);
+      onAiModalOpenChange?.(open);
+    },
+    [onAiModalOpenChange],
+  );
+
+  const handleRevealIcon = async (
+    iconId: string,
+    action: IconRevealAction,
+  ) => {
+    const approvedToLeave = approveExportEditorExit({
+      isBusy,
+      hasUnsavedChanges: Boolean(editingIconId && isEmbeddedEditorDirty),
+      confirmDiscard: () =>
+        window.confirm(
+          "저장하지 않은 편집 변경을 버리고 아이콘 목록으로 이동할까요?",
+        ),
+    });
+    if (!approvedToLeave) {
+      return false;
+    }
+
+    suppressFocusRestore();
+    try {
+      const approved = await onRevealIcon(iconId, action);
+      if (!approved) {
+        resumeFocusRestore();
+        return false;
+      }
+      onClose();
+      return true;
+    } catch {
+      resumeFocusRestore();
+      return false;
     }
   };
 
@@ -724,7 +815,7 @@ export function ExportDialog({
               className="inline-flex size-9 items-center justify-center rounded-md border border-border bg-white hover:bg-menu-hover focus-visible:outline focus-visible:outline-2 focus-visible:outline-focus"
               disabled={isBusy}
               type="button"
-              onClick={onClose}
+              onClick={requestClose}
             >
               <X aria-hidden="true" />
             </button>
@@ -1067,12 +1158,12 @@ export function ExportDialog({
             {isLoading ? (
               <p className="text-sm text-muted">내보내기 작업공간을 불러오는 중입니다.</p>
             ) : null}
-            {statusMessage ? (
+            {statusMessage && !isAiDialogOpen ? (
               <p className="text-sm text-muted" role="status">
                 {statusMessage}
               </p>
             ) : null}
-            {errorMessage ? (
+            {errorMessage && !isAiDialogOpen ? (
               <p className="text-sm text-danger" role="alert">
                 {errorMessage}
               </p>
@@ -1107,8 +1198,17 @@ export function ExportDialog({
             collection={collection}
             iconId={editingIconId}
             key={editingIconId}
-            onClose={() => setEditingIconId(null)}
+            onAiModalOpenChange={handleAiModalOpenChange}
+            onBusyChange={setIsEmbeddedEditorBusy}
+            onClose={() => {
+              setEditingIconId(null);
+              setIsEmbeddedEditorDirty(false);
+              setIsEmbeddedEditorBusy(false);
+            }}
+            onDirtyChange={setIsEmbeddedEditorDirty}
             onIconUpdated={handleEditedIcon}
+            onRevealIcon={handleRevealIcon}
+            suppressBackgroundLiveRegions={isAiDialogOpen}
           />
         </div>
       ) : null}
