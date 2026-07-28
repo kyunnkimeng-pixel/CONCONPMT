@@ -94,7 +94,10 @@ import type {
   IconEditorState,
   SourceFileSummary,
 } from "@/features/editor/types";
-import type { IconSummary } from "@/features/collections/types";
+import type {
+  CollectionSummary,
+  IconSummary,
+} from "@/features/collections/types";
 import { AiProviderPanel } from "@/features/editor/components/AiProviderPanel";
 import { newestGeneratedCandidateId } from "@/features/editor/ai-provider-model";
 import type { IconRevealAction } from "@/features/icons/icon-reveal";
@@ -103,9 +106,8 @@ import { useModalFocus } from "@/lib/use-modal-focus";
 import { cn } from "@/lib/utils";
 
 interface AiReviewSectionProps {
-  iconName?: string;
-  collectionId: string;
-  iconId: string;
+  collection: CollectionSummary;
+  icon: IconSummary;
   visualSource: EffectiveVisualSource;
   hasUnsavedChanges: boolean;
   onBusyChange: (busy: boolean) => void;
@@ -172,9 +174,8 @@ const AiExternalHandoffContext = createContext<AiExternalHandoff>(async (handoff
 );
 
 export function AiReviewSection({
-  collectionId,
-  iconId,
-  iconName = "선택한 아이콘",
+  collection,
+  icon,
   visualSource,
   hasUnsavedChanges,
   onBusyChange,
@@ -183,6 +184,9 @@ export function AiReviewSection({
   onRevealIcon,
   onModalOpenChange,
 }: AiReviewSectionProps) {
+  const collectionId = collection.id;
+  const iconId = icon.id;
+  const iconName = icon.displayName;
   const [isWorkspaceOpen, setIsWorkspaceOpen] = useState(false);
   const [isInspectorExpanded, setIsInspectorExpanded] = useState(true);
   const [workspaceUi, dispatchWorkspaceUi] = useReducer(
@@ -1133,10 +1137,10 @@ export function AiReviewSection({
               serviceSurface={serviceSurface}
               providerPanel={
                 <AiProviderPanel
-                  collectionId={collectionId}
+                  collection={collection}
                   disabled={viewingDisabled && busyAction !== "provider"}
                   hasUnsavedChanges={hasUnsavedChanges}
-                  iconId={iconId}
+                  icon={icon}
                   source={currentVisualSource.effectiveRenderSource}
                   onAnnouncement={announceProvider}
 

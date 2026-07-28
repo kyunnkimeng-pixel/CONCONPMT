@@ -907,10 +907,9 @@ export function EditorPanel({
             </EditorOutputPreview>
 
             <AiReviewSection
-              collectionId={collection.id}
+              collection={collection}
               hasUnsavedChanges={hasUnsavedChanges}
-              iconId={iconId}
-              iconName={editorState.icon.displayName}
+              icon={editorState.icon}
               visualSource={editorState.visualSource}
               onBusyChange={setIsAiMutationBusy}
               onCreatedIconCommitted={handleAiCreatedIconCommitted}

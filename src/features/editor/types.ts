@@ -262,6 +262,7 @@ export type AiWebHandoffValidationIssueCode =
   | "decode_failed"
   | "file_too_large"
   | "canvas_size_mismatch"
+  | "size_normalization"
   | "transparency_lost"
   | "page_count_mismatch"
   | "item_count_mismatch"

@@ -81,6 +81,10 @@ const MIGRATIONS: &[(&str, &str)] = &[
         "019_ai_grid_payload_retention",
         include_str!("../../migrations/019_ai_grid_payload_retention.sql"),
     ),
+    (
+        "020_ai_reference_result_normalization",
+        include_str!("../../migrations/020_ai_reference_result_normalization.sql"),
+    ),
 ];
 
 pub fn run(connection: &mut Connection) -> AppResult<()> {
@@ -1186,5 +1190,528 @@ mod tests {
             )
             .unwrap();
         assert_eq!(leaked_rebuild_table, 0);
+    }
+
+    #[test]
+    fn ai_generation_reference_artifacts_support_optional_reference_sheets() {
+        let mut connection = Connection::open_in_memory().unwrap();
+        connection
+            .pragma_update(None, "foreign_keys", "ON")
+            .unwrap();
+        run(&mut connection).unwrap();
+
+        connection
+            .execute_batch(
+                "INSERT INTO collections (
+                   id, name, order_index, created_at, updated_at
+                 ) VALUES (
+                   'reference_collection', 'reference collection', 0,
+                   '2026-07-29T00:00:00Z', '2026-07-29T00:00:00Z'
+                 );
+
+                 INSERT INTO source_files (
+                   id, original_filename, original_path_in_library,
+                   original_extension, mime_type, width, height, byte_size,
+                   sha256, is_animated, frame_count, has_alpha, created_at
+                 ) VALUES
+                   (
+                     'reference_sheet_one', 'reference-one.png',
+                     'C:/reference/reference-one.png', 'png', 'image/png',
+                     1024, 1024, 4,
+                     '1111111111111111111111111111111111111111111111111111111111111111',
+                     0, NULL, 1, '2026-07-29T00:00:00Z'
+                   ),
+                   (
+                     'reference_sheet_two', 'reference-two.png',
+                     'C:/reference/reference-two.png', 'png', 'image/png',
+                     1024, 1024, 4,
+                     '2222222222222222222222222222222222222222222222222222222222222222',
+                     0, NULL, 1, '2026-07-29T00:00:00Z'
+                   );
+
+                 INSERT INTO ai_requests (
+                   id, request_scope, origin_collection_id,
+                   origin_collection_name_snapshot, provider_mode,
+                   service_surface, provider, adapter_id,
+                   adapter_contract_version, operation, provenance_trust,
+                   input_package_sha256, reference_package_sha256,
+                   payload_input_signature, status, created_at, updated_at
+                 ) VALUES
+                   (
+                     'single_generate_reference', 'single_generate',
+                     'reference_collection', 'reference collection',
+                     'manual_web', 'other_manual', 'manual',
+                     'pmtcon-grid-foundation', '1', 'single_image_generate',
+                     'manual_unverified',
+                     '1111111111111111111111111111111111111111111111111111111111111111',
+                     '1111111111111111111111111111111111111111111111111111111111111111',
+                     'single-reference-payload', 'draft',
+                     '2026-07-29T00:00:01Z', '2026-07-29T00:00:01Z'
+                   ),
+                   (
+                     'grid_generate_no_reference', 'grid_generate',
+                     'reference_collection', 'reference collection',
+                     'manual_web', 'other_manual', 'manual',
+                     'pmtcon-grid-foundation', '1', 'grid_image_generate',
+                     'manual_unverified', NULL, NULL,
+                     'grid-no-reference-payload', 'draft',
+                     '2026-07-29T00:00:02Z', '2026-07-29T00:00:02Z'
+                   ),
+                   (
+                     'single_generate_mismatch', 'single_generate',
+                     'reference_collection', 'reference collection',
+                     'manual_web', 'other_manual', 'manual',
+                     'pmtcon-grid-foundation', '1', 'single_image_generate',
+                     'manual_unverified',
+                     '1111111111111111111111111111111111111111111111111111111111111111',
+                     '3333333333333333333333333333333333333333333333333333333333333333',
+                     'single-mismatch-payload', 'draft',
+                     '2026-07-29T00:00:03Z', '2026-07-29T00:00:03Z'
+                   ),
+                   (
+                     'single_generate_wrong_kind', 'single_generate',
+                     'reference_collection', 'reference collection',
+                     'manual_web', 'other_manual', 'manual',
+                     'pmtcon-grid-foundation', '1', 'single_image_generate',
+                     'manual_unverified',
+                     '2222222222222222222222222222222222222222222222222222222222222222',
+                     '2222222222222222222222222222222222222222222222222222222222222222',
+                     'single-wrong-kind-payload', 'draft',
+                     '2026-07-29T00:00:04Z', '2026-07-29T00:00:04Z'
+                   ),
+                   (
+                     'grid_edit_reference_rejected', 'grid_edit',
+                     'reference_collection', 'reference collection',
+                     'manual_web', 'other_manual', 'manual',
+                     'pmtcon-grid-foundation', '1', 'grid_image_edit',
+                     'manual_unverified',
+                     '1111111111111111111111111111111111111111111111111111111111111111',
+                     '1111111111111111111111111111111111111111111111111111111111111111',
+                     'grid-edit-reference-payload', 'draft',
+                     '2026-07-29T00:00:05Z', '2026-07-29T00:00:05Z'
+                   ),
+                   (
+                     'grid_edit_without_reference', 'grid_edit',
+                     'reference_collection', 'reference collection',
+                     'manual_web', 'other_manual', 'manual',
+                     'pmtcon-grid-foundation', '1', 'grid_image_edit',
+                     'manual_unverified',
+                     '1111111111111111111111111111111111111111111111111111111111111111',
+                     NULL, 'grid-edit-no-reference-payload', 'draft',
+                     '2026-07-29T00:00:06Z', '2026-07-29T00:00:06Z'
+                   );
+
+                 INSERT INTO ai_request_items (
+                   id, request_id, request_scope, item_index,
+                   target_name_snapshot, shape, row_index, column_index,
+                   input_cell_x, input_cell_y, cell_width, cell_height,
+                   review_status, created_at, updated_at
+                 ) VALUES
+                   (
+                     'single_reference_item', 'single_generate_reference',
+                     'single_generate', 0, 'generated icon', 'single', 0, 0,
+                     0, 0, 200, 200, 'pending',
+                     '2026-07-29T00:00:01Z', '2026-07-29T00:00:01Z'
+                   ),
+                   (
+                     'grid_no_reference_item_0', 'grid_generate_no_reference',
+                     'grid_generate', 0, 'generated icon 1', 'single', 0, 0,
+                     0, 0, 200, 200, 'pending',
+                     '2026-07-29T00:00:02Z', '2026-07-29T00:00:02Z'
+                   ),
+                   (
+                     'grid_no_reference_item_1', 'grid_generate_no_reference',
+                     'grid_generate', 1, 'generated icon 2', 'single', 0, 1,
+                     200, 0, 200, 200, 'pending',
+                     '2026-07-29T00:00:02Z', '2026-07-29T00:00:02Z'
+                   ),
+                   (
+                     'single_mismatch_item', 'single_generate_mismatch',
+                     'single_generate', 0, 'mismatched reference', 'single', 0, 0,
+                     0, 0, 200, 200, 'pending',
+                     '2026-07-29T00:00:03Z', '2026-07-29T00:00:03Z'
+                   ),
+                   (
+                     'single_wrong_kind_item', 'single_generate_wrong_kind',
+                     'single_generate', 0, 'wrong reference kind', 'single', 0, 0,
+                     0, 0, 200, 200, 'pending',
+                     '2026-07-29T00:00:04Z', '2026-07-29T00:00:04Z'
+                   );
+
+                 INSERT INTO ai_request_artifacts (
+                   request_id, role, source_file_id, sha256,
+                   manifest_json, created_at
+                 ) VALUES (
+                   'single_generate_reference', 'input_sheet',
+                   'reference_sheet_one',
+                   '1111111111111111111111111111111111111111111111111111111111111111',
+                   json_object(
+                     'schema', 'pmtcon-ai-grid-v1',
+                     'kind', 'generation_reference',
+                     'inputSheetSha256',
+                     '1111111111111111111111111111111111111111111111111111111111111111'
+                   ),
+                   '2026-07-29T00:00:01Z'
+                 );
+
+                 INSERT INTO ai_request_artifacts (
+                   request_id, role, source_file_id, sha256,
+                   manifest_json, created_at
+                 ) VALUES (
+                   'grid_edit_without_reference', 'input_sheet',
+                   'reference_sheet_one',
+                   '1111111111111111111111111111111111111111111111111111111111111111',
+                   json_object(
+                     'schema', 'pmtcon-ai-grid-v1',
+                     'kind', 'selected_icon_edit'
+                   ),
+                   '2026-07-29T00:00:06Z'
+                 );
+
+                 UPDATE ai_requests
+                 SET status = 'prepared'
+                 WHERE id = 'single_generate_reference';
+
+                 UPDATE ai_requests
+                 SET status = 'prepared'
+                 WHERE id = 'grid_generate_no_reference';",
+            )
+            .unwrap();
+
+        for request_id in ["single_generate_reference", "grid_generate_no_reference"] {
+            let status: String = connection
+                .query_row(
+                    "SELECT status FROM ai_requests WHERE id = ?1",
+                    [request_id],
+                    |row| row.get(0),
+                )
+                .unwrap();
+            assert_eq!(status, "prepared");
+        }
+
+        let mismatched_hash = connection.execute(
+            "INSERT INTO ai_request_artifacts (
+               request_id, role, source_file_id, sha256,
+               manifest_json, created_at
+             ) VALUES (
+               'single_generate_mismatch', 'input_sheet',
+               'reference_sheet_one',
+               '1111111111111111111111111111111111111111111111111111111111111111',
+               json_object(
+                 'schema', 'pmtcon-ai-grid-v1',
+                 'kind', 'generation_reference',
+                 'inputSheetSha256',
+                 '1111111111111111111111111111111111111111111111111111111111111111'
+               ),
+               '2026-07-29T00:00:03Z'
+             )",
+            [],
+        );
+        assert!(mismatched_hash.is_err());
+
+        let wrong_kind = connection.execute(
+            "INSERT INTO ai_request_artifacts (
+               request_id, role, source_file_id, sha256,
+               manifest_json, created_at
+             ) VALUES (
+               'single_generate_wrong_kind', 'input_sheet',
+               'reference_sheet_two',
+               '2222222222222222222222222222222222222222222222222222222222222222',
+               json_object(
+                 'schema', 'pmtcon-ai-grid-v1',
+                 'kind', 'selected_icon_edit',
+                 'inputSheetSha256',
+                 '2222222222222222222222222222222222222222222222222222222222222222'
+               ),
+               '2026-07-29T00:00:04Z'
+             )",
+            [],
+        );
+        assert!(wrong_kind.is_err());
+
+        let grid_edit_reference = connection.execute(
+            "INSERT INTO ai_request_artifacts (
+               request_id, role, source_file_id, sha256,
+               manifest_json, created_at
+             ) VALUES (
+               'grid_edit_reference_rejected', 'input_sheet',
+               'reference_sheet_one',
+               '1111111111111111111111111111111111111111111111111111111111111111',
+               json_object(
+                 'schema', 'pmtcon-ai-grid-v1',
+                 'kind', 'selected_icon_edit'
+               ),
+               '2026-07-29T00:00:05Z'
+             )",
+            [],
+        );
+        assert!(grid_edit_reference.is_err());
+
+        let missing_reference_artifact = connection.execute(
+            "UPDATE ai_requests SET status = 'prepared'
+             WHERE id = 'single_generate_mismatch'",
+            [],
+        );
+        assert!(missing_reference_artifact.is_err());
+
+        let prepared_guard_sql: String = connection
+            .query_row(
+                "SELECT sql FROM sqlite_master
+                 WHERE type = 'trigger'
+                   AND name = 'trg_ai_grid_request_prepared_guard_before_update'",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert!(prepared_guard_sql.contains("OLD.reference_package_sha256 IS NOT NULL"));
+        assert!(prepared_guard_sql.contains("generation_reference"));
+        assert_eq!(foreign_key_violations(&connection), 0);
+    }
+
+    #[test]
+    fn ai_web_handoff_result_accepts_same_aspect_ratio_and_preserves_safety_checks() {
+        let mut connection = Connection::open_in_memory().unwrap();
+        connection
+            .pragma_update(None, "foreign_keys", "ON")
+            .unwrap();
+        run(&mut connection).unwrap();
+
+        connection
+            .execute_batch(
+                "INSERT INTO source_files (
+                   id, original_filename, original_path_in_library,
+                   original_extension, mime_type, width, height, byte_size,
+                   sha256, is_animated, frame_count, has_alpha, created_at
+                 ) VALUES
+                   (
+                     'ratio_pass_source', 'ratio-pass.png', 'C:/results/ratio-pass.png',
+                     'png', 'image/png', 400, 400, 4,
+                     'aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa',
+                     0, NULL, 1, '2026-07-29T00:00:00Z'
+                   ),
+                   (
+                     'ratio_fail_source', 'ratio-fail.png', 'C:/results/ratio-fail.png',
+                     'png', 'image/png', 400, 300, 4,
+                     'bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb',
+                     0, NULL, 1, '2026-07-29T00:00:00Z'
+                   ),
+                   (
+                     'alpha_fail_source', 'alpha-fail.png', 'C:/results/alpha-fail.png',
+                     'png', 'image/png', 400, 400, 4,
+                     'cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc',
+                     0, NULL, 0, '2026-07-29T00:00:00Z'
+                   ),
+                   (
+                     'animated_fail_source', 'animated-fail.gif',
+                     'C:/results/animated-fail.gif', 'gif', 'image/gif', 400, 400, 4,
+                     'dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd',
+                     1, 2, 1, '2026-07-29T00:00:00Z'
+                   );
+
+                 INSERT INTO ai_requests (
+                   id, request_scope, provider_mode, service_surface,
+                   provider, adapter_id, adapter_contract_version, operation,
+                   provenance_trust, input_package_sha256,
+                   original_lineage_id, original_lineage_generation,
+                   original_source_sha256, effective_source_sha256,
+                   payload_input_signature, request_recipe_signature,
+                   activation_revision, status, expires_at, created_at, updated_at
+                 ) VALUES
+                   (
+                     'ratio_pass_request', 'icon_edit', 'manual_web', 'other_manual',
+                     'manual', 'pmtcon-web-handoff', '1',
+                     'static_image_edit_web_handoff', 'manual_unverified',
+                     'eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee',
+                     'ratio-pass-lineage', 0,
+                     '0000000000000000000000000000000000000000000000000000000000000000',
+                     '0000000000000000000000000000000000000000000000000000000000000000',
+                     'ratio-pass-payload', 'ratio-pass-recipe', 0,
+                     'awaiting_result', '2026-08-05T00:00:00Z',
+                     '2026-07-29T00:00:00Z', '2026-07-29T00:00:00Z'
+                   ),
+                   (
+                     'ratio_fail_request', 'icon_edit', 'manual_web', 'other_manual',
+                     'manual', 'pmtcon-web-handoff', '1',
+                     'static_image_edit_web_handoff', 'manual_unverified',
+                     'eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee',
+                     'ratio-fail-lineage', 0,
+                     '0000000000000000000000000000000000000000000000000000000000000000',
+                     '0000000000000000000000000000000000000000000000000000000000000000',
+                     'ratio-fail-payload', 'ratio-fail-recipe', 0,
+                     'awaiting_result', '2026-08-05T00:00:00Z',
+                     '2026-07-29T00:00:00Z', '2026-07-29T00:00:00Z'
+                   ),
+                   (
+                     'alpha_fail_request', 'icon_edit', 'manual_web', 'other_manual',
+                     'manual', 'pmtcon-web-handoff', '1',
+                     'static_image_edit_web_handoff', 'manual_unverified',
+                     'eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee',
+                     'alpha-fail-lineage', 0,
+                     '0000000000000000000000000000000000000000000000000000000000000000',
+                     '0000000000000000000000000000000000000000000000000000000000000000',
+                     'alpha-fail-payload', 'alpha-fail-recipe', 0,
+                     'awaiting_result', '2026-08-05T00:00:00Z',
+                     '2026-07-29T00:00:00Z', '2026-07-29T00:00:00Z'
+                   ),
+                   (
+                     'animated_fail_request', 'icon_edit', 'manual_web', 'other_manual',
+                     'manual', 'pmtcon-web-handoff', '1',
+                     'static_image_edit_web_handoff', 'manual_unverified',
+                     'eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee',
+                     'animated-fail-lineage', 0,
+                     '0000000000000000000000000000000000000000000000000000000000000000',
+                     '0000000000000000000000000000000000000000000000000000000000000000',
+                     'animated-fail-payload', 'animated-fail-recipe', 0,
+                     'awaiting_result', '2026-08-05T00:00:00Z',
+                     '2026-07-29T00:00:00Z', '2026-07-29T00:00:00Z'
+                   );
+
+                 INSERT INTO ai_web_handoff_packages (
+                   request_id, handoff_kind, layout_mode, operation,
+                   service_surface, upload_file_name, upload_sha256,
+                   manifest_file_name, manifest_sha256,
+                   prompt_file_name, prompt_sha256,
+                   expected_width, expected_height, expected_has_alpha,
+                   created_at, expires_at, updated_at
+                 ) VALUES
+                   (
+                     'ratio_pass_request', 'static_icon_sheet', 'single', 'edit',
+                     'other_manual', 'upload.png',
+                     'eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee',
+                     'manifest.json',
+                     'ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff',
+                     'prompt.txt',
+                     '1111111111111111111111111111111111111111111111111111111111111111',
+                     200, 200, 1, '2026-07-29T00:00:00Z',
+                     '2026-08-05T00:00:00Z', '2026-07-29T00:00:00Z'
+                   ),
+                   (
+                     'ratio_fail_request', 'static_icon_sheet', 'single', 'edit',
+                     'other_manual', 'upload.png',
+                     'eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee',
+                     'manifest.json',
+                     'ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff',
+                     'prompt.txt',
+                     '1111111111111111111111111111111111111111111111111111111111111111',
+                     200, 200, 1, '2026-07-29T00:00:00Z',
+                     '2026-08-05T00:00:00Z', '2026-07-29T00:00:00Z'
+                   ),
+                   (
+                     'alpha_fail_request', 'static_icon_sheet', 'single', 'edit',
+                     'other_manual', 'upload.png',
+                     'eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee',
+                     'manifest.json',
+                     'ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff',
+                     'prompt.txt',
+                     '1111111111111111111111111111111111111111111111111111111111111111',
+                     200, 200, 1, '2026-07-29T00:00:00Z',
+                     '2026-08-05T00:00:00Z', '2026-07-29T00:00:00Z'
+                   ),
+                   (
+                     'animated_fail_request', 'static_icon_sheet', 'single', 'edit',
+                     'other_manual', 'upload.png',
+                     'eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee',
+                     'manifest.json',
+                     'ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff',
+                     'prompt.txt',
+                     '1111111111111111111111111111111111111111111111111111111111111111',
+                     200, 200, 1, '2026-07-29T00:00:00Z',
+                     '2026-08-05T00:00:00Z', '2026-07-29T00:00:00Z'
+                   );
+
+                 INSERT INTO ai_candidates (
+                   id, request_id, candidate_index, raw_source_file_id,
+                   raw_source_sha256, output_format, width, height,
+                   is_animated, has_alpha, created_at
+                 ) VALUES
+                   (
+                     'ratio_pass_candidate', 'ratio_pass_request', 0,
+                     'ratio_pass_source',
+                     'aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa',
+                     'png', 400, 400, 0, 1, '2026-07-29T00:00:01Z'
+                   ),
+                   (
+                     'ratio_fail_candidate', 'ratio_fail_request', 0,
+                     'ratio_fail_source',
+                     'bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb',
+                     'png', 400, 300, 0, 1, '2026-07-29T00:00:01Z'
+                   ),
+                   (
+                     'alpha_fail_candidate', 'alpha_fail_request', 0,
+                     'alpha_fail_source',
+                     'cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc',
+                     'png', 400, 400, 0, 0, '2026-07-29T00:00:01Z'
+                   ),
+                   (
+                     'animated_fail_candidate', 'animated_fail_request', 0,
+                     'animated_fail_source',
+                     'dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd',
+                     'gif', 400, 400, 1, 1, '2026-07-29T00:00:01Z'
+                   );
+
+                 UPDATE ai_requests
+                 SET status = 'completed', completed_at = '2026-07-29T00:00:02Z',
+                     updated_at = '2026-07-29T00:00:02Z'
+                 WHERE id IN (
+                   'ratio_pass_request', 'ratio_fail_request',
+                   'alpha_fail_request', 'animated_fail_request'
+                 );
+
+                 UPDATE ai_web_handoff_packages
+                 SET cleanup_requested_at = '2026-07-29T00:00:03Z',
+                     updated_at = '2026-07-29T00:00:03Z';
+
+                 UPDATE ai_web_handoff_packages
+                 SET candidate_id = 'ratio_pass_candidate',
+                     result_sha256 =
+                       'aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa',
+                     result_received_at = '2026-07-29T00:00:04Z',
+                     updated_at = '2026-07-29T00:00:04Z'
+                 WHERE request_id = 'ratio_pass_request';",
+            )
+            .unwrap();
+
+        let accepted_candidate: String = connection
+            .query_row(
+                "SELECT candidate_id FROM ai_web_handoff_packages
+                 WHERE request_id = 'ratio_pass_request'",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert_eq!(accepted_candidate, "ratio_pass_candidate");
+
+        for (request_id, candidate_id, result_sha256) in [
+            (
+                "ratio_fail_request",
+                "ratio_fail_candidate",
+                "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+            ),
+            (
+                "alpha_fail_request",
+                "alpha_fail_candidate",
+                "cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc",
+            ),
+            (
+                "animated_fail_request",
+                "animated_fail_candidate",
+                "dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd",
+            ),
+        ] {
+            let rejected = connection.execute(
+                "UPDATE ai_web_handoff_packages
+                 SET candidate_id = ?2, result_sha256 = ?3,
+                     result_received_at = '2026-07-29T00:00:04Z',
+                     updated_at = '2026-07-29T00:00:04Z'
+                 WHERE request_id = ?1",
+                params![request_id, candidate_id, result_sha256],
+            );
+            assert!(
+                rejected.is_err(),
+                "unsafe result must be rejected: {request_id}"
+            );
+        }
+
+        assert_eq!(foreign_key_violations(&connection), 0);
     }
 }

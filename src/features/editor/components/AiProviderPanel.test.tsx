@@ -2,7 +2,25 @@ import { renderToString } from "react-dom/server";
 import { describe, expect, it } from "vitest";
 
 import { AiProviderPanel } from "@/features/editor/components/AiProviderPanel";
+import type {
+  CollectionSummary,
+  IconSummary,
+} from "@/features/collections/types";
 import type { SourceFileSummary } from "@/features/editor/types";
+
+const collection = {
+  id: "collection_1",
+  defaultCellWidth: 200,
+  defaultCellHeight: 200,
+} as CollectionSummary;
+
+const icon = {
+  id: "icon_1",
+  collectionId: collection.id,
+  displayName: "테스트 GIF",
+  cellWidthOverride: null,
+  cellHeightOverride: null,
+} as IconSummary;
 
 const source: SourceFileSummary = {
   id: "source_1",
@@ -27,10 +45,10 @@ function renderPanel(
 ) {
   return renderToString(
     <AiProviderPanel
-      collectionId="collection_1"
+      collection={collection}
       disabled={false}
       hasUnsavedChanges
-      iconId="icon_1"
+      icon={icon}
       initialProviderChoice={initialProviderChoice}
       source={currentSource}
       onAnnouncement={() => {}}
@@ -75,7 +93,7 @@ describe("AiProviderPanel credential and source UX", () => {
     expect(html).toContain("저장하지 않은 편집이 있어");
   });
 
-  it("fails closed for animated sources with an exact static-only reason", () => {
+  it("offers the manual GIF frame-sheet roundtrip without implying direct provider API support", () => {
     const html = renderPanel("novelai", {
       ...source,
       originalFilename: "animated.gif",
@@ -85,9 +103,12 @@ describe("AiProviderPanel credential and source UX", () => {
       frameCount: 12,
     });
 
-    expect(html).toContain("정적 JPG·PNG 소스만 지원합니다.");
-    expect(html).toContain("GIF 프레임 스프라이트 왕복은 다음 업데이트");
-    expect(openingTag(html, "ai-novelai-execute")).toContain('disabled=""');
+    expect(html).toContain('data-testid="ai-gif-frame-sheet-entry"');
+    expect(html).toContain("GIF 프레임 시트 AI 왕복");
+    expect(html).toContain("직접 GIF API 호출이나 자동 업로드는 하지 않습니다.");
+    expect(html).toContain("원본 GIF와 프레임별 timing·loop");
+    expect(html).not.toContain("다음 업데이트");
+    expect(html).not.toContain('data-testid="ai-novelai-execute"');
   });
 });
 

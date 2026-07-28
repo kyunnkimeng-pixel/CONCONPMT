@@ -25,7 +25,10 @@ import type {
   IconEditorState,
   SourceFileSummary,
 } from "@/features/editor/types";
-import type { IconSummary } from "@/features/collections/types";
+import type {
+  CollectionSummary,
+  IconSummary,
+} from "@/features/collections/types";
 
 const source: SourceFileSummary = {
   id: "source_original",
@@ -54,6 +57,19 @@ const visualSource: EffectiveVisualSource = {
   activationRevision: 0,
   normalizationRecipeHash: null,
 };
+
+const collection = {
+  id: "collection_1",
+  name: "테스트 모음",
+  defaultCellWidth: 200,
+  defaultCellHeight: 200,
+} as CollectionSummary;
+
+const workspaceIcon = {
+  id: "icon_1",
+  collectionId: collection.id,
+  displayName: "테스트 아이콘",
+} as IconSummary;
 
 const createdIcon = {
   id: "icon_new",
@@ -140,9 +156,9 @@ describe("AiReviewSection compact entry", () => {
   it("keeps the workspace closed and exposes no heavy or credential controls", () => {
     const html = renderToString(
       <AiReviewSection
-        collectionId="collection_1"
+        collection={collection}
         hasUnsavedChanges={false}
-        iconId="icon_1"
+        icon={workspaceIcon}
         visualSource={visualSource}
         onBusyChange={() => {}}
         onCreatedIconCommitted={async () => {}}

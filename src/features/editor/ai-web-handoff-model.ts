@@ -25,6 +25,7 @@ const ISSUE_CODE_ALIASES: Readonly<
   Record<string, AiWebHandoffValidationIssueCode>
 > = {
   ai_handoff_result_dimensions: "canvas_size_mismatch",
+  ai_handoff_result_size_normalization: "size_normalization",
   ai_handoff_result_alpha_lost: "transparency_lost",
   ai_handoff_result_corrupt: "decode_failed",
   ai_handoff_result_format: "unsupported_format",
@@ -54,6 +55,7 @@ function canonicalIssueCode(
         "decode_failed",
         "file_too_large",
         "canvas_size_mismatch",
+        "size_normalization",
         "transparency_lost",
         "page_count_mismatch",
         "item_count_mismatch",
@@ -116,6 +118,17 @@ function describeKnownAiWebHandoffIssue(
         correctionPrompt: `출력 캔버스 크기를 정확히 ${expected}로 유지하고 이미지의 가로세로 크기를 변경하지 마세요.`,
       };
     }
+    case "size_normalization":
+      return {
+        problem:
+          issue.message ||
+          "결과 크기는 다르지만 목표 캔버스와 가로세로 비율이 같습니다.",
+        impact:
+          "다운로드한 원본 해상도는 후보로 보존되고, 적용 전 PMTCONCON Studio가 목표 크기로 정규화합니다.",
+        fix:
+          "미리보기에서 구도와 선명도를 확인한 뒤 후보로 등록하세요.",
+        correctionPrompt: null,
+      };
     case "transparency_lost":
       return {
         problem: issue.message || "결과에서 투명 배경이 사라졌습니다.",

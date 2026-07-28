@@ -389,8 +389,11 @@ Stage Gate를 통과해야 하며 미래 기능을 동작하지 않는 메뉴로
   아님, 지원 지역, professional/business 목적, 사용자의 유료 key와 비용 확인,
   해당 surface의 data-policy 검토를 모두 통과한 경우에만 명시적으로 열 수 있다.
   현재 Interactions allowlist는 `gemini-2.5-flash-image`와
-  `gemini-3.1-flash-image`이며 inline `image/jpeg` 1K만 요청·검증해 `.jpg`
-  후보로 저장한다. 이 조건을 확인하지 않은 일반 배포에서는 Gemini API key 입력과
+  `gemini-3.1-flash-image`다. 2.5 요청에는 지원하지 않는 `image_size`를 넣지 않고,
+  3.1에만 `1K`를 요청한다. 응답의 모든 `model_output`을 순회해 마지막 inline
+  `image/jpeg`를 후보로 저장한다. 400 응답은 잘못된 key, 무료 등급/결제 미설정의
+  `FAILED_PRECONDITION`, 실제 요청 필드를 고정된 안내로 구분하고 provider body와
+  비밀값은 버린다. 이 조건을 확인하지 않은 일반 배포에서는 Gemini API key 입력과
   실행을 숨기거나 비활성화하고 Gemini 공식 웹 수동 handoff만 제공한다.
 - 기준일과 제한의 근거는
   [NovelAI Image API schema](https://image.novelai.net/docs/doc.json),
@@ -408,9 +411,11 @@ Stage Gate를 통과해야 하며 미래 기능을 동작하지 않는 메뉴로
   외부 유료 API를 호출할 수 있음을 실행 전에 알린다.
 - cloud adapter는 코드 소유 exact HTTPS origin(scheme/host/port/path-prefix)만
   허용하고 사용자의 URL override와 redirect를 거부한다.
-- 첫 automated provider pilot은 기존 정적 JPG/PNG 한 장 편집만 다룬다. GIF
-  poster-frame, 전체 frame, sprite sheet, text-to-image와 inpaint는 모두 별도
-  opt-in 실험 Stage Gate로 분리한다.
+- 첫 automated provider pilot은 기존 정적 JPG/PNG 한 장 편집만 다룬다. 직접 API의
+  GIF 전체 frame batch, animated output, text-to-image와 inpaint는 별도 opt-in
+  실험 Stage Gate로 분리한다. 수동 웹 GIF 편집은 direct provider 호출이 아니라
+  `pmtcon-gif-frame-sheet-v2` clean PNG/manifest 왕복으로 제공하며, 원본 GIF와
+  frame timing/order/loop를 그대로 보존·복원한다.
 - 실제 flow가 구현되기 전에는 AI 메뉴나 탭을 노출하지 않는다.
 - 아이콘/collection 복제는 request·candidate·source bytes를 공유하되 새 lineage와
   version/state/preview ownership을 만든다. 모든 과거 lineage를 서로 다른 새 lineage로
@@ -427,7 +432,9 @@ Stage Gate를 통과해야 하며 미래 기능을 동작하지 않는 메뉴로
   기본 1200×760 창에서 header/tabs/status/action bar는 고정하고 후보·비교·설정
   영역만 독립적으로 스크롤한다.
 - 공급자 또는 수동 작업이 반환한 임의 크기 JPG/PNG는 raw candidate로 그대로
-  보존한다. 적용 전 `전체 보이기(contain + pad)` 또는
+  보존한다. 단일 수동 웹 결과가 요청 크기와 달라도 목표와 가로세로 비율이 같으면
+  차단하지 않고 로컬 정규화 경고를 표시한다. 비율이 다르거나 필수 alpha가 사라진
+  결과는 계속 차단한다. 적용 전 `전체 보이기(contain + pad)` 또는
   `빈틈 없이 채우기(cover + crop)`, 3×3 정렬과 bounded resize filter로 현재
   base-source canvas에 맞춘 별도 불변 source를 만들고 normalization recipe/hash를
   AI version에 저장한다. 기본은 transparent pad를 쓰는 `전체 보이기`다.
@@ -493,8 +500,15 @@ Stage Gate를 통과해야 하며 미래 기능을 동작하지 않는 메뉴로
   request의 비활성 후보 저장을 지원한다. 원본과 활성 소스는 자동 변경하지 않는다.
   로그인·DOM·cookie·자동 생성/다운로드/결과 판정은 계속 금지한다. F148–F149는
   선택한 정적 단일 아이콘 2–16개 수동 웹 그리드 수정과 원본 없는 단일/그리드
-  생성을 지원한다. F152의 GIF manifest 왕복은 정확한 frame delay/loop를 복원하지만,
-  provider 기반 animated/GIF 생성은 여전히 별도 Stage Gate다. F139 session-only
+  생성을 지원한다. 생성은 모음의 단일 아이콘과 외부 PNG/JPG/GIF를 합쳐 1–16개
+  참고 이미지 board로 준비할 수 있다. 외부 파일은 IPC 직렬화 전에 합계 16MiB로,
+  내부·외부 전체 참고 source는 누적 128M 픽셀로 제한한다. 비정사각형 source는
+  contain으로 비율을 보존하고 GIF 참고는 첫 프레임 poster를 사용한다. 참고 board
+  배치와 실제 출력 geometry를 프롬프트에서 분리하며, 살아 있는 reference board는
+  최근 전달에서 다시 끌기·Explorer 열기·취소할 수 있다. F152/F155의 GIF manifest
+  왕복은 clean PNG/manifest와 구조 보호 프롬프트를 Gemini/NovelAI 웹에 수동 전달하고
+  정확한 frame delay/loop를 복원한다. direct provider animated/GIF batch는 여전히
+  별도 Stage Gate다. F139 session-only
   NovelAI 정적 이미지 편집 pilot은 mock·보안·license Stage Gate와 사용자 승인 live
   test 전에는 일반 release 완료 기능으로 표시하지 않는다.
 

@@ -1,7 +1,10 @@
 import { normalizeIconSummary } from "@/features/icons/api";
 import type { SheetGridAnalysis, SheetGridSettings } from "@/features/sheets/types";
 import { filePathToAssetUrl } from "@/lib/asset-url";
-import { fileToImportPayload } from "@/lib/import-file";
+import {
+  fileToImportPayload,
+  filesToImportPayloads,
+} from "@/lib/import-file";
 import { invokeCommand } from "@/lib/tauri";
 import type {
   AiGeneratedIconsCommitResult,
@@ -12,6 +15,8 @@ import type {
   FinalizeGeneratedIconInput,
   ReviewedAiGridDecision,
 } from "@/features/ai-grid/types";
+
+export const MAX_AI_REFERENCE_EXTERNAL_BYTES = 16 * 1024 * 1024;
 
 function normalizeWorkspace(workspace: AiGridWorkspace): AiGridWorkspace {
   const normalizeArtifact = (artifact: AiGridWorkspace["inputArtifact"]) =>
@@ -45,12 +50,22 @@ export function prepareAiGridEditWorkspace(
   }).then(normalizeWorkspace);
 }
 
-export function prepareAiGenerationWorkspace(
+export async function prepareAiGenerationWorkspace(
   collectionId: string,
   targetNames: string[],
   payloadInputSignature: string,
   layout: AiGridLayout | null = null,
+  referenceIconIds: string[] = [],
+  referenceFiles: File[] = [],
 ) {
+  const totalReferenceBytes = referenceFiles.reduce(
+    (total, file) => total + file.size,
+    0,
+  );
+  if (totalReferenceBytes > MAX_AI_REFERENCE_EXTERNAL_BYTES) {
+    throw new Error("외부 참고 이미지는 합계 16MB까지 사용할 수 있습니다.");
+  }
+  const referenceFilePayloads = await filesToImportPayloads(referenceFiles);
   return invokeCommand<AiGridWorkspace>("prepare_ai_generation_workspace", {
     collectionId,
     payload: {
@@ -58,6 +73,8 @@ export function prepareAiGenerationWorkspace(
       layout,
       canvasSize: layout ? null : 1024,
       payloadInputSignature,
+      referenceIconIds,
+      referenceFiles: referenceFilePayloads,
       retryOfRequestId: null,
     },
   }).then(normalizeWorkspace);

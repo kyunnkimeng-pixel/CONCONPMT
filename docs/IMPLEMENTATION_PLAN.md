@@ -1,4 +1,35 @@
 # IMPLEMENTATION_PLAN.md — Codex 실행 계획
+## Stage AI_PROVIDER_REFERENCE_GIF_REPAIR (2026-07-29)
+
+1. Gemini Interactions 요청을 모델별 계약으로 분기한다. 2.5에는 고정 해상도
+   모델이 거부할 수 있는 `image_size`를 보내지 않고, 3.1에만 `1K`를 보낸다.
+   성공 응답은 모든 `model_output`을 순회해 마지막 JPEG를 사용하며, 400은
+   잘못된 key·무료 등급/결제 전제·실제 필드 오류를 구분하되 provider body나
+   비밀값은 노출하지 않는 고정 안내로 바꾼다.
+2. Windows native drag는 앱 데이터 루트와 파일을 먼저 정규화한 뒤 같은 기준으로
+   비교하되, 앱 루트 아래의 실제 하위 구성 요소에 생긴 symlink/reparse point는
+   계속 거부한다.
+3. 정적 단일 웹 결과가 목표 캔버스와 같은 비율이면 원본 결과를 후보로 보존하고
+   적용/내보내기 단계의 native normalization으로 목표 크기에 맞춘다. 비율이
+   다르거나 투명도가 손실된 경우에는 기존의 명시적 검토/차단을 유지한다.
+4. `AI 아이콘 만들기`에서 현재 모음의 1–16개 아이콘 poster와 사용자가 고른
+   PNG/JPG/GIF를 하나의 관리형 reference sheet로 준비한다. 외부 파일 16MiB,
+   전체 128M 픽셀을 넘기지 않고 비정사각형 비율과 GIF 첫 프레임 poster를 보존한다.
+   reference sheet는 출력 grid가 아니라 캐릭터·그림체 참고 자료임을 자동 프롬프트와
+   화면에서 구분한다.
+5. GIF AI 수정은 공급자 API에 프레임을 숨겨 보내지 않는다. 기존
+   `pmtcon-gif-frame-sheet-v2` 내보내기/manifest/재가져오기를 AI 작업공간에서
+   직접 열고, 웹 AI용 프레임 일관성·배치 보존 프롬프트와 공식 사이트 연결을
+   제공한다. 원본 GIF, frame timing과 loop metadata는 계속 보존한다.
+6. 관련 Rust/React 회귀, lint/build, license guard와 headed browser QA를 통과한
+   뒤 Windows NSIS 후보를 만든다.
+
+Done when: Gemini 2.5/3.1 exact body tests, canonical drag alias regression, same-ratio
+result normalization, selected/external reference sheet, GIF AI frame-sheet entry and
+roundtrip tests가 통과하고 원본·후보·GIF timing/loop rollback 계약이 유지된다.
+
+Status: complete for 0.3.0-alpha.4. Frontend 56 files/336 tests, Rust 342 all-target
+tests, lint/build/rustfmt/license guards; headed browser QA와 NSIS 산출물은 `RELEASE_READINESS_0.3.0-alpha.4.md`에 기록했다.
 
 ## Stage AI_FRICTIONLESS_WEB_HANDOFF (2026-07-28)
 

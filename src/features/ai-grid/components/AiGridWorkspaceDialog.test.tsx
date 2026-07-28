@@ -27,6 +27,7 @@ vi.mock("@/features/ai-grid/api", () => ({
   commitAiGridReview: mocks.commitReview,
   getLatestAiGridWorkspace: mocks.getLatest,
   markAiGridWorkspaceAwaitingResult: mocks.markAwaiting,
+  MAX_AI_REFERENCE_EXTERNAL_BYTES: 16 * 1024 * 1024,
   prepareAiGenerationWorkspace: mocks.prepareGeneration,
   prepareAiGridEditWorkspace: mocks.prepareEdit,
   revealAiGridInput: mocks.revealInput,
@@ -290,6 +291,70 @@ describe("AiGridWorkspaceDialog lifecycle", () => {
       container.querySelector('[data-testid="ai-grid-step-targets"]'),
     ).not.toBeNull();
     expect(container.textContent).toContain("새 작업을 준비할 수 있습니다");
+  });
+
+  it("prepares generation with selected library and external reference images", async () => {
+    const generationItem = {
+      ...workspace().items[0],
+      originIconId: null,
+      originIconIdSnapshot: null,
+      targetNameSnapshot: "새 이모티콘 1",
+    };
+    mocks.prepareGeneration.mockResolvedValue(
+      workspace({
+        requestScope: "single_generate",
+        status: "prepared",
+        itemCount: 1,
+        inputArtifact: {
+          ...workspace().inputArtifact!,
+          originalFilename: "pmtcon-ai-generation-references.png",
+          manifestJson:
+            '{"schema":"pmtcon-ai-grid-v1","kind":"generation_reference"}',
+        },
+        items: [generationItem],
+      }),
+    );
+    await renderDialog();
+
+    const referenceArea = container.querySelector(
+      '[data-testid="ai-generation-references"]',
+    );
+    const iconCheckbox = referenceArea?.querySelector<HTMLInputElement>(
+      'input[type="checkbox"]',
+    );
+    const fileInput = referenceArea?.querySelector<HTMLInputElement>(
+      'input[type="file"]',
+    );
+    if (!iconCheckbox || !fileInput) throw new Error("Missing reference controls");
+    const referenceFile = new File([new Uint8Array([1, 2, 3])], "style.gif", {
+      type: "image/gif",
+    });
+    Object.defineProperty(fileInput, "files", {
+      configurable: true,
+      value: [referenceFile],
+    });
+    await act(async () => {
+      iconCheckbox.click();
+      fileInput.dispatchEvent(new Event("change", { bubbles: true }));
+    });
+    expect(referenceArea?.textContent).toContain("2/16");
+    expect(referenceArea?.textContent).toContain("style.gif");
+
+    await act(async () => button("배치 확인").click());
+    await act(async () => {
+      button("작업공간 준비").click();
+      await Promise.resolve();
+    });
+
+    expect(mocks.prepareGeneration).toHaveBeenCalledWith(
+      collection.id,
+      ["새 이모티콘 1"],
+      "source-free-1-새 이모티콘 1",
+      null,
+      ["icon-0"],
+      [referenceFile],
+    );
+    expect(container.textContent).toContain("2개 참고 이미지");
   });
 
   it("routes keyboard activation of native drag to the Explorer fallback", async () => {

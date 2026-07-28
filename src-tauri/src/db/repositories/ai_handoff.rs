@@ -733,12 +733,19 @@ pub fn list_recent_ai_web_handoffs(
                  OR request.status IN ('completed', 'failed', 'cancelled', 'expired')
                  THEN 'cleanup_pending'
                WHEN julianday(retention.expires_at) <= julianday('now') THEN 'expired'
-               WHEN request.request_scope = 'grid_edit'
-                 AND request.status IN ('prepared', 'awaiting_result')
+               WHEN request.status IN ('prepared', 'awaiting_result')
                  AND EXISTS(
                   SELECT 1 FROM ai_request_artifacts artifact
                   WHERE artifact.request_id = request.id
                     AND artifact.role = 'input_sheet'
+                    AND (
+                      request.request_scope = 'grid_edit'
+                      OR (
+                        request.request_scope IN ('single_generate', 'grid_generate')
+                        AND json_extract(artifact.manifest_json, '$.kind')
+                          = 'generation_reference'
+                      )
+                    )
                 )
                 THEN 'available'
               ELSE 'closed'
@@ -1036,7 +1043,7 @@ pub fn commit_ai_web_handoff_result(
         &normalized_file,
         SourceFileImportOptions {
             allow_gif: false,
-            exact_dimensions: Some((record.expected_width, record.expected_height)),
+            exact_dimensions: None,
         },
     )?;
     let artifact_snapshot = prepared.artifact_snapshot(connection, paths)?;
@@ -2276,24 +2283,51 @@ fn inspect_result(
     dto.actual_height = Some(actual_height);
     dto.actual_has_alpha = Some(actual_has_alpha);
     if actual_width != record.expected_width || actual_height != record.expected_height {
-        push_blocking_issue(
-            &mut dto,
-            AiWebHandoffIssueDto {
-                code: "ai_handoff_result_dimensions".to_string(),
-                severity: "blocking".to_string(),
-                message: "결과 이미지의 캔버스 크기가 전달 패키지와 다릅니다.".to_string(),
-                expected: Some(format!(
-                    "{}×{}px",
+        let aspect_ratio_matches = i128::from(actual_width) * i128::from(record.expected_height)
+            == i128::from(record.expected_width) * i128::from(actual_height);
+        let issue = AiWebHandoffIssueDto {
+            code: if aspect_ratio_matches {
+                "ai_handoff_result_size_normalization"
+            } else {
+                "ai_handoff_result_dimensions"
+            }
+            .to_string(),
+            severity: if aspect_ratio_matches {
+                "warning"
+            } else {
+                "blocking"
+            }
+            .to_string(),
+            message: if aspect_ratio_matches {
+                format!(
+                    "결과가 {actual_width}×{actual_height}px로 생성됐지만 목표와 비율이 같습니다. 원본 결과를 보존하고 검토·적용 단계에서 {}×{}px로 정규화합니다.",
                     record.expected_width, record.expected_height
-                )),
-                actual: Some(format!("{actual_width}×{actual_height}px")),
-                suggested_prompt: Some(format!(
-                    "Keep the canvas exactly {}×{}px. Do not crop, resize, or add margins.",
-                    record.expected_width, record.expected_height
-                )),
-                local_action: Some("제안 프롬프트로 웹에서 다시 요청하세요.".to_string()),
+                )
+            } else {
+                "결과 이미지의 비율이 전달 패키지와 다릅니다.".to_string()
             },
-        );
+            expected: Some(format!(
+                "{}×{}px (같은 비율 허용)",
+                record.expected_width, record.expected_height
+            )),
+            actual: Some(format!("{actual_width}×{actual_height}px")),
+            suggested_prompt: (!aspect_ratio_matches).then(|| {
+                format!(
+                    "Keep the exact {}:{} aspect ratio. Do not crop or add margins.",
+                    record.expected_width, record.expected_height
+                )
+            }),
+            local_action: Some(if aspect_ratio_matches {
+                "미리보기에서 구도와 선명도를 확인한 뒤 후보로 등록하세요.".to_string()
+            } else {
+                "제안 프롬프트로 웹에서 같은 비율의 결과를 다시 요청하세요.".to_string()
+            }),
+        };
+        if aspect_ratio_matches {
+            dto.issues.push(issue);
+        } else {
+            push_blocking_issue(&mut dto, issue);
+        }
     }
     if record.expected_has_alpha && !actual_has_alpha {
         push_blocking_issue(
@@ -2323,6 +2357,9 @@ fn inspect_result(
             record.expected_width.to_string(),
             record.expected_height.to_string(),
             record.expected_has_alpha.to_string(),
+            actual_width.to_string(),
+            actual_height.to_string(),
+            actual_has_alpha.to_string(),
             record.original_lineage_id.clone(),
             record.original_lineage_generation.to_string(),
             record.effective_source_sha256.clone(),
@@ -2644,6 +2681,28 @@ mod tests {
             .issues
             .iter()
             .any(|issue| issue.code == "ai_handoff_result_alpha_lost"));
+    }
+
+    #[test]
+    fn proportional_result_is_accepted_with_local_normalization_warning() {
+        let file = ImportImageFilePayload {
+            original_filename: "result.png".to_string(),
+            bytes: png_bytes(1024, 1024, 0),
+        };
+        let inspected = inspect_result(&record(200, 200, true), &file, true).unwrap();
+
+        assert!(inspected.dto.accepted);
+        assert!(inspected.dto.validation_signature.is_some());
+        assert_eq!(inspected.dto.actual_width, Some(1024));
+        assert_eq!(inspected.dto.actual_height, Some(1024));
+        assert!(inspected.dto.issues.iter().any(|issue| {
+            issue.code == "ai_handoff_result_size_normalization" && issue.severity == "warning"
+        }));
+        assert!(!inspected
+            .dto
+            .issues
+            .iter()
+            .any(|issue| issue.code == "ai_handoff_result_dimensions"));
     }
 
     #[test]

@@ -779,7 +779,7 @@ export function AiWebHandoffPanel({
                   className="text-sm font-semibold"
                   id="ai-web-handoff-issues-title"
                 >
-                  결과 검사에서 확인된 문제
+                  결과 검사 안내
                 </h5>
               </div>
               {commitResult.issues.map((issue, index) => {
@@ -789,8 +789,21 @@ export function AiWebHandoffPanel({
                     className="rounded-md border border-border bg-white p-3 text-xs leading-5"
                     key={`${issue.code}-${index}`}
                   >
-                    <p className="font-semibold text-danger">
-                      문제: {guidance.problem}
+                    <p
+                      className={
+                        issue.severity === "blocking"
+                          ? "font-semibold text-danger"
+                          : issue.severity === "warning"
+                            ? "font-semibold text-warning"
+                            : "font-semibold text-foreground"
+                      }
+                    >
+                      {issue.severity === "blocking"
+                        ? "문제"
+                        : issue.severity === "warning"
+                          ? "경고"
+                          : "확인"}
+                      : {guidance.problem}
                     </p>
                     <p className="mt-1 text-muted">영향: {guidance.impact}</p>
                     {issue.expected || issue.actual ? (

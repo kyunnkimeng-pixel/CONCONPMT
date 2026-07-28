@@ -4,7 +4,8 @@ use tauri::State;
 use crate::app_state::AppState;
 use crate::db::repositories::ai_grid::{
     self as ai_grid_repository, AiGridWorkspaceDto, CommitAiGridCandidatesResult,
-    CommitGeneratedIconsResult, FinalizeGeneratedIconInput, PrepareAiGenerationRequest,
+    CommitGeneratedIconsResult, FinalizeGeneratedIconInput, PrepareAiGenerationReferences,
+    PrepareAiGenerationRequest,
 };
 use crate::error::AppResult;
 use crate::models::ImportImageFilePayload;
@@ -31,6 +32,10 @@ pub struct PrepareAiGenerationWorkspacePayload {
     pub layout: Option<AiGridLayout>,
     pub canvas_size: Option<i64>,
     pub payload_input_signature: String,
+    #[serde(default)]
+    pub reference_icon_ids: Vec<String>,
+    #[serde(default)]
+    pub reference_files: Vec<ImportImageFilePayload>,
     pub retry_of_request_id: Option<String>,
 }
 
@@ -89,15 +94,21 @@ pub fn prepare_ai_generation_workspace(
         payload.target_names.len(),
         payload.canvas_size.unwrap_or(DEFAULT_AI_GRID_CANVAS_SIZE),
     )?);
+    let paths = state.paths().clone();
     let mut connection = state.render_connection()?;
-    let prepared = ai_grid_repository::prepare_ai_generation(
+    let prepared = ai_grid_repository::prepare_ai_generation_with_references(
         &mut connection,
+        &paths,
         &collection_id,
         PrepareAiGenerationRequest {
             target_names: payload.target_names,
             layout,
             payload_input_signature: payload.payload_input_signature,
             retry_of_request_id: payload.retry_of_request_id,
+        },
+        PrepareAiGenerationReferences {
+            selected_icon_ids: payload.reference_icon_ids,
+            external_files: payload.reference_files,
         },
     )?;
     ai_grid_repository::get_ai_grid_workspace(&connection, &prepared.request_id)

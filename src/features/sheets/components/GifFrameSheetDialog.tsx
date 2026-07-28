@@ -2,6 +2,7 @@ import { useEffect, useRef, useState } from "react";
 import type { DragEvent, ReactNode } from "react";
 
 import type { CollectionSummary, IconSummary } from "@/features/collections/types";
+import { copyAiHandoffPrompt } from "@/features/editor/ai-provider-model";
 import { listExportProfiles, openExportPath } from "@/features/export/api";
 import type { ExportProfile } from "@/features/export/types";
 import {
@@ -30,20 +31,25 @@ import { getCommandErrorMessage } from "@/lib/tauri";
 import { useModalFocus } from "@/lib/use-modal-focus";
 
 type GifFrameSheetMode = "export" | "reimport";
+export type GifAiWebResource = "gemini_ai_studio" | "novelai_app";
 
 interface GifFrameSheetDialogProps {
+  aiWebWorkflow?: boolean;
   collection: CollectionSummary;
   icon: IconSummary;
   mode: GifFrameSheetMode;
   onClose: () => void;
+  onOpenAiSite?: (resource: GifAiWebResource) => Promise<void>;
   onVariantCreated: () => Promise<void>;
 }
 
 export function GifFrameSheetDialog({
+  aiWebWorkflow = false,
   collection,
   icon,
   mode,
   onClose,
+  onOpenAiSite,
   onVariantCreated,
 }: GifFrameSheetDialogProps) {
   const dialogRef = useRef<HTMLElement>(null);
@@ -51,12 +57,23 @@ export function GifFrameSheetDialog({
   const defaultCellWidth = icon.cellWidthOverride ?? collection.defaultCellWidth;
   const defaultCellHeight = icon.cellHeightOverride ?? collection.defaultCellHeight;
   const [activeMode, setActiveMode] = useState<GifFrameSheetMode>(mode);
-  const [settings, setSettings] = useState<GifFrameSheetSettings>(() =>
-    defaultGifFrameSheetSettings(defaultCellWidth, defaultCellHeight),
-  );
+  const [settings, setSettings] = useState<GifFrameSheetSettings>(() => {
+    const defaults = defaultGifFrameSheetSettings(
+      defaultCellWidth,
+      defaultCellHeight,
+    );
+    return aiWebWorkflow
+      ? {
+          ...defaults,
+          background: "transparent",
+          includeCleanSheet: true,
+          includeManifest: true,
+        }
+      : defaults;
+  });
 
   return (
-    <div className="fixed inset-0 z-50 flex items-center justify-center bg-slate-900/35 px-4 py-5">
+    <div className={`fixed inset-0 ${aiWebWorkflow ? "z-[110]" : "z-50"} flex items-center justify-center bg-slate-900/35 px-4 py-5`}>
       <section
         ref={dialogRef}
         aria-labelledby="gif-frame-sheet-dialog-title"
@@ -74,9 +91,15 @@ export function GifFrameSheetDialog({
             >
               {activeMode === "export" ? "GIF 프레임 시트로 내보내기" : "GIF 프레임 시트 다시 가져오기"}
             </h2>
-            <p className="mt-1 truncate text-sm text-muted">
+            <p className="mt-1 text-sm text-muted">
               {icon.displayName} · GIF · 원본은 그대로 유지되며 결과는 내보내기용 GIF 처리 버전으로 저장됩니다.
             </p>
+            {aiWebWorkflow ? (
+              <p className="mt-1 text-xs leading-5 text-muted" data-testid="gif-ai-web-safety-note">
+                수동 웹 AI용 PNG 프레임 시트 왕복입니다. 원본 GIF, 프레임별 timing, 재생 순서와
+                loop는 manifest에서 보존·복원하며 GIF 자체를 AI API로 직접 호출하지 않습니다.
+              </p>
+            ) : null}
           </div>
           <button
             className="rounded-md border border-border bg-white px-3 py-2 text-sm font-medium hover:bg-menu-hover focus-visible:outline focus-visible:outline-2 focus-visible:outline-focus"
@@ -101,9 +124,12 @@ export function GifFrameSheetDialog({
         <div className="min-h-0 overflow-y-auto px-5 py-4">
           {activeMode === "export" ? (
             <GifFrameExportPanel
+              aiWebWorkflow={aiWebWorkflow}
               collectionId={collection.id}
               icon={icon}
               settings={settings}
+              onContinueToReimport={() => setActiveMode("reimport")}
+              onOpenAiSite={onOpenAiSite}
               onSettingsChange={setSettings}
             />
           ) : (
@@ -120,18 +146,25 @@ export function GifFrameSheetDialog({
 }
 
 export function GifFrameExportPanel({
+  aiWebWorkflow = false,
   collectionId,
   icon,
   settings,
+  onContinueToReimport,
+  onOpenAiSite,
   onSettingsChange,
 }: {
+  aiWebWorkflow?: boolean;
   collectionId: string;
   icon: IconSummary;
   settings: GifFrameSheetSettings;
+  onContinueToReimport?: () => void;
+  onOpenAiSite?: (resource: GifAiWebResource) => Promise<void>;
   onSettingsChange: (settings: GifFrameSheetSettings) => void;
 }) {
   const [analysis, setAnalysis] = useState<GifFrameSheetExportAnalysis | null>(null);
   const [result, setResult] = useState<GifFrameSheetExportResult | null>(null);
+  const [aiWebPrompt, setAiWebPrompt] = useState<string | null>(null);
   const [errorMessage, setErrorMessage] = useState<string | null>(null);
   const [isWorking, setIsWorking] = useState(false);
 
@@ -154,6 +187,11 @@ export function GifFrameExportPanel({
       cancelled = true;
     };
   }, [icon.id, settings]);
+
+  useEffect(() => {
+    setResult(null);
+    setAiWebPrompt(null);
+  }, [settings]);
 
   const estimatedPages = estimateGifFrameSheetPages(analysis?.frameCount ?? 0, settings);
 
@@ -203,13 +241,29 @@ export function GifFrameExportPanel({
           buildPresetInput={(name) =>
             presetInputFromGifFrameSettings(name, collectionId, settings)
           }
-          onApplyPreset={(preset) =>
-            onSettingsChange(applyPresetToGifFrameSettings(settings, preset))
-          }
+          onApplyPreset={(preset) => {
+            const nextSettings = applyPresetToGifFrameSettings(settings, preset);
+            onSettingsChange(
+              aiWebWorkflow
+                ? {
+                    ...nextSettings,
+                    background: "transparent",
+                    includeCleanSheet: true,
+                    includeManifest: true,
+                  }
+                : nextSettings,
+            );
+          }}
         />
 
         <section className="rounded-md border border-border bg-white p-4">
           <h3 className="text-sm font-semibold">프레임 시트 설정</h3>
+          {aiWebWorkflow ? (
+            <p className="mt-2 text-xs leading-5 text-muted">
+              AI 왕복에서는 alpha와 재조립 정보를 지키기 위해 transparent 배경, clean PNG,
+              manifest JSON을 필수로 고정합니다.
+            </p>
+          ) : null}
           <div className="mt-3 grid gap-3 sm:grid-cols-2 lg:grid-cols-5">
             <NumberField label="Cell W" value={settings.frameCellWidth} onChange={(value) => updateNumber("frameCellWidth", value)} />
             <NumberField label="Cell H" value={settings.frameCellHeight} onChange={(value) => updateNumber("frameCellHeight", value)} />
@@ -227,6 +281,7 @@ export function GifFrameExportPanel({
               Background
               <select
                 className="h-9 rounded-md border border-border bg-white px-2 text-sm text-foreground focus-visible:outline focus-visible:outline-2 focus-visible:outline-focus"
+                disabled={aiWebWorkflow}
                 value={settings.background}
                 onChange={(event) =>
                   onSettingsChange({
@@ -241,9 +296,9 @@ export function GifFrameExportPanel({
                 <option value="black">black</option>
               </select>
             </label>
-            <CheckField label="Clean frame sheet PNG" checked={settings.includeCleanSheet} onChange={(checked) => onSettingsChange({ ...settings, includeCleanSheet: checked })} />
+            <CheckField disabled={aiWebWorkflow} label="Clean frame sheet PNG" checked={settings.includeCleanSheet} onChange={(checked) => onSettingsChange({ ...settings, includeCleanSheet: checked })} />
             <CheckField label="Guide frame sheet PNG" checked={settings.includeGuideSheet} onChange={(checked) => onSettingsChange({ ...settings, includeGuideSheet: checked })} />
-            <CheckField label="Manifest JSON" checked={settings.includeManifest} onChange={(checked) => onSettingsChange({ ...settings, includeManifest: checked })} />
+            <CheckField disabled={aiWebWorkflow} label="Manifest JSON" checked={settings.includeManifest} onChange={(checked) => onSettingsChange({ ...settings, includeManifest: checked })} />
             <CheckField label="완료 후 폴더 열기" checked={settings.openOutputFolder} onChange={(checked) => onSettingsChange({ ...settings, openOutputFolder: checked })} />
           </div>
         </section>
@@ -259,11 +314,26 @@ export function GifFrameExportPanel({
           disabled={!analysis || isWorking}
           type="button"
           onClick={() => {
+            if (!analysis) return;
+            const analysisAtExport = analysis;
+            const settingsAtExport: GifFrameSheetSettings = { ...settings };
             setIsWorking(true);
             setResult(null);
+            setAiWebPrompt(null);
             setErrorMessage(null);
-            void exportGifFrameSheet(icon.id, settings)
-              .then(setResult)
+            void exportGifFrameSheet(icon.id, settingsAtExport)
+              .then((nextResult) => {
+                setResult(nextResult);
+                setAiWebPrompt(
+                  aiWebWorkflow
+                    ? buildGifAiWebPrompt({
+                        analysis: analysisAtExport,
+                        result: nextResult,
+                        settings: settingsAtExport,
+                      })
+                    : null,
+                );
+              })
               .catch((error) => setErrorMessage(getCommandErrorMessage(error)))
               .finally(() => setIsWorking(false));
           }}
@@ -272,7 +342,10 @@ export function GifFrameExportPanel({
         </button>
         {result ? (
           <GifFrameExportResultPanel
+            aiWebPrompt={aiWebPrompt}
             result={result}
+            onContinueToReimport={onContinueToReimport}
+            onOpenAiSite={onOpenAiSite}
             onOpenFolder={(path) =>
               openExportPath(path).catch((error) =>
                 setErrorMessage(getCommandErrorMessage(error)),
@@ -479,10 +552,16 @@ function GifFrameReimportPanel({
 }
 
 export function GifFrameExportResultPanel({
+  aiWebPrompt,
   result,
+  onContinueToReimport,
+  onOpenAiSite,
   onOpenFolder,
 }: {
+  aiWebPrompt?: string | null;
   result: GifFrameSheetExportResult;
+  onContinueToReimport?: () => void;
+  onOpenAiSite?: (resource: GifAiWebResource) => Promise<void>;
   onOpenFolder: (path: string) => Promise<void> | void;
 }) {
   return (
@@ -507,10 +586,208 @@ export function GifFrameExportResultPanel({
       >
         결과 폴더 열기
       </button>
+      {aiWebPrompt && onOpenAiSite && onContinueToReimport ? (
+        <GifAiWebExportActions
+          prompt={aiWebPrompt}
+          onContinueToReimport={onContinueToReimport}
+          onOpenAiSite={onOpenAiSite}
+        />
+      ) : null}
     </div>
   );
 }
 
+export function GifAiWebExportActions({
+  prompt,
+  onContinueToReimport,
+  onOpenAiSite,
+}: {
+  prompt: string;
+  onContinueToReimport: () => void;
+  onOpenAiSite: (resource: GifAiWebResource) => Promise<void>;
+}) {
+  const promptRef = useRef<HTMLTextAreaElement>(null);
+  const [workingResource, setWorkingResource] =
+    useState<GifAiWebResource | null>(null);
+  const [statusMessage, setStatusMessage] = useState<string | null>(null);
+  const [errorMessage, setErrorMessage] = useState<string | null>(null);
+
+  const copyPrompt = async () => {
+    const result = await copyAiHandoffPrompt(prompt, {
+      clipboardWriteText:
+        typeof navigator !== "undefined" && navigator.clipboard?.writeText
+          ? (value) => navigator.clipboard.writeText(value)
+          : undefined,
+      fallbackCopy: () => {
+        const input = promptRef.current;
+        if (!input || typeof document === "undefined") return false;
+        input.focus();
+        input.select();
+        return typeof document.execCommand === "function"
+          ? document.execCommand("copy")
+          : false;
+      },
+    });
+    const copied = result === "clipboard" || result === "fallback";
+    setStatusMessage(
+      copied ? "GIF 웹 AI 프롬프트를 복사했습니다." : null,
+    );
+    setErrorMessage(
+      copied
+        ? null
+        : "프롬프트 자동 복사에 실패했습니다. 아래 내용을 직접 복사한 뒤 공식 사이트를 열어 주세요.",
+    );
+    return copied;
+  };
+
+  const openSite = async (resource: GifAiWebResource) => {
+    if (workingResource) return;
+    setWorkingResource(resource);
+    setStatusMessage(null);
+    setErrorMessage(null);
+    const copied = await copyPrompt();
+    try {
+      await onOpenAiSite(resource);
+      if (copied) {
+        setStatusMessage(
+          `${resource === "gemini_ai_studio" ? "Gemini AI Studio" : "NovelAI"} 공식 사이트를 열었습니다. 수정된 clean PNG를 받은 뒤 다시 가져오세요.`,
+        );
+        onContinueToReimport();
+      } else {
+        setErrorMessage(
+          "공식 사이트는 열었지만 프롬프트를 복사하지 못했습니다. 아래 내용을 직접 복사하면 다시 가져오기 단계로 이동할 수 있습니다.",
+        );
+      }
+    } catch (error) {
+      setErrorMessage(getCommandErrorMessage(error));
+    } finally {
+      setWorkingResource(null);
+    }
+  };
+
+  return (
+    <section
+      className="mt-4 rounded-md border border-focus/30 bg-selected/30 p-3"
+      data-testid="gif-ai-web-export-actions"
+    >
+      <h4 className="text-sm font-semibold">웹 AI에서 프레임 시트 수정</h4>
+      <ol className="mt-2 list-decimal space-y-1 pl-4 text-xs leading-5 text-muted">
+        <li>clean PNG 페이지와 아래 프롬프트를 공식 웹 AI에 전달합니다.</li>
+        <li>같은 파일명의 PNG만 내려받습니다. GIF·JPG·WebP 결과는 사용하지 않습니다.</li>
+        <li>앱으로 돌아오면 다시 가져오기 탭에서 manifest와 수정 PNG를 선택합니다.</li>
+      </ol>
+      <label className="mt-3 block text-xs font-semibold" htmlFor="gif-ai-web-prompt">
+        구조 보호 프롬프트
+      </label>
+      <textarea
+        className="mt-1 min-h-36 w-full resize-y rounded-md border border-border bg-white p-2 text-[11px] leading-4"
+        data-testid="gif-ai-web-prompt"
+        id="gif-ai-web-prompt"
+        readOnly
+        ref={promptRef}
+        value={prompt}
+      />
+      <button
+        className="mt-2 w-full rounded-md border border-border bg-white px-3 py-2 text-xs font-semibold hover:bg-menu-hover focus-visible:outline focus-visible:outline-2 focus-visible:outline-focus disabled:opacity-50"
+        data-testid="gif-ai-copy-prompt"
+        disabled={workingResource !== null}
+        type="button"
+        onClick={() => void copyPrompt()}
+      >
+        프롬프트만 복사
+      </button>
+      <div className="mt-2 grid gap-2">
+        <button
+          className="rounded-md bg-accent px-3 py-2 text-xs font-semibold text-accent-foreground hover:bg-accent-strong focus-visible:outline focus-visible:outline-2 focus-visible:outline-focus disabled:opacity-50"
+          data-testid="gif-ai-open-gemini"
+          disabled={workingResource !== null}
+          type="button"
+          onClick={() => void openSite("gemini_ai_studio")}
+        >
+          프롬프트 복사 + Gemini AI Studio 열기
+        </button>
+        <button
+          className="rounded-md border border-border bg-white px-3 py-2 text-xs font-semibold hover:bg-menu-hover focus-visible:outline focus-visible:outline-2 focus-visible:outline-focus disabled:opacity-50"
+          data-testid="gif-ai-open-novelai"
+          disabled={workingResource !== null}
+          type="button"
+          onClick={() => void openSite("novelai_app")}
+        >
+          프롬프트 복사 + NovelAI 열기
+        </button>
+        <button
+          className="rounded-md border border-border bg-white px-3 py-2 text-xs font-semibold hover:bg-menu-hover focus-visible:outline focus-visible:outline-2 focus-visible:outline-focus disabled:opacity-50"
+          disabled={workingResource !== null}
+          type="button"
+          onClick={onContinueToReimport}
+        >
+          수정 PNG를 받았어요 · 다시 가져오기
+        </button>
+      </div>
+      <p className="mt-2 text-[11px] leading-4 text-muted">
+        공식 사이트를 열면 프롬프트를 먼저 복사하고 앱은 다시 가져오기 탭으로 이어집니다.
+        원본 GIF와 frame timing·loop는 바뀌지 않습니다.
+      </p>
+      {statusMessage ? <p className="mt-2 text-xs text-success" role="status">{statusMessage}</p> : null}
+      {errorMessage ? <p className="mt-2 text-xs text-danger" role="alert">{errorMessage}</p> : null}
+    </section>
+  );
+}
+
+export function buildGifAiWebPrompt({
+  analysis,
+  result,
+  settings,
+}: {
+  analysis: GifFrameSheetExportAnalysis;
+  result: GifFrameSheetExportResult;
+  settings: GifFrameSheetSettings;
+}) {
+  const cleanFiles = result.frameSheetPaths
+    .map((path) => fileNameFromPath(path))
+    .join(", ");
+  const manifestName = result.manifestPath
+    ? fileNameFromPath(result.manifestPath)
+    : "frames_manifest.json";
+  return [
+    "[PMTCONCON Studio · GIF 프레임 시트 수정]",
+    "이 요청은 GIF 생성이 아니라 clean PNG 프레임 시트의 셀 내부 이미지만 수정하는 작업입니다.",
+    `편집 대상 PNG: ${cleanFiles || `${result.pageCount}개의 clean PNG 페이지`}`,
+    `참조 manifest: ${manifestName}`,
+    "",
+    "필수 일관성:",
+    "- 모든 페이지와 모든 프레임에서 캐릭터의 얼굴, 체형, 의상, 색상, 선화와 전체 그림체를 동일하게 유지하세요.",
+    "- 프레임 사이의 움직임만 자연스럽게 이어지게 하고 캐릭터 정체성이나 카메라 구도를 임의로 바꾸지 마세요.",
+    "",
+    "절대 변경하지 말아야 할 구조:",
+    `- 총 ${analysis.frameCount}프레임, ${result.pageCount}페이지, 각 PNG 캔버스 ${analysis.sheetWidth}×${analysis.sheetHeight}px.`,
+    `- 셀 ${settings.frameCellWidth}×${settings.frameCellHeight}px, ${analysis.columns}열 × 페이지당 ${analysis.rowsPerPage}행, gap ${settings.gapX}/${settings.gapY}px, border ${settings.borderX}/${settings.borderY}px.`,
+    "- 페이지 번호 순서와 각 페이지의 왼쪽→오른쪽, 위→아래 row-major 셀 순서를 그대로 유지하세요.",
+    "- 셀 위치·크기·개수, 페이지 수, 파일 수와 파일명을 바꾸거나 프레임을 추가·삭제·병합·분할하지 마세요.",
+    "- 투명 배경과 픽셀별 alpha를 그대로 유지하고, 비어 있는 셀은 완전히 투명한 상태로 두세요.",
+    "- guide PNG와 manifest JSON은 참조 전용이며 수정하거나 결과물로 다시 만들지 마세요.",
+    "",
+    "반환 형식:",
+    "- 입력 clean PNG 한 장당 같은 파일명의 PNG 한 장만 반환하세요.",
+    "- PNG만 반환하세요. GIF, JPG, JPEG, WebP, PDF, ZIP 또는 설명문은 반환하지 마세요.",
+    "",
+    `원본 GIF 메타데이터는 앱이 별도로 보존합니다: 총 재생시간 ${analysis.durationMs}ms, loop ${gifAiLoopPromptLabel(analysis.loopMode, analysis.loopCount)}.`,
+    "프레임 timing·재생 순서·loop는 수정 대상이 아니며 다시 가져올 때 manifest에서 복원됩니다. 원본 GIF도 덮어쓰지 않습니다.",
+  ].join("\n");
+}
+
+function fileNameFromPath(path: string) {
+  const parts = path.split(/[\\/]/);
+  return parts[parts.length - 1] || path;
+}
+
+function gifAiLoopPromptLabel(loopMode: string, loopCount: number | null) {
+  if (loopMode === "count") return `${loopCount ?? 1}회 반복`;
+  if (loopMode === "once") return "1회 재생";
+  if (loopMode === "infinite") return "무한 반복";
+  if (loopMode === "preserve") return "원본 loop 유지";
+  return `${loopMode}${loopCount === null ? "" : ` ${loopCount}`}`;
+}
 export function GifFrameVariantResult({
   result,
   onOpenPath,

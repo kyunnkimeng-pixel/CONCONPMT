@@ -20,7 +20,9 @@ export function buildAiGridPrompt(workspace: AiGridWorkspace, userPrompt: string
     .join("\n");
   const operation = workspace.requestScope === "grid_edit"
     ? "Edit every existing icon in the attached sprite sheet. Preserve the exact canvas, cell positions, cell count, ordering, transparent gaps, and one-icon-per-cell boundaries. Never merge, remove, add, reorder, resize, or move cells."
-    : `Generate exactly ${workspace.itemCount} distinct emoticon icons as one sprite sheet. Use the exact canvas and row-major cell positions below. Leave unused cells fully transparent.`;
+    : workspace.inputArtifact
+      ? `The attached image is a REFERENCE BOARD only, not the output template or output geometry. Use its character identity, palette, proportions, and drawing-style cues consistently, but do not copy its layout. Generate exactly ${workspace.itemCount} distinct emoticon icons as one new sprite sheet using only the required output geometry and row-major cell positions below. Leave unused cells fully transparent.`
+      : `Generate exactly ${workspace.itemCount} distinct emoticon icons as one sprite sheet. Use the exact canvas and row-major cell positions below. Leave unused cells fully transparent.`;
   const request = userPrompt.trim() || "Keep one coherent character and drawing style while making each cell readable as a small emoticon.";
   return [
     "Return one static PNG sprite sheet only. Do not add captions, labels, grid lines, borders, watermarks, margins, or a background.",

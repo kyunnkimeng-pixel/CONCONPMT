@@ -504,15 +504,23 @@ fn fail_started_request<T>(
 }
 
 fn safe_lifecycle_error(error: &AppError) -> AppError {
+    if error.code == "ai_gemini_paid_tier_required" {
+        return AppError::new("ai_gemini_paid_tier_required", GEMINI_PAID_TIER_MESSAGE);
+    }
+    if error.code == "ai_unauthorized" && error.message == GEMINI_UNAUTHORIZED_MESSAGE {
+        return AppError::new("ai_unauthorized", GEMINI_UNAUTHORIZED_MESSAGE);
+    }
+    if error.code == "ai_invalid_request" {
+        return AppError::new(
+            "ai_invalid_request",
+            safe_invalid_request_message(&error.message),
+        );
+    }
     let (code, message) = match error.code.as_str() {
         "ai_unauthorized" => ("ai_unauthorized", "AI API 인증이 거부되었습니다."),
         "ai_rate_limited" => (
             "ai_rate_limited",
             "AI 공급자가 요청을 제한했습니다. 자동 재시도하지 않았습니다.",
-        ),
-        "ai_invalid_request" => (
-            "ai_invalid_request",
-            "AI 공급자가 요청 형식을 거부했습니다. 선택한 모델과 공급자 요청 옵션을 확인해 주세요.",
         ),
         "ai_forbidden_or_tier" => (
             "ai_forbidden_or_tier",
@@ -772,6 +780,15 @@ fn execute_gemini(
     prepared: &PreparedImageEdit,
     credential: &str,
 ) -> AppResult<ProviderImage> {
+    let mut response_format = serde_json::Map::from_iter([
+        ("type".to_string(), json!("image")),
+        ("mime_type".to_string(), json!("image/jpeg")),
+        ("aspect_ratio".to_string(), json!("1:1")),
+        ("delivery".to_string(), json!("inline")),
+    ]);
+    if prepared.payload.model == "gemini-3.1-flash-image" {
+        response_format.insert("image_size".to_string(), json!("1K"));
+    }
     let body = json!({
         "model": prepared.payload.model,
         "input": [
@@ -782,13 +799,7 @@ fn execute_gemini(
                 "data": BASE64_STANDARD.encode(&prepared.input_bytes)
             }
         ],
-        "response_format": {
-            "type": "image",
-            "mime_type": "image/jpeg",
-            "aspect_ratio": "1:1",
-            "image_size": "1K",
-            "delivery": "inline"
-        },
+        "response_format": response_format,
         "store": false
     });
     let response = post_json(
@@ -807,24 +818,22 @@ fn execute_gemini(
             "Gemini 작업이 완료 상태가 아니어서 결과를 저장하지 않았습니다.",
         ));
     }
-    let content = value
+    let image = value
         .get("steps")
         .and_then(Value::as_array)
         .and_then(|steps| {
-            steps.iter().find_map(|step| {
-                (step.get("type").and_then(Value::as_str) == Some("model_output"))
-                    .then(|| step.get("content").and_then(Value::as_array))
-                    .flatten()
-            })
+            steps
+                .iter()
+                .filter(|step| step.get("type").and_then(Value::as_str) == Some("model_output"))
+                .filter_map(|step| step.get("content").and_then(Value::as_array))
+                .flat_map(|content| content.iter())
+                .filter(|part| {
+                    part.get("type").and_then(Value::as_str) == Some("image")
+                        && part.get("mime_type").and_then(Value::as_str) == Some("image/jpeg")
+                })
+                .last()
         })
         .ok_or_else(|| response_schema_error("Gemini"))?;
-    let image = content
-        .iter()
-        .find(|part| part.get("type").and_then(Value::as_str) == Some("image"))
-        .ok_or_else(|| response_schema_error("Gemini"))?;
-    if image.get("mime_type").and_then(Value::as_str) != Some("image/jpeg") {
-        return Err(response_schema_error("Gemini"));
-    }
     let encoded = image
         .get("data")
         .and_then(Value::as_str)
@@ -967,7 +976,7 @@ fn descriptor_for(provider: &str) -> AppResult<ProviderDescriptor> {
             provider: "google",
             service_surface: "gemini_api",
             adapter_id: "pmtcon-gemini-interactions-image",
-            adapter_contract_version: "2026-07-28-private-pilot-2",
+            adapter_contract_version: "2026-07-29-private-pilot-3",
             policy_refs: json!([
                 "https://ai.google.dev/gemini-api/docs/image-generation",
                 "https://ai.google.dev/gemini-api/docs/pricing",
@@ -1023,9 +1032,10 @@ fn require_success(response: &TransportResponse, provider: &str) -> AppResult<()
             "ai_rate_limited",
             "공급자가 요청을 제한했습니다. 자동 재시도하지 않았습니다. 나중에 사용자가 직접 다시 시도해 주세요.",
         )),
+        400 if provider == "gemini" => Err(gemini_bad_request_error(&response.body)),
         400 => Err(AppError::new(
             "ai_invalid_request",
-            "공급자가 요청 형식을 거부했습니다. 모델·action·옵션 계약을 다시 확인해 주세요.",
+            invalid_request_message_from_body(&response.body),
         )),
         403 => Err(AppError::new(
             "ai_forbidden_or_tier",
@@ -1042,6 +1052,106 @@ fn require_success(response: &TransportResponse, provider: &str) -> AppResult<()
                 response.status
             ),
         )),
+    }
+}
+
+const GEMINI_PAID_TIER_MESSAGE: &str =
+    "Gemini 이미지 API에는 무료 등급이 없습니다. 비용을 원치 않으면 API 요청을 중단하고 Google AI Studio 웹에서 현재 계정·모델의 과금 표시를 직접 확인해 주세요. API를 사용하려면 프로젝트 결제를 사용 설정해야 합니다.";
+const GEMINI_UNAUTHORIZED_MESSAGE: &str =
+    "Gemini API 키가 거부되었습니다. 키가 올바른지와 API 키의 프로젝트·API 제한 설정을 확인해 주세요.";
+
+fn gemini_bad_request_error(body: &[u8]) -> AppError {
+    let value = serde_json::from_slice::<Value>(body).ok();
+    let status = value
+        .as_ref()
+        .and_then(|value| value.pointer("/error/status"))
+        .and_then(Value::as_str)
+        .unwrap_or_default();
+    let searchable = value
+        .as_ref()
+        .and_then(|value| value.get("error"))
+        .map(Value::to_string)
+        .unwrap_or_default()
+        .to_ascii_lowercase();
+
+    if status.eq_ignore_ascii_case("failed_precondition")
+        || contains_any(
+            &searchable,
+            &[
+                "free tier is not available",
+                "free-tier is not available",
+                "enable billing",
+                "billing is not enabled",
+                "paid plan",
+                "paid tier",
+            ],
+        )
+    {
+        return AppError::new("ai_gemini_paid_tier_required", GEMINI_PAID_TIER_MESSAGE);
+    }
+
+    if status.eq_ignore_ascii_case("unauthenticated")
+        || contains_any(
+            &searchable,
+            &[
+                "api key not valid",
+                "api key is invalid",
+                "invalid api key",
+                "api_key_invalid",
+                "api key was reported as leaked",
+            ],
+        )
+    {
+        return AppError::new("ai_unauthorized", GEMINI_UNAUTHORIZED_MESSAGE);
+    }
+
+    AppError::new(
+        "ai_invalid_request",
+        invalid_request_message_from_body(body),
+    )
+}
+
+fn contains_any(haystack: &str, needles: &[&str]) -> bool {
+    needles.iter().any(|needle| haystack.contains(needle))
+}
+
+const INVALID_REQUEST_MESSAGE: &str = "AI 공급자가 요청 형식을 거부했습니다.";
+const INVALID_REQUEST_GENERIC_HINT: &str = "선택한 모델과 공급자 요청 옵션을 확인해 주세요.";
+
+fn invalid_request_message_from_body(body: &[u8]) -> String {
+    let searchable = serde_json::from_slice::<Value>(body)
+        .map(|value| value.to_string())
+        .unwrap_or_default();
+    invalid_request_message(&searchable)
+}
+
+fn safe_invalid_request_message(message: &str) -> String {
+    invalid_request_message(message)
+}
+
+fn invalid_request_message(searchable: &str) -> String {
+    let searchable = searchable.to_ascii_lowercase();
+    let mut hints = Vec::new();
+    if searchable.contains("image_size") || searchable.contains("imagesize") {
+        hints.push("이미지 크기(image_size, Gemini 2.5에서는 생략)");
+    }
+    if searchable.contains("model") {
+        hints.push("모델 ID(model)");
+    }
+    if searchable.contains("response_format") || searchable.contains("responseformat") {
+        hints.push("응답 형식(response_format)");
+    }
+    if searchable.contains("mime_type") || searchable.contains("mimetype") {
+        hints.push("이미지 형식(mime_type)");
+    }
+    if searchable.contains("action") {
+        hints.push("NovelAI 작업(action)");
+    }
+
+    if hints.is_empty() {
+        format!("{INVALID_REQUEST_MESSAGE} {INVALID_REQUEST_GENERIC_HINT}")
+    } else {
+        format!("{INVALID_REQUEST_MESSAGE} 확인 항목: {}.", hints.join(", "))
     }
 }
 
@@ -1307,41 +1417,160 @@ mod tests {
         assert!(calls[0].2["parameters"].get("img2img").is_none());
     }
 
+    fn gemini_success_response(id: &str, jpeg: &[u8]) -> Value {
+        json!({
+            "id": id,
+            "status": "completed",
+            "steps": [{
+                "type": "model_output",
+                "content": [{
+                    "type": "image",
+                    "mime_type": "image/jpeg",
+                    "data": BASE64_STANDARD.encode(jpeg)
+                }]
+            }],
+            "usage": {"total_tokens": 12}
+        })
+    }
+
     #[test]
-    fn gemini_contract_uses_interactions_store_false_and_one_image() {
+    fn gemini_2_5_exact_interactions_body_omits_image_size() {
         let jpeg = jpeg_bytes([7, 8, 9]);
-        let encoded = BASE64_STANDARD.encode(&jpeg);
-        let transport = FakeTransport::with_json(
-            200,
-            json!({
-                "id":"interaction_test_123",
-                "status":"completed",
-                "steps":[{
-                    "type":"model_output",
-                    "content":[{"type":"image","mime_type":"image/jpeg","data":encoded}]
-                }],
-                "usage":{"total_tokens": 12}
-            }),
-        );
-        let result =
-            execute_with_transport(&transport, &prepared("gemini"), "gemini-unit-secret").unwrap();
+        let transport =
+            FakeTransport::with_json(200, gemini_success_response("interaction_2_5", &jpeg));
+        let prepared = prepared("gemini");
+        let expected_body = json!({
+            "model": "gemini-2.5-flash-image",
+            "input": [
+                {"type": "text", "text": prepared.payload.prompt.clone()},
+                {
+                    "type": "image",
+                    "mime_type": prepared.input_mime_type.clone(),
+                    "data": BASE64_STANDARD.encode(&prepared.input_bytes)
+                }
+            ],
+            "response_format": {
+                "type": "image",
+                "mime_type": "image/jpeg",
+                "aspect_ratio": "1:1",
+                "delivery": "inline"
+            },
+            "store": false
+        });
+
+        let result = execute_with_transport(&transport, &prepared, "gemini-unit-secret").unwrap();
+
         assert_eq!(result.bytes, jpeg);
         assert_eq!(result.original_filename, "gemini-result.jpg");
         assert_eq!(
             result.provider_request_id.as_deref(),
-            Some("interaction_test_123")
+            Some("interaction_2_5")
         );
         let calls = transport.calls.lock().unwrap();
         assert_eq!(calls.len(), 1);
         assert_eq!(calls[0].0, GEMINI_ENDPOINT);
         assert_eq!(calls[0].1, "x-goog-api-key gemini-unit-secret");
-        assert_eq!(calls[0].2["store"], false);
-        assert_eq!(calls[0].2["model"], "gemini-2.5-flash-image");
-        assert_eq!(calls[0].2["response_format"]["image_size"], "1K");
-        assert_eq!(calls[0].2["response_format"]["delivery"], "inline");
-        assert_eq!(calls[0].2["response_format"]["mime_type"], "image/jpeg");
+        assert_eq!(calls[0].2, expected_body);
+        assert!(calls[0].2["response_format"].get("image_size").is_none());
     }
 
+    #[test]
+    fn gemini_3_1_exact_interactions_body_includes_1k_image_size() {
+        let jpeg = jpeg_bytes([10, 11, 12]);
+        let transport =
+            FakeTransport::with_json(200, gemini_success_response("interaction_3_1", &jpeg));
+        let mut prepared = prepared("gemini");
+        prepared.payload.model = "gemini-3.1-flash-image".to_string();
+        let expected_body = json!({
+            "model": "gemini-3.1-flash-image",
+            "input": [
+                {"type": "text", "text": prepared.payload.prompt.clone()},
+                {
+                    "type": "image",
+                    "mime_type": prepared.input_mime_type.clone(),
+                    "data": BASE64_STANDARD.encode(&prepared.input_bytes)
+                }
+            ],
+            "response_format": {
+                "type": "image",
+                "mime_type": "image/jpeg",
+                "aspect_ratio": "1:1",
+                "image_size": "1K",
+                "delivery": "inline"
+            },
+            "store": false
+        });
+
+        let result = execute_with_transport(&transport, &prepared, "gemini-unit-secret").unwrap();
+
+        assert_eq!(result.bytes, jpeg);
+        let calls = transport.calls.lock().unwrap();
+        assert_eq!(calls.len(), 1);
+        assert_eq!(calls[0].2, expected_body);
+        assert_eq!(
+            descriptor_for("gemini").unwrap().adapter_contract_version,
+            "2026-07-29-private-pilot-3"
+        );
+    }
+
+    #[test]
+    fn gemini_uses_last_jpeg_across_all_model_output_steps() {
+        let first = jpeg_bytes([1, 2, 3]);
+        let ignored_thought = jpeg_bytes([4, 5, 6]);
+        let last = jpeg_bytes([7, 8, 9]);
+        let transport = FakeTransport::with_json(
+            200,
+            json!({
+                "id": "interaction_last_image",
+                "status": "completed",
+                "steps": [
+                    {
+                        "type": "model_output",
+                        "content": [
+                            {"type": "text", "text": "first"},
+                            {
+                                "type": "image",
+                                "mime_type": "image/jpeg",
+                                "data": BASE64_STANDARD.encode(&first)
+                            }
+                        ]
+                    },
+                    {
+                        "type": "thought",
+                        "summary": [{
+                            "type": "image",
+                            "mime_type": "image/jpeg",
+                            "data": BASE64_STANDARD.encode(&ignored_thought)
+                        }]
+                    },
+                    {
+                        "type": "model_output",
+                        "content": [
+                            {
+                                "type": "image",
+                                "mime_type": "image/png",
+                                "data": BASE64_STANDARD.encode(png_bytes([1, 2, 3, 255]))
+                            },
+                            {
+                                "type": "image",
+                                "mime_type": "image/jpeg",
+                                "data": BASE64_STANDARD.encode(&last)
+                            }
+                        ]
+                    },
+                    {"type": "model_output", "content": [{"type": "text", "text": "done"}]}
+                ]
+            }),
+        );
+
+        let result =
+            execute_with_transport(&transport, &prepared("gemini"), "gemini-unit-secret").unwrap();
+
+        assert_eq!(result.bytes, last);
+        assert_ne!(result.bytes, first);
+        assert_ne!(result.bytes, ignored_thought);
+        assert_eq!(transport.calls.lock().unwrap().len(), 1);
+    }
     #[test]
     fn gemini_resource_name_prefix_is_rejected_before_dispatch() {
         let mut payload = prepared("gemini").payload;
@@ -1382,6 +1611,132 @@ mod tests {
         assert_eq!(transport.calls.lock().unwrap().len(), 1);
     }
 
+    #[test]
+    fn gemini_400_auth_and_paid_tier_errors_are_actionable_and_redacted() {
+        let cases = [
+            (
+                json!({
+                    "error": {
+                        "code": 400,
+                        "status": "FAILED_PRECONDITION",
+                        "message": "Gemini API free tier is not available. Enable billing. hidden-billing-id"
+                    }
+                }),
+                "ai_gemini_paid_tier_required",
+                GEMINI_PAID_TIER_MESSAGE,
+                "hidden-billing-id",
+            ),
+            (
+                json!({
+                    "error": {
+                        "code": 400,
+                        "status": "INVALID_ARGUMENT",
+                        "message": "API key not valid. Please pass a valid API key. hidden-key-id",
+                        "details": [{"reason": "API_KEY_INVALID"}]
+                    }
+                }),
+                "ai_unauthorized",
+                GEMINI_UNAUTHORIZED_MESSAGE,
+                "hidden-key-id",
+            ),
+        ];
+
+        for (body, expected_code, expected_message, private_marker) in cases {
+            let transport = FakeTransport::with_json(400, body);
+            let error =
+                execute_with_transport(&transport, &prepared("gemini"), "gemini-unit-secret")
+                    .unwrap_err();
+
+            assert_eq!(error.code, expected_code);
+            assert_eq!(error.message, expected_message);
+            assert_eq!(transport.calls.lock().unwrap().len(), 1);
+            assert!(!error.message.contains(private_marker));
+            assert!(!error.message.contains("gemini-unit-secret"));
+            let safe = safe_lifecycle_error(&error);
+            assert_eq!(safe.code, expected_code);
+            assert_eq!(safe.message, expected_message);
+            assert!(!safe.message.contains(private_marker));
+            assert!(!safe.message.contains("gemini-unit-secret"));
+            for serialized in [
+                serde_json::to_string(&error).unwrap(),
+                serde_json::to_string(&safe).unwrap(),
+            ] {
+                assert!(!serialized.contains(private_marker));
+                assert!(!serialized.contains("gemini-unit-secret"));
+            }
+        }
+    }
+
+    #[test]
+    fn provider_400_known_fields_become_safe_hints_and_survive_lifecycle() {
+        let gemini_transport = FakeTransport::with_json(
+            400,
+            json!({
+                "error": {
+                    "status": "INVALID_ARGUMENT",
+                    "message": "secret-model-value",
+                    "details": [{
+                        "fieldViolations": [
+                            {"field": "responseFormat.imageSize"},
+                            {"field": "mime_type"}
+                        ]
+                    }]
+                },
+                "credential": "gemini-secret"
+            }),
+        );
+        let gemini_error =
+            execute_with_transport(&gemini_transport, &prepared("gemini"), "gemini-unit-secret")
+                .unwrap_err();
+
+        assert_eq!(gemini_error.code, "ai_invalid_request");
+        for field in ["image_size", "model", "response_format", "mime_type"] {
+            assert!(gemini_error.message.contains(field));
+        }
+        assert!(!gemini_error.message.contains("secret-model-value"));
+        assert!(!gemini_error.message.contains("gemini-secret"));
+        let safe_gemini = safe_lifecycle_error(&gemini_error);
+        assert_eq!(safe_gemini.code, "ai_invalid_request");
+        assert_eq!(safe_gemini.message, gemini_error.message);
+
+        let novelai_transport = FakeTransport::with_json(
+            400,
+            json!({
+                "error": {"field": "action", "message": "bad model pst-secret"},
+                "unknown_debug": "do-not-echo"
+            }),
+        );
+        let novelai_error =
+            execute_with_transport(&novelai_transport, &prepared("novelai"), "pst-unit-secret")
+                .unwrap_err();
+
+        assert_eq!(novelai_error.code, "ai_invalid_request");
+        assert!(novelai_error.message.contains("model"));
+        assert!(novelai_error.message.contains("action"));
+        assert!(!novelai_error.message.contains("pst-secret"));
+        assert!(!novelai_error.message.contains("do-not-echo"));
+        let safe_novelai = safe_lifecycle_error(&novelai_error);
+        assert_eq!(safe_novelai.message, novelai_error.message);
+    }
+
+    #[test]
+    fn provider_400_unknown_body_uses_generic_redacted_hint() {
+        let transport = FakeTransport::with_json(
+            400,
+            json!({"error": {"field": "prompt", "message": "private-secret"}}),
+        );
+        let error = execute_with_transport(&transport, &prepared("gemini"), "gemini-unit-secret")
+            .unwrap_err();
+
+        assert_eq!(error.code, "ai_invalid_request");
+        assert_eq!(
+            error.message,
+            "AI 공급자가 요청 형식을 거부했습니다. 선택한 모델과 공급자 요청 옵션을 확인해 주세요."
+        );
+        assert!(!error.message.contains("prompt"));
+        assert!(!error.message.contains("private-secret"));
+        assert_eq!(safe_lifecycle_error(&error).message, error.message);
+    }
     #[test]
     fn authorization_and_rate_limit_fail_once_without_echoing_secret() {
         for status in [401, 429] {

@@ -216,6 +216,80 @@ fn handoff_commit_attaches_one_inactive_candidate_without_changing_current_sourc
 }
 
 #[test]
+fn proportional_web_result_is_preserved_raw_and_registered_for_local_normalization() {
+    let paths = temp_paths("proportional-result");
+    let mut connection = open_database(&paths.database_path).unwrap();
+    let collection = create_collection(&mut connection, Some("비율 정규화".to_string())).unwrap();
+    let icon = import_image_files(
+        &mut connection,
+        &paths,
+        &collection.id,
+        vec![ImportImageFilePayload {
+            original_filename: "original.png".to_string(),
+            bytes: png_bytes(8, 8, [20, 40, 220, 0]),
+        }],
+    )
+    .unwrap()
+    .imported_icons
+    .into_iter()
+    .next()
+    .unwrap();
+    let session = prepare_ai_web_handoff(
+        &mut connection,
+        &paths,
+        &collection.id,
+        single_payload(&icon.id),
+    )
+    .unwrap();
+    let result = ImportImageFilePayload {
+        original_filename: "gemini-1024.png".to_string(),
+        bytes: png_bytes(16, 16, [230, 80, 30, 128]),
+    };
+
+    let inspection =
+        validate_ai_web_handoff_result(&mut connection, &paths, &session.request_id, &result)
+            .unwrap();
+    assert!(inspection.accepted);
+    assert_eq!(
+        (inspection.actual_width, inspection.actual_height),
+        (Some(16), Some(16))
+    );
+    assert!(inspection.issues.iter().any(|issue| {
+        issue.code == "ai_handoff_result_size_normalization" && issue.severity == "warning"
+    }));
+    let committed = commit_ai_web_handoff_result(
+        &mut connection,
+        &paths,
+        &session.request_id,
+        result,
+        inspection.validation_signature.as_deref().unwrap(),
+    )
+    .unwrap();
+    assert!(committed.accepted);
+    let candidate = connection
+        .query_row(
+            "SELECT candidate.width, candidate.height, source.width, source.height
+             FROM ai_candidates candidate
+             JOIN source_files source ON source.id = candidate.raw_source_file_id
+             WHERE candidate.request_id = ?1",
+            [&session.request_id],
+            |row| {
+                Ok((
+                    row.get::<_, i64>(0)?,
+                    row.get::<_, i64>(1)?,
+                    row.get::<_, i64>(2)?,
+                    row.get::<_, i64>(3)?,
+                ))
+            },
+        )
+        .unwrap();
+    assert_eq!(candidate, (16, 16, 16, 16));
+
+    drop(connection);
+    fs::remove_dir_all(&paths.root).unwrap();
+}
+
+#[test]
 fn drag_upload_path_is_fixed_to_verified_current_package_file() {
     let paths = temp_paths("drag-path");
     let mut connection = open_database(&paths.database_path).unwrap();

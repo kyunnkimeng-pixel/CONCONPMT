@@ -19,8 +19,9 @@ use crate::models::{IconDto, ImportImageFilePayload};
 use crate::optimization::cache::hash_text;
 use crate::paths::AppPaths;
 use crate::sheet::composer::{
-    compose_ai_edit_grid, AiGridLayout, AiGridRect, ComposeAiEditGridRequest, ComposedAiGrid,
-    AI_GRID_SCHEMA,
+    compose_ai_edit_grid, compose_ai_reference_sheet, ensure_ai_reference_targets_current,
+    AiGridLayout, AiGridRect, ComposeAiEditGridRequest, ComposeAiReferenceSheetRequest,
+    ComposedAiGrid, AI_GRID_SCHEMA,
 };
 use crate::sheet::grid::{
     alpha_warning_for_extension, analyze_rgba_grid, SheetGridAnalysis, SheetGridSettings,
@@ -68,6 +69,12 @@ pub(crate) struct PrepareAiGenerationRequest {
     pub layout: AiGridLayout,
     pub payload_input_signature: String,
     pub retry_of_request_id: Option<String>,
+}
+
+#[derive(Debug, Clone, Default)]
+pub(crate) struct PrepareAiGenerationReferences {
+    pub selected_icon_ids: Vec<String>,
+    pub external_files: Vec<ImportImageFilePayload>,
 }
 
 #[derive(Debug, Clone, Serialize, PartialEq, Eq)]
@@ -250,6 +257,7 @@ pub(crate) fn prepare_ai_grid_edit(
             "grid_edit_prepare",
             &snapshots,
             Some(&stored.sha256),
+            None,
             &payload_signature,
         )?;
         insert_edit_items(&tx, &request_id, &composed)?;
@@ -321,6 +329,7 @@ pub(crate) fn prepare_ai_generation(
         operation,
         &snapshots,
         None,
+        None,
         &payload_signature,
     )?;
     insert_generation_items(
@@ -342,6 +351,130 @@ pub(crate) fn prepare_ai_generation(
         retry_of_request_id: request.retry_of_request_id,
     })
 }
+
+pub(crate) fn prepare_ai_generation_with_references(
+    connection: &mut Connection,
+    paths: &AppPaths,
+    collection_id: &str,
+    request: PrepareAiGenerationRequest,
+    references: PrepareAiGenerationReferences,
+) -> AppResult<PreparedAiGridRequest> {
+    if references.selected_icon_ids.is_empty() && references.external_files.is_empty() {
+        return prepare_ai_generation(connection, collection_id, request);
+    }
+    let item_count = request.target_names.len();
+    let scope = if item_count == 1 {
+        "single_generate"
+    } else {
+        "grid_generate"
+    };
+    validate_generation_layout(item_count, &request.layout)?;
+    let prompt_signature = normalized_signature(&request.payload_input_signature)?;
+    validate_retry(
+        connection,
+        collection_id,
+        scope,
+        request.retry_of_request_id.as_deref(),
+    )?;
+    let composed = compose_ai_reference_sheet(
+        connection,
+        ComposeAiReferenceSheetRequest {
+            collection_id,
+            selected_icon_ids: &references.selected_icon_ids,
+            external_files: &references.external_files,
+            canvas_size: 1_024,
+        },
+    )?;
+    let _storage_reservation = ai_handoff::reserve_ai_transfer_storage(
+        connection,
+        paths,
+        planned_grid_artifact_storage_bytes(composed.png_bytes.len())?,
+    )?;
+    let prepared_source = prepare_source_file_from_bytes(
+        &ImportImageFilePayload {
+            original_filename: "pmtcon-ai-generation-references.png".to_string(),
+            bytes: composed.png_bytes.clone(),
+        },
+        SourceFileImportOptions {
+            allow_gif: false,
+            exact_dimensions: Some((composed.layout.canvas_width, composed.layout.canvas_height)),
+        },
+    )?;
+    let artifact_snapshot = prepared_source.artifact_snapshot(connection, paths)?;
+    let request_id = create_id("ai_request");
+    let operation = if scope == "single_generate" {
+        "single_generate_prepare"
+    } else {
+        "grid_generate_prepare"
+    };
+    let snapshots = foundation_snapshots(
+        operation,
+        i64::try_from(item_count).unwrap_or(i64::MAX),
+        &request.layout,
+    )?;
+    let payload_signature = hash_text(&[
+        "pmtcon-ai-generation-reference-v1".to_string(),
+        prompt_signature,
+        composed.png_sha256.clone(),
+        composed.manifest_sha256.clone(),
+    ]);
+    let result = (|| -> AppResult<PreparedAiGridRequest> {
+        let tx = connection.transaction_with_behavior(TransactionBehavior::Immediate)?;
+        ensure_ai_reference_targets_current(&tx, collection_id, &composed)?;
+        let collection_name = collection_name(&tx, collection_id)?;
+        let stored = commit_prepared_source_file(&tx, paths, &prepared_source)?;
+        if stored.sha256 != composed.png_sha256 {
+            return Err(AppError::new(
+                "ai_reference_hash",
+                "AI 참고 시트 해시가 준비한 바이트와 일치하지 않습니다.",
+            ));
+        }
+        insert_grid_request(
+            &tx,
+            &request_id,
+            collection_id,
+            &collection_name,
+            scope,
+            request.retry_of_request_id.as_deref(),
+            operation,
+            &snapshots,
+            Some(&stored.sha256),
+            Some(&stored.sha256),
+            &payload_signature,
+        )?;
+        insert_generation_items(
+            &tx,
+            &request_id,
+            scope,
+            &request.target_names,
+            &request.layout,
+        )?;
+        insert_artifact(
+            &tx,
+            &request_id,
+            "input_sheet",
+            &stored.id,
+            &stored.sha256,
+            &composed.manifest_json,
+        )?;
+        transition_request(&tx, &request_id, "draft", "prepared")?;
+        tx.commit()?;
+        Ok(PreparedAiGridRequest {
+            request_id,
+            request_scope: scope.to_string(),
+            status: "prepared".to_string(),
+            item_count: i64::try_from(item_count).unwrap_or(i64::MAX),
+            input_sheet_sha256: Some(composed.png_sha256.clone()),
+            input_manifest_sha256: Some(composed.manifest_sha256.clone()),
+            retry_of_request_id: request.retry_of_request_id.clone(),
+        })
+    })();
+    if result.is_err() {
+        let _ = artifact_snapshot.cleanup_if_unreferenced(connection);
+    }
+    result
+}
+
 pub(crate) fn mark_ai_grid_awaiting_result(
     connection: &Connection,
     request_id: &str,
@@ -1024,9 +1157,12 @@ pub(crate) fn verified_ai_grid_input_path(
         )
         .optional()?
         .ok_or_else(|| AppError::not_found("AI 그리드 요청을 찾을 수 없습니다."))?;
-    if request_scope != "grid_edit" {
+    if !matches!(
+        request_scope.as_str(),
+        "grid_edit" | "single_generate" | "grid_generate"
+    ) {
         return Err(AppError::not_found(
-            "원본 없는 AI 생성 요청에는 전달할 입력 이미지가 없습니다.",
+            "전달할 AI 입력 이미지를 찾을 수 없습니다.",
         ));
     }
     if !matches!(status.as_str(), "prepared" | "awaiting_result") {
@@ -1048,7 +1184,9 @@ pub(crate) fn verified_ai_grid_input_path(
             |row| row.get::<_, String>(0),
         )
         .optional()?
-        .ok_or_else(|| AppError::not_found("이 AI 편집 요청에는 전달할 입력 이미지가 없습니다."))?;
+        .ok_or_else(|| {
+            AppError::not_found("이 AI 요청에는 전달할 편집 시트 또는 참고 시트가 없습니다.")
+        })?;
     let canonical_path =
         crate::native_drag::canonical_managed_drag_file(paths, Path::new(&stored_path))
             .map_err(|_| ai_grid_input_managed_path_error())?;
@@ -1060,8 +1198,9 @@ pub(crate) fn verified_ai_grid_input_path(
         return Err(ai_grid_input_managed_path_error());
     }
 
-    let input = load_ai_grid_artifact(connection, request_id, "input_sheet")?
-        .ok_or_else(|| AppError::not_found("이 AI 편집 요청에는 전달할 입력 이미지가 없습니다."))?;
+    let input = load_ai_grid_artifact(connection, request_id, "input_sheet")?.ok_or_else(|| {
+        AppError::not_found("이 AI 요청에는 전달할 편집 시트 또는 참고 시트가 없습니다.")
+    })?;
     let verified_path =
         crate::native_drag::canonical_managed_drag_file(paths, Path::new(&input.file_path))
             .map_err(|_| ai_grid_input_managed_path_error())?;
@@ -1709,6 +1848,7 @@ fn insert_grid_request(
     operation: &str,
     snapshots: &FoundationSnapshots,
     input_sha256: Option<&str>,
+    reference_sha256: Option<&str>,
     payload_signature: &str,
 ) -> AppResult<()> {
     let inserted = tx.execute(
@@ -1719,14 +1859,15 @@ fn insert_grid_request(
            account_context, model, operation, provenance_trust, credential_mode_snapshot,
            capability_snapshot_json, data_tier_snapshot_json, retention_snapshot_json,
            consent_snapshot_json, policy_refs_json, prompt_options_snapshot_json,
-           input_package_sha256, original_lineage_id, original_lineage_generation,
+           input_package_sha256, reference_package_sha256,
+           original_lineage_id, original_lineage_generation,
            original_source_sha256, effective_source_sha256, payload_input_signature,
            request_recipe_signature, activation_revision, status, created_at, updated_at
          ) VALUES (
            ?1, ?2, ?3, ?4, NULL, ?5, NULL,
            'manual_web', 'other_manual', 'unassigned', 'pmtcon-ai-grid-foundation', '1',
            'unknown', NULL, ?6, 'manual_unverified', 'none', ?7, ?8, ?9, ?10, ?11, ?12,
-           ?13, NULL, NULL, NULL, NULL, ?14, NULL, NULL, 'draft',
+           ?13, ?14, NULL, NULL, NULL, NULL, ?15, NULL, NULL, 'draft',
            strftime('%Y-%m-%dT%H:%M:%fZ', 'now'), strftime('%Y-%m-%dT%H:%M:%fZ', 'now')
          )",
         params![
@@ -1743,6 +1884,7 @@ fn insert_grid_request(
             snapshots.policy_refs,
             snapshots.prompt_options,
             input_sha256,
+            reference_sha256,
             payload_signature,
         ],
     )?;
@@ -2376,8 +2518,9 @@ mod tests {
         analyze_ai_grid_output, cancel_ai_grid_request, commit_ai_generated_icons,
         commit_ai_grid_candidates, get_ai_grid_request_state, get_ai_grid_workspace,
         get_latest_ai_grid_workspace, mark_ai_grid_awaiting_result, prepare_ai_generation,
-        prepare_ai_grid_edit, record_ai_grid_output_artifact, verified_ai_grid_input_path,
-        FinalizeGeneratedIconInput, PrepareAiGenerationRequest,
+        prepare_ai_generation_with_references, prepare_ai_grid_edit,
+        record_ai_grid_output_artifact, verified_ai_grid_input_path, FinalizeGeneratedIconInput,
+        PrepareAiGenerationReferences, PrepareAiGenerationRequest,
     };
 
     struct Fixture {
@@ -2778,6 +2921,72 @@ mod tests {
             })
             .collect::<Vec<_>>();
         assert_eq!(before_sources, after_sources);
+        fixture.cleanup();
+    }
+
+    #[test]
+    fn generation_references_persist_one_managed_sheet_without_mutating_sources() {
+        let mut fixture = Fixture::new(1);
+        let original_source: (String, Option<String>) = fixture
+            .connection
+            .query_row(
+                "SELECT source_file_id, current_preview_path FROM icons WHERE id = ?1",
+                [&fixture.icon_ids[0]],
+                |row| Ok((row.get(0)?, row.get(1)?)),
+            )
+            .unwrap();
+        let prepared = prepare_ai_generation_with_references(
+            &mut fixture.connection,
+            &fixture.paths,
+            &fixture.collection_id,
+            PrepareAiGenerationRequest {
+                target_names: vec!["기쁨".into(), "놀람".into()],
+                layout: default_ai_grid_layout(2, 1024).unwrap(),
+                payload_input_signature: "reference-generation-v1".into(),
+                retry_of_request_id: None,
+            },
+            PrepareAiGenerationReferences {
+                selected_icon_ids: vec![fixture.icon_ids[0].clone()],
+                external_files: vec![ImportImageFilePayload {
+                    original_filename: "style-reference.png".into(),
+                    bytes: solid_png(24, 48, [210, 40, 120, 255]),
+                }],
+            },
+        )
+        .unwrap();
+
+        assert_eq!(prepared.request_scope, "grid_generate");
+        assert!(prepared.input_sheet_sha256.is_some());
+        let workspace = get_ai_grid_workspace(&fixture.connection, &prepared.request_id).unwrap();
+        let input = workspace.input_artifact.as_ref().unwrap();
+        assert!(std::path::Path::new(&input.file_path).is_file());
+        assert!(input.manifest_json.contains("generation_reference"));
+        assert!(input.manifest_json.contains("library_icon"));
+        assert!(input.manifest_json.contains("external_file"));
+        let request_hashes: (Option<String>, Option<String>) = fixture
+            .connection
+            .query_row(
+                "SELECT input_package_sha256, reference_package_sha256
+                 FROM ai_requests WHERE id = ?1",
+                [&prepared.request_id],
+                |row| Ok((row.get(0)?, row.get(1)?)),
+            )
+            .unwrap();
+        assert_eq!(request_hashes.0, Some(input.sha256.clone()));
+        assert_eq!(request_hashes.1, Some(input.sha256.clone()));
+        let verified =
+            verified_ai_grid_input_path(&fixture.connection, &fixture.paths, &prepared.request_id)
+                .unwrap();
+        assert!(verified.is_file());
+        let current_source: (String, Option<String>) = fixture
+            .connection
+            .query_row(
+                "SELECT source_file_id, current_preview_path FROM icons WHERE id = ?1",
+                [&fixture.icon_ids[0]],
+                |row| Ok((row.get(0)?, row.get(1)?)),
+            )
+            .unwrap();
+        assert_eq!(current_source, original_source);
         fixture.cleanup();
     }
 

@@ -26,6 +26,7 @@ import {
   commitAiGridReview,
   getLatestAiGridWorkspace,
   markAiGridWorkspaceAwaitingResult,
+  MAX_AI_REFERENCE_EXTERNAL_BYTES,
   prepareAiGenerationWorkspace,
   prepareAiGridEditWorkspace,
   revealAiGridInput,
@@ -89,6 +90,20 @@ export function AiGridWorkspaceDialog({
     const selected = new Set(selectedIconIds);
     return icons.filter((icon) => selected.has(icon.id));
   }, [icons, selectedIconIds]);
+  const eligibleReferenceIcons = useMemo(
+    () =>
+      icons.filter(
+        (icon) =>
+          icon.iconKind === "image" &&
+          icon.shape === "single" &&
+          Boolean(
+            icon.currentPreviewUrl ??
+              icon.thumbnailOverrideUrl ??
+              icon.thumbnailUrl,
+          ),
+      ),
+    [icons],
+  );
   const [step, setStep] = useState(1);
   const [workspace, setWorkspace] = useState<AiGridWorkspace | null>(null);
   const [targetCount, setTargetCount] = useState(
@@ -100,6 +115,8 @@ export function AiGridWorkspaceDialog({
       : ["새 이모티콘 1"],
   );
   const [userPrompt, setUserPrompt] = useState("");
+  const [referenceIconIds, setReferenceIconIds] = useState<string[]>([]);
+  const [referenceFiles, setReferenceFiles] = useState<File[]>([]);
   const [service, setService] = useState<AiGridWebService>("gemini_web");
   const [analysis, setAnalysis] = useState<SheetGridAnalysis | null>(null);
   const [reviewSettings, setReviewSettings] =
@@ -204,6 +221,7 @@ export function AiGridWorkspaceDialog({
   const hasBlankTargetName =
     effectiveMode === "generate" &&
     targetNames.some((name) => !name.trim());
+  const referenceCount = referenceIconIds.length + referenceFiles.length;
   const cells = analysis?.cells ?? [];
   const mappedCellIndexes = useMemo(
     () =>
@@ -295,6 +313,9 @@ export function AiGridWorkspaceDialog({
               targetNames,
               userPrompt.trim() ||
                 `source-free-${targetCount}-${targetNames.join("|")}`,
+              null,
+              referenceIconIds,
+              referenceFiles,
             );
       setWorkspace(prepared);
       setIsRestoredWorkspace(false);
@@ -307,7 +328,9 @@ export function AiGridWorkspaceDialog({
       setMessage(
         effectiveMode === "edit"
           ? "선택한 아이콘을 한 장의 투명 그리드로 준비했습니다. 원본과 현재 적용 이미지는 바뀌지 않았습니다."
-          : "가짜 빈 아이콘 없이 생성 항목과 그리드 구조만 준비했습니다.",
+          : referenceCount > 0
+            ? `${referenceCount}개 참고 이미지를 한 장의 안전한 참고 시트로 준비했습니다. 참고 원본은 바뀌지 않았습니다.`
+            : "가짜 빈 아이콘 없이 생성 항목과 그리드 구조만 준비했습니다.",
       );
     } catch (error) {
       setErrorMessage(getCommandErrorMessage(error));
@@ -524,6 +547,8 @@ export function AiGridWorkspaceDialog({
     setTargetCount(mode === "edit" ? selectedIcons.length : 1);
     setTargetNames(nextNames);
     setUserPrompt("");
+    setReferenceIconIds([]);
+    setReferenceFiles([]);
     setService("gemini_web");
     setAnalysis(null);
     setReviewSettings(null);
@@ -562,6 +587,43 @@ export function AiGridWorkspaceDialog({
     } finally {
       setIsWorking(false);
     }
+  };
+
+  const toggleReferenceIcon = (iconId: string) => {
+    setErrorMessage(null);
+    setReferenceIconIds((current) => {
+      if (current.includes(iconId)) {
+        return current.filter((id) => id !== iconId);
+      }
+      if (current.length + referenceFiles.length >= 16) {
+        setErrorMessage("참고 이미지는 내부 아이콘과 외부 파일을 합쳐 최대 16개까지 선택할 수 있습니다.");
+        return current;
+      }
+      return [...current, iconId];
+    });
+  };
+
+  const addReferenceFiles = (files: File[]) => {
+    setErrorMessage(null);
+    const supported = files.filter(isSupportedReferenceFile);
+    if (supported.length !== files.length) {
+      setErrorMessage("외부 참고 이미지는 PNG, JPG 또는 GIF 파일만 선택할 수 있습니다.");
+      return;
+    }
+    const nextFiles = [...referenceFiles, ...supported];
+    if (referenceIconIds.length + nextFiles.length > 16) {
+      setErrorMessage("참고 이미지는 내부 아이콘과 외부 파일을 합쳐 최대 16개까지 선택할 수 있습니다.");
+      return;
+    }
+    const totalExternalBytes = nextFiles.reduce(
+      (total, file) => total + file.size,
+      0,
+    );
+    if (totalExternalBytes > MAX_AI_REFERENCE_EXTERNAL_BYTES) {
+      setErrorMessage("외부 참고 이미지는 합계 16MB까지 사용할 수 있습니다.");
+      return;
+    }
+    setReferenceFiles(nextFiles);
   };
 
   const handleResultDrop = (event: DragEvent<HTMLDivElement>) => {
@@ -738,6 +800,102 @@ export function AiGridWorkspaceDialog({
                 각 생성 아이콘의 이름을 입력해 주세요.
               </p>
             ) : null}
+            {effectiveMode === "generate" ? (
+              <div
+                className="grid gap-3 rounded-md border border-border bg-canvas p-4"
+                data-testid="ai-generation-references"
+              >
+                <div>
+                  <h4 className="text-sm font-semibold">
+                    참고 이미지 (선택) · {referenceCount}/16
+                  </h4>
+                  <p className="mt-1 text-xs leading-5 text-muted">
+                    모음의 아이콘 또는 외부 PNG/JPG/GIF를 캐릭터·그림체 참고로 사용합니다. GIF는 첫 프레임 포스터가 들어가며, 결과 배치 틀로 사용하지 않습니다.
+                  </p>
+                </div>
+                {eligibleReferenceIcons.length > 0 ? (
+                  <div className="grid max-h-56 grid-cols-3 gap-2 overflow-y-auto sm:grid-cols-5 lg:grid-cols-8">
+                    {eligibleReferenceIcons.map((icon) => {
+                      const checked = referenceIconIds.includes(icon.id);
+                      const preview =
+                        icon.currentPreviewUrl ??
+                        icon.thumbnailOverrideUrl ??
+                        icon.thumbnailUrl ??
+                        "";
+                      return (
+                        <label
+                          className={
+                            checked
+                              ? "grid cursor-pointer gap-1 rounded-md border border-accent bg-selected p-2"
+                              : "grid cursor-pointer gap-1 rounded-md border border-border bg-white p-2 hover:bg-menu-hover"
+                          }
+                          key={icon.id}
+                        >
+                          <input
+                            checked={checked}
+                            className="sr-only"
+                            type="checkbox"
+                            onChange={() => toggleReferenceIcon(icon.id)}
+                          />
+                          <img
+                            alt=""
+                            className="aspect-square w-full rounded object-contain"
+                            src={preview}
+                          />
+                          <span className="truncate text-[11px]" title={icon.displayName}>
+                            {icon.displayName}
+                          </span>
+                        </label>
+                      );
+                    })}
+                  </div>
+                ) : (
+                  <p className="text-xs text-muted">참고로 선택할 수 있는 단일 이미지 아이콘이 없습니다.</p>
+                )}
+                <div className="flex flex-wrap items-center gap-2">
+                  <label className="inline-flex cursor-pointer items-center gap-2 rounded-md border border-border bg-white px-3 py-2 text-xs font-medium hover:bg-menu-hover">
+                    <ImagePlus aria-hidden="true" />
+                    외부 참고 이미지 추가
+                    <input
+                      accept="image/png,image/jpeg,image/gif,.png,.jpg,.jpeg,.gif"
+                      className="sr-only"
+                      multiple
+                      type="file"
+                      onChange={(event) => {
+                        const files = Array.from(event.currentTarget.files ?? []);
+                        event.currentTarget.value = "";
+                        addReferenceFiles(files);
+                      }}
+                    />
+                  </label>
+                  <span className="text-[11px] text-muted">외부 파일 합계 최대 16MB</span>
+                </div>
+                {referenceFiles.length > 0 ? (
+                  <ul className="grid gap-1 text-xs">
+                    {referenceFiles.map((file, index) => (
+                      <li
+                        className="flex items-center justify-between gap-2 rounded border border-border bg-white px-2 py-1"
+                        key={`${file.name}-${file.size}-${file.lastModified}-${index}`}
+                      >
+                        <span className="min-w-0 truncate">{file.name}</span>
+                        <button
+                          aria-label={`${file.name} 참고 파일 제거`}
+                          className="rounded p-1 text-muted hover:bg-menu-hover hover:text-foreground"
+                          type="button"
+                          onClick={() =>
+                            setReferenceFiles((current) =>
+                              current.filter((_, fileIndex) => fileIndex !== index),
+                            )
+                          }
+                        >
+                          <X aria-hidden="true" />
+                        </button>
+                      </li>
+                    ))}
+                  </ul>
+                ) : null}
+              </div>
+            ) : null}
             <label className="grid gap-1 text-sm font-medium">
               원하는 수정·생성 내용
               <textarea
@@ -788,6 +946,9 @@ export function AiGridWorkspaceDialog({
                 label="예상 배치"
                 value={defaultLayoutLabel(targetCount)}
               />
+              {effectiveMode === "generate" ? (
+                <Metric label="참고" value={referenceCount > 0 ? `${referenceCount}개` : "없음"} />
+              ) : null}
               <Metric
                 label="저장 정책"
                 value={
@@ -800,7 +961,9 @@ export function AiGridWorkspaceDialog({
             <div className="rounded-md border border-focus/20 bg-selected/30 p-4 text-sm leading-6">
               {effectiveMode === "edit"
                 ? "준비 단계는 현재 화면을 새 PNG 입력 시트로 렌더링할 뿐입니다. 원본, crop, 활성 AI 버전은 변경하지 않습니다."
-                : "생성 단계는 요청 항목만 저장합니다. 결과 셀을 확정하기 전에는 아이콘이나 원본 파일 행을 만들지 않습니다."}
+                : referenceCount > 0
+                  ? "참고 이미지는 한 장의 별도 시트로 복사해 전달합니다. 원본 아이콘·외부 파일은 바꾸지 않으며, 결과 셀을 확정하기 전에는 새 아이콘을 만들지 않습니다."
+                  : "생성 단계는 요청 항목만 저장합니다. 결과 셀을 확정하기 전에는 아이콘이나 원본 파일 행을 만들지 않습니다."}
             </div>
             <div className="flex flex-wrap justify-between gap-2">
               <button
@@ -841,15 +1004,14 @@ export function AiGridWorkspaceDialog({
                 {workspace.inputArtifact ? (
                   <div className="overflow-hidden rounded-md border border-border bg-checkerboard p-3">
                     <img
-                      alt="선택 아이콘 AI 입력 그리드"
+                      alt={workspace.requestScope === "grid_edit" ? "선택 아이콘 AI 입력 그리드" : "AI 생성 참고 이미지 시트"}
                       className="mx-auto max-h-80 max-w-full object-contain"
                       src={workspace.inputArtifact.previewUrl}
                     />
                   </div>
                 ) : (
                   <div className="flex min-h-40 items-center justify-center rounded-md border border-dashed border-border bg-canvas p-5 text-center text-sm text-muted">
-                    원본 없는 생성이므로 업로드 파일은 없습니다. 프롬프트만
-                    웹에 붙여넣으세요.
+                    참고 이미지를 선택하지 않은 원본 없는 생성입니다. 프롬프트만 웹에 붙여넣으세요.
                   </div>
                 )}
                 <label className="grid gap-1 text-sm font-medium">
@@ -1282,6 +1444,13 @@ export function AiGridWorkspaceDialog({
       </div>
     </ModalFrame>
   );
+}
+
+function isSupportedReferenceFile(file: File) {
+  if (["image/png", "image/jpeg", "image/gif"].includes(file.type)) {
+    return true;
+  }
+  return /\.(png|jpe?g|gif)$/i.test(file.name);
 }
 
 function GridInputActions({

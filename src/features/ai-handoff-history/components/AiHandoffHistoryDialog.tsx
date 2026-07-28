@@ -77,36 +77,36 @@ export function AiHandoffHistoryDialog({ onClose }: { onClose: () => void }) {
     action: "drag" | "reveal" | "delete",
   ) => {
     if (workingRequestId || isMaintaining) return;
-    const isGridEdit = isGridEditHandoff(item);
-    if (isAiGridHandoff(item) && !isGridEdit) return;
+    const usesGridInputActions = usesAiGridInputActions(item);
+    if (isAiGridHandoff(item) && !usesGridInputActions) return;
     setWorkingRequestId(item.requestId);
     setMessage(null);
     setErrorMessage(null);
     try {
       if (action === "drag") {
-        const result = isGridEdit
+        const result = usesGridInputActions
           ? await startAiGridInputDrag(item.requestId)
           : await startAiWebHandoffDrag(item.requestId);
         setMessage(result.message);
       } else if (action === "reveal") {
-        if (isGridEdit) {
+        if (usesGridInputActions) {
           await revealAiGridInput(item.requestId);
           setMessage("탐색기에서 그리드 입력 파일을 선택했습니다.");
         } else {
           await revealAiWebHandoffUpload(item.requestId);
           setMessage("탐색기에서 업로드 파일을 선택했습니다.");
         }
-      } else if (isGridEdit) {
+      } else if (usesGridInputActions) {
         if (
           !window.confirm(
-            "이 AI 그리드 편집 요청을 취소할까요? 원본 아이콘과 현재 이미지는 바뀌지 않습니다.",
+            "이 AI 그리드 요청을 취소할까요? 원본 아이콘과 현재 이미지는 바뀌지 않습니다.",
           )
         ) {
           return;
         }
         await cancelAiGridWorkspace(item.requestId);
         setMessage(
-          "AI 그리드 편집 요청을 취소했습니다. 임시 파일 정리는 유지보수에서 처리합니다.",
+          "AI 그리드 요청을 취소했습니다. 임시 파일 정리는 유지보수에서 처리합니다.",
         );
       } else {
         if (!window.confirm("이 전달을 닫고 보관 중인 임시 파일을 정리할까요?")) return;
@@ -241,10 +241,8 @@ export function AiHandoffHistoryDialog({ onClose }: { onClose: () => void }) {
             ) : (
               <ul className="grid gap-2" data-testid="ai-handoff-history-list">
                 {items.map((item) => {
-                  const gridEdit = isGridEditHandoff(item);
-                  const available =
-                    item.payloadState === "available" &&
-                    (!isAiGridHandoff(item) || gridEdit);
+                  const usesGridInputActions = usesAiGridInputActions(item);
+                  const available = item.payloadState === "available";
                   const working = workingRequestId === item.requestId;
                   return (
                     <li className="rounded-lg border border-border bg-white p-4" key={item.requestId}>
@@ -293,14 +291,14 @@ export function AiHandoffHistoryDialog({ onClose }: { onClose: () => void }) {
                                 <FolderOpen aria-hidden="true" />탐색기
                               </button>
                               <button
-                                aria-label={`${item.iconName ?? "전달"} ${gridEdit ? "요청 취소" : "닫기"}`}
+                                aria-label={`${item.iconName ?? "전달"} ${usesGridInputActions ? "요청 취소" : "닫기"}`}
                                 className="inline-flex min-h-8 items-center gap-1 rounded-md border border-border px-2.5 py-1.5 text-xs font-medium text-danger hover:bg-menu-hover focus-visible:outline focus-visible:outline-2 focus-visible:outline-focus disabled:opacity-50"
                                 disabled={working || isMaintaining}
                                 type="button"
                                 onClick={() => void runItemAction(item, "delete")}
                               >
                                 <Trash2 aria-hidden="true" />
-                                {gridEdit ? "요청 취소" : "닫기"}
+                                {usesGridInputActions ? "요청 취소" : "닫기"}
                               </button>
                             </>
                           ) : null}
@@ -337,8 +335,8 @@ function isAiGridHandoff(item: AiWebHandoffHistoryItem) {
   );
 }
 
-function isGridEditHandoff(item: AiWebHandoffHistoryItem) {
-  return item.requestScope === "grid_edit";
+function usesAiGridInputActions(item: AiWebHandoffHistoryItem) {
+  return isAiGridHandoff(item) && item.payloadState === "available";
 }
 
 function handoffKindLabel(item: AiWebHandoffHistoryItem) {

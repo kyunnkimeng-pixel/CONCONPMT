@@ -22,6 +22,20 @@ function issue(
 }
 
 describe("AI web handoff result diagnostics", () => {
+  it("describes proportional size normalization as a local non-blocking action", () => {
+    const guidance = describeAiWebHandoffIssue(
+      issue({
+        code: "ai_handoff_result_size_normalization",
+        severity: "warning",
+        message: "1024×1024px 결과를 200×200px로 정규화합니다.",
+      }),
+    );
+
+    expect(guidance.problem).toContain("1024×1024px");
+    expect(guidance.impact).toContain("원본 해상도는 후보로 보존");
+    expect(guidance.correctionPrompt).toBeNull();
+  });
+
   it("builds deterministic, de-duplicated correction text only for prompt-fixable issues", () => {
     const issues = [
       issue({

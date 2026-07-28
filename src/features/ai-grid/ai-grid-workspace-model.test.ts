@@ -92,6 +92,32 @@ describe("AI grid workspace model", () => {
     expect(prompt).toContain("Never merge, remove, add, reorder");
   });
 
+  it("separates a generation reference board from the required output geometry", () => {
+    const generation = workspace("grid_generate");
+    generation.inputArtifact = {
+      role: "input_sheet",
+      sourceFileId: "reference-source",
+      originalFilename: "references.png",
+      filePath: "C:\\managed\\references.png",
+      previewUrl: "asset://references.png",
+      extension: "png",
+      mimeType: "image/png",
+      width: 1024,
+      height: 1024,
+      byteSize: 100,
+      sha256: "reference-sha",
+      hasAlpha: true,
+      manifestJson: '{"schema":"pmtcon-ai-grid-v1","kind":"generation_reference"}',
+      createdAt: "2026-07-29T00:00:00Z",
+    };
+
+    const prompt = buildAiGridPrompt(generation, "같은 캐릭터로 만들어줘");
+
+    expect(prompt).toContain("REFERENCE BOARD only");
+    expect(prompt).toContain("not the output template or output geometry");
+    expect(prompt).toContain("Required geometry: 1024×1024px canvas");
+  });
+
   it("derives exact grid settings and a row-major mapping", () => {
     expect(sheetSettingsFromLayout(workspace().layout)).toMatchObject({
       mode: "cell_size",

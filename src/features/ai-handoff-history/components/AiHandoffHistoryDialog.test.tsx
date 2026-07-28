@@ -84,6 +84,15 @@ const availableGridItem: AiWebHandoffHistoryItem = {
   requestStatus: "awaiting_result",
 };
 
+const availableReferenceGenerationItem: AiWebHandoffHistoryItem = {
+  ...availableGridItem,
+  requestId: "grid-generation-reference-1",
+  requestScope: "grid_generate",
+  iconName: "참고 이미지로 AI 아이콘 4개 생성",
+  requestStatus: "prepared",
+  payloadState: "available",
+};
+
 const closedSourceFreeItem: AiWebHandoffHistoryItem = {
   ...availableGridItem,
   requestId: "grid-request-2",
@@ -97,8 +106,8 @@ const storage: AiWebHandoffStorageStatus = {
   quotaBytes: 256 * 1024 * 1024,
   usedBytes: 4 * 1024 * 1024,
   availableBytes: 252 * 1024 * 1024,
-  retainedHistoryCount: 4,
-  livePayloadCount: 2,
+  retainedHistoryCount: 5,
+  livePayloadCount: 3,
   cleanupPendingCount: 1,
   quotaReached: false,
 };
@@ -120,6 +129,7 @@ beforeEach(() => {
     cleanupPendingItem,
     availableWebItem,
     availableGridItem,
+    availableReferenceGenerationItem,
     closedSourceFreeItem,
   ]);
   mocks.getStorage.mockResolvedValue(storage);
@@ -235,6 +245,52 @@ describe("AiHandoffHistoryDialog", () => {
     });
     expect(mocks.gridCancel).toHaveBeenCalledWith("grid-request-1");
     expect(mocks.deletePayload).not.toHaveBeenCalledWith("grid-request-1");
+  });
+
+  it("routes a live generation-reference sheet through the grid commands", async () => {
+    await renderDialog();
+
+    const referenceRow = row("참고 이미지로 AI 아이콘 4개 생성");
+    const dragEvent = new Event("pointerdown", { bubbles: true });
+    Object.defineProperties(dragEvent, {
+      button: { value: 0 },
+      pointerType: { value: "mouse" },
+    });
+    await act(async () => {
+      rowButton(referenceRow, "파일 끌기").dispatchEvent(dragEvent);
+      await Promise.resolve();
+    });
+    expect(mocks.gridStartDrag).toHaveBeenCalledWith(
+      "grid-generation-reference-1",
+    );
+    expect(mocks.startDrag).not.toHaveBeenCalled();
+    await settle();
+
+    await act(async () => {
+      rowButton(row("참고 이미지로 AI 아이콘 4개 생성"), "탐색기").click();
+      await Promise.resolve();
+    });
+    expect(mocks.gridReveal).toHaveBeenCalledWith(
+      "grid-generation-reference-1",
+    );
+    expect(mocks.reveal).not.toHaveBeenCalledWith(
+      "grid-generation-reference-1",
+    );
+    await settle();
+
+    await act(async () => {
+      rowButton(
+        row("참고 이미지로 AI 아이콘 4개 생성"),
+        "요청 취소",
+      ).click();
+      await Promise.resolve();
+    });
+    expect(mocks.gridCancel).toHaveBeenCalledWith(
+      "grid-generation-reference-1",
+    );
+    expect(mocks.deletePayload).not.toHaveBeenCalledWith(
+      "grid-generation-reference-1",
+    );
   });
 
   it("does not expose file or cancel actions for source-free grid history", async () => {

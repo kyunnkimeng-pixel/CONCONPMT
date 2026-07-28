@@ -8,7 +8,8 @@ use rusqlite::Connection;
 use crate::db::connection::open_database;
 use crate::db::repositories::ai_grid::{
     cancel_ai_grid_request, get_ai_grid_workspace, mark_ai_grid_awaiting_result,
-    prepare_ai_grid_edit, record_ai_grid_output_artifact,
+    prepare_ai_generation, prepare_ai_generation_with_references, prepare_ai_grid_edit,
+    record_ai_grid_output_artifact, PrepareAiGenerationReferences, PrepareAiGenerationRequest,
 };
 use crate::db::repositories::ai_handoff::{
     cleanup_ai_web_handoffs, get_ai_web_handoff_storage_status, list_recent_ai_web_handoffs,
@@ -18,7 +19,7 @@ use crate::db::repositories::collections::create_collection;
 use crate::db::repositories::imports::import_image_files;
 use crate::models::ImportImageFilePayload;
 use crate::paths::AppPaths;
-use crate::sheet::composer::default_ai_grid_layout;
+use crate::sheet::composer::{default_ai_generation_layout, default_ai_grid_layout};
 
 fn png_bytes(size: u32, color: [u8; 4]) -> Vec<u8> {
     let image = ImageBuffer::from_pixel(size, size, Rgba(color));
@@ -120,6 +121,70 @@ fn grid_input_and_result_are_in_total_storage_and_recent_history() {
     fs::remove_dir_all(paths.root).unwrap();
 }
 
+#[test]
+fn recent_history_exposes_generation_reference_sheets_but_keeps_source_free_generation_closed() {
+    let (paths, mut connection, collection_id, icon_ids) = fixture("generation-history");
+    let referenced_single = prepare_ai_generation_with_references(
+        &mut connection,
+        &paths,
+        &collection_id,
+        PrepareAiGenerationRequest {
+            target_names: vec!["기쁨".to_string()],
+            layout: default_ai_generation_layout(1, 1_024).unwrap(),
+            payload_input_signature: "single-reference-history".to_string(),
+            retry_of_request_id: None,
+        },
+        PrepareAiGenerationReferences {
+            selected_icon_ids: vec![icon_ids[0].clone()],
+            external_files: Vec::new(),
+        },
+    )
+    .unwrap();
+    let referenced_grid = prepare_ai_generation_with_references(
+        &mut connection,
+        &paths,
+        &collection_id,
+        PrepareAiGenerationRequest {
+            target_names: vec!["기쁨".to_string(), "놀람".to_string()],
+            layout: default_ai_grid_layout(2, 1_024).unwrap(),
+            payload_input_signature: "grid-reference-history".to_string(),
+            retry_of_request_id: None,
+        },
+        PrepareAiGenerationReferences {
+            selected_icon_ids: vec![icon_ids[1].clone()],
+            external_files: Vec::new(),
+        },
+    )
+    .unwrap();
+    let source_free = prepare_ai_generation(
+        &mut connection,
+        &collection_id,
+        PrepareAiGenerationRequest {
+            target_names: vec!["웃음".to_string(), "울음".to_string()],
+            layout: default_ai_grid_layout(2, 1_024).unwrap(),
+            payload_input_signature: "source-free-history".to_string(),
+            retry_of_request_id: None,
+        },
+    )
+    .unwrap();
+
+    let history = list_recent_ai_web_handoffs(&connection, None).unwrap();
+    for request_id in [&referenced_single.request_id, &referenced_grid.request_id] {
+        let item = history
+            .iter()
+            .find(|item| &item.request_id == request_id)
+            .unwrap();
+        assert_eq!(item.payload_state, "available");
+    }
+    let source_free_item = history
+        .iter()
+        .find(|item| item.request_id == source_free.request_id)
+        .unwrap();
+    assert_eq!(source_free_item.payload_state, "closed");
+
+    drop(connection);
+    fs::remove_dir_all(paths.root).unwrap();
+}
 #[test]
 fn quota_cleanup_evicts_terminal_grid_before_rejecting_and_preserves_active_grid() {
     let (paths, mut connection, collection_id, icon_ids) = fixture("quota-priority");

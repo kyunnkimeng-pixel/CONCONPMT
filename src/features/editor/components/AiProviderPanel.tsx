@@ -10,6 +10,11 @@ import {
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import type { RefObject } from "react";
 
+import type {
+  CollectionSummary,
+  IconSummary,
+} from "@/features/collections/types";
+
 import {
   AI_PROVIDER_CHOICES,
   GEMINI_IMAGE_MODELS,
@@ -45,6 +50,7 @@ import {
   startAiWebHandoffDrag,
 } from "@/features/editor/api";
 import { AiWebHandoffPanel } from "@/features/editor/components/AiWebHandoffPanel";
+import { GifFrameSheetDialog } from "@/features/sheets/components/GifFrameSheetDialog";
 import type {
   AiOfficialResource,
   AiProvider,
@@ -62,8 +68,8 @@ type ProviderBusyAction =
   | `resource:${AiOfficialResource}`;
 
 interface AiProviderPanelProps {
-  collectionId: string;
-  iconId: string;
+  collection: CollectionSummary;
+  icon: IconSummary;
   source: SourceFileSummary;
   hasUnsavedChanges: boolean;
   disabled: boolean;
@@ -80,8 +86,8 @@ const EMPTY_SESSION_STATUS: AiProviderSessionStatus = {
 };
 
 export function AiProviderPanel({
-  collectionId,
-  iconId,
+  collection,
+  icon,
   source,
   hasUnsavedChanges,
   disabled,
@@ -91,12 +97,15 @@ export function AiProviderPanel({
   onAnnouncement,
   initialProviderChoice = "web",
 }: AiProviderPanelProps) {
+  const collectionId = collection.id;
+  const iconId = icon.id;
   const [providerChoice, setProviderChoice] =
     useState<AiProviderChoice>(initialProviderChoice);
   const [sessionStatus, setSessionStatus] =
     useState<AiProviderSessionStatus>(EMPTY_SESSION_STATUS);
   const [isStatusLoading, setIsStatusLoading] = useState(true);
   const [busyAction, setBusyAction] = useState<ProviderBusyAction | null>(null);
+  const [isGifFrameSheetOpen, setIsGifFrameSheetOpen] = useState(false);
   const [showNovelAiSecret, setShowNovelAiSecret] = useState(false);
   const [showGeminiSecret, setShowGeminiSecret] = useState(false);
   const [novelAiDraft, setNovelAiDraft] = useState<NovelAiEditDraft>(
@@ -120,7 +129,14 @@ export function AiProviderPanel({
 
   useEffect(() => {
     mountedRef.current = true;
+    if (source.isAnimated) {
+      setIsStatusLoading(false);
+      return () => {
+        mountedRef.current = false;
+      };
+    }
     let active = true;
+    setIsStatusLoading(true);
     void getAiProviderSessionStatus()
       .then((status) => {
         if (active) setSessionStatus(status);
@@ -140,7 +156,7 @@ export function AiProviderPanel({
       active = false;
       mountedRef.current = false;
     };
-  }, []);
+  }, [source.isAnimated]);
 
   const novelAiErrors = useMemo(
     () => novelAiDraftErrors(novelAiDraft),
@@ -151,8 +167,8 @@ export function AiProviderPanel({
     [geminiDraft],
   );
   const controlsDisabled = disabled || busyAction !== null;
-  const sourceBlockReason = source.isAnimated
-    ? "이번 단계의 AI API·웹 바로 전달은 정적 JPG·PNG 소스만 지원합니다. GIF 프레임 스프라이트 왕복은 다음 업데이트에서 지원합니다."
+  const directRequestBlockReason = source.isAnimated
+    ? "GIF 파일은 공급자 API나 단일 이미지 웹 전달로 직접 보내지 않습니다. 프레임 시트 수동 웹 왕복을 사용해 주세요."
     : null;
 
   const saveCredential = async (
@@ -225,8 +241,8 @@ export function AiProviderPanel({
       );
       return;
     }
-    if (sourceBlockReason) {
-      onAnnouncement(sourceBlockReason, "error");
+    if (directRequestBlockReason) {
+      onAnnouncement(directRequestBlockReason, "error");
       return;
     }
     if (errors.length > 0) {
@@ -300,8 +316,9 @@ export function AiProviderPanel({
             AI 수정 또는 웹 전달
           </h3>
           <p className="mt-1 text-xs leading-5 text-muted">
-            키는 디스크·DB·기록에 저장하지 않고 현재 앱 실행 중 Rust 메모리에만 둡니다.
-            생성은 사람의 버튼 클릭 1회당 이미지 1장만 요청하며 자동 재시도하지 않습니다.
+            {source.isAnimated
+              ? "GIF는 수동 웹 프레임 시트 왕복만 지원합니다. GIF 파일을 공급자 API로 직접 호출하지 않습니다."
+              : "키는 디스크·DB·기록에 저장하지 않고 현재 앱 실행 중 Rust 메모리에만 둡니다. 생성은 사람의 버튼 클릭 1회당 이미지 1장만 요청하며 자동 재시도하지 않습니다."}
           </p>
         </div>
       </div>
@@ -312,19 +329,52 @@ export function AiProviderPanel({
           {source.originalFilename} · {source.width}×{source.height}
           {source.isAnimated ? ` · GIF ${source.frameCount ?? "?"}프레임` : ""}
         </p>
-        <p className="mt-1 text-muted">
-          저장된 현재 유효 소스 파일의 바이트를 전송합니다. 저장하지 않은 crop·변환·텍스트·효과·
-          모션과 최종 렌더 미리보기는 전송하지 않습니다.
-        </p>
+        {source.isAnimated ? (
+          <p className="mt-1 text-muted">
+            GIF 자체를 API로 보내지 않습니다. 모든 프레임을 clean PNG 시트로 내보낸 뒤 사용자가
+            Gemini AI Studio 또는 NovelAI 웹에 직접 업로드합니다.
+          </p>
+        ) : (
+          <p className="mt-1 text-muted">
+            저장된 현재 유효 소스 파일의 바이트를 전송합니다. 저장하지 않은 crop·변환·텍스트·효과·
+            모션과 최종 렌더 미리보기는 전송하지 않습니다.
+          </p>
+        )}
         {hasUnsavedChanges ? (
           <p className="mt-1 font-semibold text-warning">
-            저장하지 않은 편집이 있어 화면과 전송 소스가 다를 수 있습니다.
+            {source.isAnimated
+              ? "저장하지 않은 편집은 프레임 시트에 반영되지 않습니다. 먼저 적용하거나 되돌려 주세요."
+              : "저장하지 않은 편집이 있어 화면과 전송 소스가 다를 수 있습니다."}
           </p>
         ) : null}
-        {sourceBlockReason ? (
-          <p className="mt-1 font-semibold text-danger">{sourceBlockReason}</p>
-        ) : null}
       </div>
+
+      {source.isAnimated ? (
+        <div
+          className="rounded-md border border-focus/30 bg-selected/30 p-4 text-sm"
+          data-testid="ai-gif-frame-sheet-entry"
+        >
+          <h4 className="font-semibold">GIF 프레임 시트 AI 왕복</h4>
+          <p className="mt-2 text-xs leading-5 text-muted">
+            원본 GIF와 프레임별 timing·loop는 앱과 manifest에 보존됩니다. 웹 AI에는 PNG 프레임
+            시트만 전달하며, 수정된 PNG를 다시 가져와 별도의 내보내기용 GIF 처리 버전을 만듭니다.
+          </p>
+          <p className="mt-1 text-xs leading-5 text-muted">
+            직접 GIF API 호출이나 자동 업로드는 하지 않습니다. 공식 웹사이트에서 사용자가 직접
+            업로드·생성·다운로드합니다.
+          </p>
+          <button
+            className="mt-3 inline-flex min-h-10 items-center justify-center rounded-md bg-accent px-4 py-2 text-xs font-semibold text-accent-foreground hover:bg-accent-strong focus-visible:outline focus-visible:outline-2 focus-visible:outline-focus disabled:cursor-not-allowed disabled:opacity-50"
+            data-testid="ai-gif-frame-sheet-open"
+            disabled={controlsDisabled || hasUnsavedChanges}
+            type="button"
+            onClick={() => setIsGifFrameSheetOpen(true)}
+          >
+            GIF AI 프레임 시트 작업 시작
+          </button>
+        </div>
+      ) : (
+        <>
       <fieldset className="grid gap-2 sm:grid-cols-3">
         <legend className="mb-2 text-xs font-semibold">사용 방식</legend>
         {AI_PROVIDER_CHOICES.map((choice) => (
@@ -359,7 +409,7 @@ export function AiProviderPanel({
           busyAction={busyAction}
           configured={sessionStatus.novelAiConfigured}
           credentialRef={novelAiCredentialRef}
-          disabled={controlsDisabled || sourceBlockReason !== null}
+          disabled={controlsDisabled}
           draft={novelAiDraft}
           errors={novelAiErrors}
           isStatusLoading={isStatusLoading}
@@ -386,7 +436,7 @@ export function AiProviderPanel({
           busyAction={busyAction}
           configured={sessionStatus.geminiConfigured}
           credentialRef={geminiCredentialRef}
-          disabled={controlsDisabled || sourceBlockReason !== null}
+          disabled={controlsDisabled}
           draft={geminiDraft}
           errors={geminiErrors}
           isStatusLoading={isStatusLoading}
@@ -410,7 +460,7 @@ export function AiProviderPanel({
 
       {providerChoice === "web" ? (
         <AiWebHandoffPanel
-          disabled={controlsDisabled || sourceBlockReason !== null}
+          disabled={controlsDisabled}
           hasUnsavedChanges={hasUnsavedChanges}
           onAnnouncement={onAnnouncement}
           onBusyEnd={onBusyEnd}
@@ -439,6 +489,26 @@ export function AiProviderPanel({
           }
           onRevealUpload={revealAiWebHandoffUpload}
           onStartNativeDrag={startAiWebHandoffDrag}
+        />
+      ) : null}
+        </>
+      )}
+
+      {isGifFrameSheetOpen ? (
+        <GifFrameSheetDialog
+          aiWebWorkflow
+          collection={collection}
+          icon={icon}
+          mode="export"
+          onClose={() => setIsGifFrameSheetOpen(false)}
+          onOpenAiSite={(resource) => openOfficialResource(resource)}
+          onVariantCreated={() => {
+            onAnnouncement(
+              "수정된 PNG 프레임 시트를 별도의 내보내기용 GIF 처리 버전으로 만들었습니다. 원본 GIF는 유지됩니다.",
+              "status",
+            );
+            return Promise.resolve();
+          }}
         />
       ) : null}
     </section>
