@@ -4,6 +4,7 @@ use std::time::{Instant, SystemTime, UNIX_EPOCH};
 
 use rusqlite::{params, Connection, OptionalExtension, TransactionBehavior};
 
+use crate::db::repositories::ai as ai_repository;
 use crate::db::repositories::editor as editor_repository;
 use crate::db::repositories::effects as effect_repository;
 use crate::db::repositories::motion as motion_repository;
@@ -122,6 +123,7 @@ fn prepare_motion_render(
     expected_revision: Option<i64>,
     expected_render_signature: Option<String>,
 ) -> AppResult<PreparedMotionRender> {
+    ai_repository::resolve_effective_visual_source(connection, collection_id, &icon_id)?;
     let record = motion_render_record(connection, collection_id, &icon_id)?;
     let effects =
         effect_repository::effect_recipe_for_icon(connection, collection_id, &icon_id)?.recipe;
@@ -330,7 +332,8 @@ fn motion_render_record(
                i.text_overlay_stroke_color,
                i.text_overlay_stroke_width
              FROM icons i
-             JOIN source_files s ON s.id = i.source_file_id
+             JOIN effective_visual_sources evs ON evs.icon_id = i.id
+             JOIN source_files s ON s.id = evs.effective_source_file_id
              JOIN collections c ON c.id = i.collection_id
              JOIN crop_settings cs ON cs.icon_id = i.id
              WHERE i.id = ?1

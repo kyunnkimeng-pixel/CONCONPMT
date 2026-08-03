@@ -7,8 +7,9 @@ pub mod settings;
 pub mod static_optimizer;
 pub mod variants;
 
-use rusqlite::Connection;
+use rusqlite::{Connection, OptionalExtension};
 
+use crate::db::repositories::ai as ai_repository;
 use crate::db::repositories::optimization as optimization_repository;
 use crate::error::{AppError, AppResult};
 use crate::models::{
@@ -123,6 +124,13 @@ pub fn list_optimization_candidates(
     )?;
     Ok(candidates
         .iter()
+        .filter(|candidate| {
+            candidate.source_file_id.as_deref() == Some(target.source_file_id.as_str())
+                && candidate.source_hash == target.source_hash
+                && candidate.crop_hash == target.crop_hash
+                && candidate.profile_hash == target.profile_hash
+                && candidate.format == target.output_format
+        })
         .map(|candidate| {
             optimization_repository::to_candidate_dto(
                 candidate,
@@ -199,6 +207,7 @@ fn ensure_candidate_matches_current_target(
     let matches_current_target = target.icon_id == candidate.icon_id
         && target.profile.id == profile_id
         && target.piece_id == piece_id
+        && candidate.source_file_id.as_deref() == Some(target.source_file_id.as_str())
         && target.source_hash == candidate.source_hash
         && target.crop_hash == candidate.crop_hash
         && target.profile_hash == candidate.profile_hash
@@ -219,19 +228,23 @@ pub fn preview_gif_playback_fps(
     icon_id: &str,
     playback_fps: i64,
 ) -> AppResult<GifPlaybackPreviewResultDto> {
-    let (source_path, is_animated): (String, i64) = connection
+    let collection_id = connection
         .query_row(
-            "SELECT s.original_path_in_library, s.is_animated
-             FROM source_files s
-             JOIN icons i ON i.source_file_id = s.id
-             WHERE i.id = ?1
-               AND i.deleted_at IS NULL",
+            "SELECT collection_id
+             FROM icons
+             WHERE id = ?1
+               AND deleted_at IS NULL",
             [icon_id],
-            |row| Ok((row.get(0)?, row.get(1)?)),
+            |row| row.get::<_, String>(0),
         )
-        .map_err(AppError::from)?;
+        .optional()?
+        .ok_or_else(|| AppError::not_found("GIF 아이콘을 찾을 수 없습니다."))?;
+    let effective =
+        ai_repository::resolve_effective_visual_source(connection, &collection_id, icon_id)?;
+    let source_path = effective.render_source.path;
+    let is_animated = effective.render_source.is_animated;
 
-    if is_animated == 0 || !source_path.to_ascii_lowercase().ends_with(".gif") {
+    if !is_animated || !source_path.to_ascii_lowercase().ends_with(".gif") {
         return Err(AppError::new(
             "validation",
             "GIF 아이콘에서만 재생 FPS 미리보기를 만들 수 있습니다.",
@@ -323,6 +336,7 @@ pub fn clear_optimization_candidate(
 
 pub fn get_active_export_variant(
     connection: &Connection,
+    paths: &AppPaths,
     icon_id: &str,
     profile_id: &str,
     piece_id: Option<&str>,
@@ -330,6 +344,7 @@ pub fn get_active_export_variant(
     let target = analyzer::load_target(connection, icon_id, profile_id, piece_id)?;
     let active = optimization_repository::find_active_variant(
         connection,
+        paths,
         &target.icon_id,
         &target.profile.id,
         &target.piece_id,
@@ -337,7 +352,8 @@ pub fn get_active_export_variant(
         &target.crop_hash,
         &target.profile_hash,
         &target.output_format,
-    )?;
+    )?
+    .filter(|variant| variant.source_file_id.as_deref() == Some(target.source_file_id.as_str()));
     Ok(active.map(|variant| ActiveVariantDto {
         candidate: optimization_repository::to_candidate_dto(
             &variant,
@@ -398,8 +414,10 @@ mod tests {
         generate_static_optimization_candidates, get_active_export_variant,
         preview_gif_playback_fps,
     };
+    use crate::db::connection::open_database;
     use crate::db::migrations;
-    use crate::db::repositories::collections::create_collection;
+    use crate::db::repositories::ai as ai_repository;
+    use crate::db::repositories::collections::{create_collection, list_collections};
     use crate::db::repositories::export_profiles::{
         list_export_profiles, update_export_profile_settings,
     };
@@ -408,10 +426,241 @@ mod tests {
     use crate::export::export_collection;
     use crate::ids::create_id;
     use crate::models::{
-        ExportRequestPayload, ImportImageFilePayload, OptimizationAdvancedSettingsPayload,
+        ActivateAiCandidatePayload, ExportRequestPayload, ImportAiCandidatePayload,
+        ImportImageFilePayload, OptimizationAdvancedSettingsPayload,
     };
     use crate::optimization::analyzer::OptimizationTarget;
     use crate::paths::AppPaths;
+
+    #[test]
+    fn optimization_target_uses_active_ai_effective_source_identity() {
+        let mut connection = connection();
+        let paths = temp_paths("pmtconcon-optimization-ai-effective-source");
+        let collection =
+            create_collection(&mut connection, Some("AI optimization".to_string())).unwrap();
+        let imported = import_image_files(
+            &mut connection,
+            &paths,
+            &collection.id,
+            vec![ImportImageFilePayload {
+                original_filename: "original.png".to_string(),
+                bytes: png_bytes(220, 220),
+            }],
+        )
+        .unwrap();
+        let icon_id = imported.imported_icons[0].id.clone();
+        let piece_id = imported.imported_icons[0].pieces[0].id.clone();
+
+        let review = ai_repository::import_local_ai_candidate(
+            &mut connection,
+            &paths,
+            &collection.id,
+            ImportAiCandidatePayload {
+                icon_id: icon_id.clone(),
+                service_surface: "other_manual".to_string(),
+                file: ImportImageFilePayload {
+                    original_filename: "candidate.png".to_string(),
+                    bytes: solid_png_bytes(220, 220, [20, 40, 230, 255]),
+                },
+            },
+        )
+        .unwrap();
+        let activated = ai_repository::activate_ai_candidate(
+            &mut connection,
+            &paths,
+            &collection.id,
+            ActivateAiCandidatePayload {
+                icon_id: icon_id.clone(),
+                candidate_id: review.candidates[0].id.clone(),
+                expected_revision: review.visual_source.activation_revision,
+                normalization: Default::default(),
+                expected_preview_signature: None,
+            },
+        )
+        .unwrap();
+
+        let profile_id = custom_profile_id(&connection, &collection.id);
+        let target =
+            super::analyzer::load_target(&connection, &icon_id, &profile_id, Some(&piece_id))
+                .unwrap();
+        assert_eq!(
+            target.source_file_id,
+            activated
+                .review_state
+                .visual_source
+                .effective_render_source
+                .id
+        );
+        assert_eq!(
+            target.source_hash,
+            activated
+                .review_state
+                .visual_source
+                .effective_render_source
+                .sha256
+        );
+        assert_ne!(
+            target.source_file_id,
+            activated.review_state.visual_source.original_source.id
+        );
+
+        std::fs::remove_dir_all(paths.root).unwrap();
+    }
+
+    #[test]
+    fn tampered_promoted_variant_repairs_from_active_ai_source_and_updates_cover() {
+        let mut connection = connection();
+        let paths = temp_paths("pmtconcon-variant-preview-repair");
+        let fixture = seed_active_ai_promoted_variant(&mut connection, &paths);
+        std::fs::write(
+            &fixture.variant_path,
+            solid_png_bytes(200, 200, [240, 20, 20, 255]),
+        )
+        .unwrap();
+
+        let active = get_active_export_variant(
+            &connection,
+            &paths,
+            &fixture.icon_id,
+            &fixture.profile_id,
+            Some(&fixture.piece_id),
+        )
+        .unwrap();
+        assert!(active.is_none());
+
+        let (current_preview_path, piece_preview_path, is_active): (String, String, i64) =
+            connection
+                .query_row(
+                    "SELECT i.current_preview_path, p.generated_preview_path,
+                        v.is_active_for_export
+                 FROM icons i
+                 JOIN icon_pieces p ON p.icon_id = i.id
+                 JOIN processed_asset_variants v ON v.id = ?3
+                 WHERE i.id = ?1 AND p.id = ?2",
+                    [
+                        fixture.icon_id.as_str(),
+                        fixture.piece_id.as_str(),
+                        fixture.variant_id.as_str(),
+                    ],
+                    |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
+                )
+                .unwrap();
+        assert_eq!(is_active, 0);
+        assert_ne!(current_preview_path, fixture.variant_path);
+        assert_ne!(piece_preview_path, fixture.variant_path);
+        assert!(Path::new(&current_preview_path).is_file());
+        assert!(Path::new(&piece_preview_path).is_file());
+        assert!(Path::new(&current_preview_path).starts_with(&paths.ai_activation_previews_dir));
+        let preview = image::open(&current_preview_path).unwrap().to_rgba8();
+        assert_eq!(preview.get_pixel(100, 100).0, [20, 40, 230, 255]);
+
+        let collection = list_collections(&connection)
+            .unwrap()
+            .into_iter()
+            .find(|collection| collection.id == fixture.collection_id)
+            .unwrap();
+        assert_eq!(
+            collection.cover_image_url.as_deref(),
+            Some(current_preview_path.as_str())
+        );
+
+        std::fs::remove_dir_all(paths.root).unwrap();
+    }
+
+    #[test]
+    fn missing_promoted_variant_is_repaired_when_database_reopens() {
+        let paths = temp_paths("pmtconcon-variant-preview-restart-repair");
+        let fixture = {
+            let mut connection = open_database(&paths.database_path).unwrap();
+            let fixture = seed_active_ai_promoted_variant(&mut connection, &paths);
+            std::fs::remove_file(&fixture.variant_path).unwrap();
+            fixture
+        };
+
+        let connection = open_database(&paths.database_path).unwrap();
+        let (current_preview_path, piece_preview_path, is_active): (String, String, i64) =
+            connection
+                .query_row(
+                    "SELECT i.current_preview_path, p.generated_preview_path,
+                        v.is_active_for_export
+                 FROM icons i
+                 JOIN icon_pieces p ON p.icon_id = i.id
+                 JOIN processed_asset_variants v ON v.id = ?3
+                 WHERE i.id = ?1 AND p.id = ?2",
+                    [
+                        fixture.icon_id.as_str(),
+                        fixture.piece_id.as_str(),
+                        fixture.variant_id.as_str(),
+                    ],
+                    |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
+                )
+                .unwrap();
+        assert_eq!(is_active, 0);
+        assert_ne!(current_preview_path, fixture.variant_path);
+        assert_ne!(piece_preview_path, fixture.variant_path);
+        assert!(Path::new(&current_preview_path).is_file());
+        assert!(Path::new(&piece_preview_path).is_file());
+        let preview = image::open(&current_preview_path).unwrap().to_rgba8();
+        assert_eq!(preview.get_pixel(100, 100).0, [20, 40, 230, 255]);
+        let collection = list_collections(&connection)
+            .unwrap()
+            .into_iter()
+            .find(|collection| collection.id == fixture.collection_id)
+            .unwrap();
+        assert_eq!(
+            collection.cover_image_url.as_deref(),
+            Some(current_preview_path.as_str())
+        );
+
+        drop(connection);
+        std::fs::remove_dir_all(paths.root).unwrap();
+    }
+
+    #[test]
+    fn broken_active_ai_source_leaves_cover_explicitly_empty_after_restart() {
+        let paths = temp_paths("pmtconcon-ai-cover-fail-closed");
+        let fixture = {
+            let mut connection = open_database(&paths.database_path).unwrap();
+            let fixture = seed_active_ai_promoted_variant(&mut connection, &paths);
+            let effective_source_path: String = connection
+                .query_row(
+                    "SELECT source.original_path_in_library
+                     FROM effective_visual_sources visual
+                     JOIN source_files source ON source.id = visual.effective_source_file_id
+                     WHERE visual.icon_id = ?1",
+                    [fixture.icon_id.as_str()],
+                    |row| row.get(0),
+                )
+                .unwrap();
+            std::fs::remove_file(&fixture.variant_path).unwrap();
+            std::fs::remove_file(effective_source_path).unwrap();
+            fixture
+        };
+
+        let connection = open_database(&paths.database_path).unwrap();
+        let (current_preview_path, piece_preview_path): (Option<String>, Option<String>) =
+            connection
+                .query_row(
+                    "SELECT i.current_preview_path, p.generated_preview_path
+                 FROM icons i
+                 JOIN icon_pieces p ON p.icon_id = i.id
+                 WHERE i.id = ?1 AND p.id = ?2",
+                    [fixture.icon_id.as_str(), fixture.piece_id.as_str()],
+                    |row| Ok((row.get(0)?, row.get(1)?)),
+                )
+                .unwrap();
+        assert_eq!(current_preview_path, None);
+        assert_eq!(piece_preview_path, None);
+        let collection = list_collections(&connection)
+            .unwrap()
+            .into_iter()
+            .find(|collection| collection.id == fixture.collection_id)
+            .unwrap();
+        assert_eq!(collection.cover_image_url, None);
+
+        drop(connection);
+        std::fs::remove_dir_all(paths.root).unwrap();
+    }
 
     #[test]
     fn static_jpg_candidate_can_be_applied_and_used_by_export() {
@@ -458,11 +707,15 @@ mod tests {
             .find(|candidate| candidate.preset == "smallest")
             .unwrap();
         apply_optimization_candidate(&connection, &smallest.id).unwrap();
-        assert!(
-            get_active_export_variant(&connection, &icon_id, &profile_id, Some(&piece_id),)
-                .unwrap()
-                .is_some()
-        );
+        assert!(get_active_export_variant(
+            &connection,
+            &paths,
+            &icon_id,
+            &profile_id,
+            Some(&piece_id),
+        )
+        .unwrap()
+        .is_some());
 
         let export = export_collection(&mut connection, &paths, &collection.id, &payload).unwrap();
         let report = std::fs::read_to_string(export.report_txt_path.as_ref().unwrap()).unwrap();
@@ -846,7 +1099,9 @@ mod tests {
             .len()
             .try_into()
             .unwrap();
-        let kind = match format {
+        let (artifact_width, artifact_height) =
+            image::image_dimensions(&target.source_path).unwrap();
+        let kind = match target.output_format.as_str() {
             "gif" => "optimized_gif",
             "jpg" | "jpeg" => "optimized_jpg",
             _ => "optimized_png",
@@ -862,21 +1117,34 @@ mod tests {
                 kind: kind.to_string(),
                 preset: Some("custom".to_string()),
                 path: target.source_path.to_string_lossy().to_string(),
-                format: format.to_string(),
-                width: target.cell_width,
-                height: target.cell_height,
+                format: target.output_format.clone(),
+                width: i64::from(artifact_width),
+                height: i64::from(artifact_height),
                 byte_size,
                 frame_count: None,
                 duration_ms: None,
                 loop_mode: None,
                 settings_json: format!(r#"{{"test":"{label}"}}"#),
-                source_hash: source_hash.to_string(),
-                crop_hash: crop_hash.to_string(),
-                profile_hash: profile_hash.to_string(),
+                source_hash: target.source_hash.clone(),
+                crop_hash: target.crop_hash.clone(),
+                profile_hash: target.profile_hash.clone(),
                 settings_hash: format!("settings-{label}"),
             },
         )
         .unwrap();
+        // Insert through the production provenance/artifact guard, then mutate
+        // the persisted identity to model a legacy candidate that became stale.
+        connection
+            .execute(
+                "UPDATE processed_asset_variants
+                 SET source_hash = ?1,
+                     crop_hash = ?2,
+                     profile_hash = ?3,
+                     format = ?4
+                 WHERE id = ?5",
+                rusqlite::params![source_hash, crop_hash, profile_hash, format, candidate_id],
+            )
+            .unwrap();
         candidate_id
     }
 
@@ -913,6 +1181,112 @@ mod tests {
             excluded_piece_ids: Vec::new(),
             resize_filter: "lanczos3".to_string(),
         }
+    }
+
+    struct ActiveAiPromotedFixture {
+        collection_id: String,
+        icon_id: String,
+        piece_id: String,
+        profile_id: String,
+        variant_id: String,
+        variant_path: String,
+    }
+
+    fn seed_active_ai_promoted_variant(
+        connection: &mut Connection,
+        paths: &AppPaths,
+    ) -> ActiveAiPromotedFixture {
+        let collection =
+            create_collection(connection, Some("AI preview repair".to_string())).unwrap();
+        let imported = import_image_files(
+            connection,
+            paths,
+            &collection.id,
+            vec![ImportImageFilePayload {
+                original_filename: "original.png".to_string(),
+                bytes: solid_png_bytes(220, 220, [230, 30, 30, 255]),
+            }],
+        )
+        .unwrap();
+        let icon_id = imported.imported_icons[0].id.clone();
+        let piece_id = imported.imported_icons[0].pieces[0].id.clone();
+        let review = ai_repository::import_local_ai_candidate(
+            connection,
+            paths,
+            &collection.id,
+            ImportAiCandidatePayload {
+                icon_id: icon_id.clone(),
+                service_surface: "other_manual".to_string(),
+                file: ImportImageFilePayload {
+                    original_filename: "candidate.png".to_string(),
+                    bytes: solid_png_bytes(220, 220, [20, 40, 230, 255]),
+                },
+            },
+        )
+        .unwrap();
+        ai_repository::activate_ai_candidate(
+            connection,
+            paths,
+            &collection.id,
+            ActivateAiCandidatePayload {
+                icon_id: icon_id.clone(),
+                candidate_id: review.candidates[0].id.clone(),
+                expected_revision: review.visual_source.activation_revision,
+                normalization: Default::default(),
+                expected_preview_signature: None,
+            },
+        )
+        .unwrap();
+
+        let profile_id = custom_profile_id(connection, &collection.id);
+        update_export_profile_settings(
+            connection,
+            &collection.id,
+            &payload(&profile_id, "png", 100),
+        )
+        .unwrap();
+        let generated = generate_static_optimization_candidates(
+            connection,
+            paths,
+            &icon_id,
+            &profile_id,
+            Some(&piece_id),
+            Some("custom".to_string()),
+            Some(OptimizationAdvancedSettingsPayload {
+                target_max_bytes: Some(1),
+                safety_margin_percent: None,
+                fps_limit: None,
+                playback_fps: None,
+                frame_step: None,
+                color_limit: None,
+                jpeg_quality: None,
+            }),
+        )
+        .unwrap();
+        let candidate = generated
+            .candidates
+            .into_iter()
+            .find(|candidate| candidate.preset == "smallest")
+            .unwrap();
+        apply_optimization_candidate_to_preview(connection, &candidate.id).unwrap();
+
+        ActiveAiPromotedFixture {
+            collection_id: collection.id,
+            icon_id,
+            piece_id,
+            profile_id,
+            variant_id: candidate.id,
+            variant_path: candidate.path,
+        }
+    }
+
+    fn solid_png_bytes(width: u32, height: u32, color: [u8; 4]) -> Vec<u8> {
+        let image = ImageBuffer::from_pixel(width, height, Rgba(color));
+        let mut bytes = Cursor::new(Vec::new());
+        DynamicImage::ImageRgba8(image)
+            .write_to(&mut bytes, ImageFormat::Png)
+            .unwrap();
+        bytes.into_inner()
     }
 
     fn png_bytes(width: u32, height: u32) -> Vec<u8> {

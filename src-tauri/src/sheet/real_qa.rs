@@ -410,7 +410,7 @@ fn qa_static_edit_sheet_export_clean_guide_manifest_and_page_split() {
     assert_ne!(guide.get_pixel(16, 16), clean.get_pixel(16, 16));
 
     let manifest = read_manifest(result.manifest_path.as_ref().unwrap());
-    assert_eq!(manifest.schema, "pmtcon-sheet-v1");
+    assert_eq!(manifest.schema, "pmtcon-sheet-v2");
     assert_eq!(manifest.pages.len(), 3);
     assert_eq!(manifest.items.len(), 6);
     assert_eq!(manifest.items[0].page_index, 0);

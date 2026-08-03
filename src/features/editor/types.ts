@@ -1,4 +1,10 @@
 import type { IconSummary } from "@/features/collections/types";
+import type {
+  AiNormalizationAlignment,
+  AiNormalizationMode,
+  AiNormalizationOptions,
+  AiNormalizationResizeFilter,
+} from "@/features/editor/ai-normalization-model";
 
 export type IconShape = "single" | "horizontal_double" | "vertical_double";
 export type CropMode = "free" | "fixed";
@@ -13,7 +19,8 @@ export type PresetPosition =
   | "bottom"
   | "bottom_right"
   | "custom";
-export type GifLoopMode = "preserve" | "infinite" | "once" | "count" | "pingpong";
+export type GifLoopMode =
+  "preserve" | "infinite" | "once" | "count" | "pingpong";
 
 interface EffectBase {
   id: string;
@@ -199,7 +206,10 @@ export interface SourceFileSummary {
   id: string;
   originalFilename: string;
   originalImageUrl: string;
+  originalExtension: string;
   mimeType: string;
+  sha256: string;
+  hasAlpha: boolean | null;
   width: number;
   height: number;
   byteSize: number;
@@ -223,10 +233,293 @@ export interface CropSettings {
   updatedAt: string;
 }
 
+export interface EffectiveVisualSource {
+  originalSource: SourceFileSummary;
+  effectiveRenderSource: SourceFileSummary;
+  originalLineageId: string;
+  originalLineageGeneration: number;
+  activeVersionId: string | null;
+  activeCandidateId: string | null;
+  activationRevision: number;
+  normalizationRecipeHash: string | null;
+}
+
+export type AiManualServiceSurface =
+  "gemini_web" | "novelai_web" | "other_manual";
+
+export type AiProvider = "novelai" | "gemini";
+
+export type AiServiceSurface =
+  AiManualServiceSurface | "novelai_api" | "gemini_api";
+
+export type AiWebHandoffServiceSurface = Extract<
+  AiManualServiceSurface,
+  "gemini_web" | "novelai_web"
+>;
+
+export type AiWebHandoffValidationIssueCode =
+  | "unsupported_format"
+  | "decode_failed"
+  | "file_too_large"
+  | "canvas_size_mismatch"
+  | "size_normalization"
+  | "transparency_lost"
+  | "page_count_mismatch"
+  | "item_count_mismatch"
+  | "grid_geometry_mismatch"
+  | "frame_count_mismatch"
+  | "source_state_changed"
+  | "handoff_expired"
+  | "result_missing";
+
+export interface AiWebHandoffSession {
+  requestId: string;
+  kind: "static_icon_sheet";
+  layoutMode: "single";
+  operation: "edit";
+  serviceSurface: AiWebHandoffServiceSurface;
+  finalPrompt: string;
+  uploadFileName: "upload.png";
+  uploadPreviewPath: string;
+  expectedWidth: number;
+  expectedHeight: number;
+  expectedHasAlpha: boolean;
+  createdAt: string;
+  expiresAt: string;
+  canExtend: boolean;
+  nativeDragSupported: boolean;
+  warnings: string[];
+}
+
+export interface AiWebHandoffValidationIssue {
+  code: string;
+  severity: "blocking" | "warning" | "manual_review";
+  message: string;
+  expected: string | null;
+  actual: string | null;
+  suggestedPrompt?: string | null;
+  localAction?: string | null;
+}
+
+export interface AiWebHandoffResultInspection {
+  accepted: boolean;
+  issues: AiWebHandoffValidationIssue[];
+  validationSignature: string | null;
+  expectedWidth: number;
+  expectedHeight: number;
+  expectedHasAlpha: boolean;
+  actualWidth: number | null;
+  actualHeight: number | null;
+  actualHasAlpha: boolean | null;
+  reviewState: AiReviewState | null;
+}
+
+export interface AiWebHandoffDragResult {
+  started: boolean;
+  nativeDragSupported: boolean;
+  message: string;
+}
+
+export interface AiWebHandoffDeleteResult {
+  sessionClosed: boolean;
+  payloadDeleted: boolean;
+  cleanupDeferred: boolean;
+}
+
+export interface PrepareAiWebHandoffInput {
+  iconId: string;
+  serviceSurface: AiWebHandoffServiceSurface;
+  userPrompt: string;
+}
+
+export interface AiProviderSessionStatus {
+  novelAiConfigured: boolean;
+  geminiConfigured: boolean;
+}
+
+export type AiOfficialResource =
+  | "user_manual"
+  | "novelai_app"
+  | "novelai_pat"
+  | "novelai_docs"
+  | "novelai_terms"
+  | "gemini_ai_studio"
+  | "gemini_image_docs"
+  | "gemini_pricing"
+  | "gemini_terms";
+
+export interface AiImageEditOptions {
+  negativePrompt?: string;
+  action?: string;
+  width?: number;
+  height?: number;
+  steps?: number;
+  scale?: number;
+  strength?: number;
+  noise?: number;
+}
+
+export interface AiImageEditConsent {
+  humanActionConfirmed: boolean;
+  rightsConfirmed: boolean;
+  costConfirmed: boolean;
+  requestContentConfirmed: boolean;
+  contractOverrideConfirmed: boolean;
+  adultConfirmed: boolean;
+  under18AudienceExcludedConfirmed: boolean;
+  professionalBusinessConfirmed: boolean;
+  supportedRegionConfirmed: boolean;
+  paidServiceConfirmed: boolean;
+}
+
+export interface AiImageEditInput {
+  iconId: string;
+  provider: AiProvider;
+  prompt: string;
+  model: string;
+  options: AiImageEditOptions;
+  consent: AiImageEditConsent;
+}
+
+export interface AiCandidateUsageSummary {
+  createdIconCount: number;
+  latestCreatedIcon: IconSummary | null;
+}
+
+export interface AiCandidate {
+  id: string;
+  requestId: string;
+  candidateIndex: number;
+  serviceSurface: AiServiceSurface;
+  source: SourceFileSummary;
+  createdAt: string;
+  isMaterialized: boolean;
+  isStale: boolean;
+  staleReason: string | null;
+  isAvailable: boolean;
+  unavailableReason: string | null;
+  createdIconUsage: AiCandidateUsageSummary;
+}
+
+export interface AiVersion {
+  id: string;
+  candidateId: string;
+  parentVersionId: string | null;
+  source: SourceFileSummary;
+  normalizationRecipeHash: string;
+  normalizationSummary: AiVersionNormalizationSummary | null;
+  isActive: boolean;
+  isAvailable: boolean;
+  unavailableReason: string | null;
+  createdAt: string;
+}
+
+export interface AiVersionNormalizationSummary {
+  kind: "identity" | "contain_pad" | "cover_crop";
+  mode: AiNormalizationMode | null;
+  alignment: AiNormalizationAlignment | null;
+  resizeFilter: AiNormalizationResizeFilter | null;
+  targetCanvasWidth: number;
+  targetCanvasHeight: number;
+}
+
+export interface AiReviewState {
+  visualSource: EffectiveVisualSource;
+  nativeRecipeSignature: string;
+  candidates: AiCandidate[];
+  versions: AiVersion[];
+}
+
+export interface PreviewAiCandidateNormalizationInput {
+  iconId: string;
+  candidateId: string;
+  expectedRevision: number;
+  normalization: AiNormalizationOptions;
+}
+
+export interface AiNormalizationGeometry {
+  kind: "identity" | "contain_pad" | "cover_crop";
+  resizedWidth: number;
+  resizedHeight: number;
+  cropX: number;
+  cropY: number;
+  pasteX: number;
+  pasteY: number;
+}
+
+export interface AiNormalizationCompatibility {
+  allowed: boolean;
+  reasonCode: string | null;
+  reason: string | null;
+}
+
+export interface AiNormalizationPreviewWarning {
+  code: string;
+  severity: "info" | "warning";
+  message: string;
+}
+
+export interface AiNormalizationPreview {
+  candidateId: string;
+  rawSource: SourceFileSummary;
+  normalizedPreviewPath: string;
+  finalPreviewPath: string;
+  targetCanvasWidth: number;
+  targetCanvasHeight: number;
+  finalRenderWidth: number;
+  finalRenderHeight: number;
+  pieceWidth: number;
+  pieceHeight: number;
+  normalizationRecipeHash: string;
+  previewSignature: string;
+  nativeRecipeSignature: string;
+  geometry: AiNormalizationGeometry;
+  normalizedHasAlpha: boolean;
+  currentIconCompatibility: AiNormalizationCompatibility;
+  newIconCompatibility: AiNormalizationCompatibility;
+  warnings: AiNormalizationPreviewWarning[];
+  existingVersionId: string | null;
+  isCurrentRecipe: boolean;
+}
+
+export interface ActivateAiCandidateInput {
+  iconId: string;
+  candidateId: string;
+  expectedRevision: number;
+  normalization: AiNormalizationOptions;
+  expectedPreviewSignature: string;
+}
+
+export interface CreateAiIconRootInput {
+  iconId: string;
+  candidateId: string;
+  expectedRevision: number;
+  normalization: AiNormalizationOptions;
+  expectedPreviewSignature: string;
+}
+
+export interface CreateAiIconRootResult {
+  createdIcon: IconSummary;
+  sourceReviewState: AiReviewState;
+  createdIconUsage: AiCandidateUsageSummary;
+}
+
+export interface AiSourceMutationResult {
+  reviewState: AiReviewState;
+  editorState: IconEditorState;
+}
+
+export interface RestoreAiVersionInput {
+  iconId: string;
+  versionId: string | null;
+  expectedRevision: number;
+}
+
 export interface IconEditorState {
   icon: IconSummary;
   source: SourceFileSummary;
   crop: CropSettings;
+  visualSource: EffectiveVisualSource;
   textOverlay: TextOverlaySettings;
   effectRecipe: EffectRecipeV1;
   effectRevision: number;

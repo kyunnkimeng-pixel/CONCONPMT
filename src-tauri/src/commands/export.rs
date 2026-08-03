@@ -256,9 +256,11 @@ pub fn get_active_export_variant(
     profile_id: String,
     piece_id: Option<String>,
 ) -> AppResult<Option<ActiveVariantDto>> {
+    let paths = state.paths().clone();
     let connection = state.render_connection()?;
     crate::optimization::get_active_export_variant(
         &connection,
+        &paths,
         &icon_id,
         &profile_id,
         piece_id.as_deref(),

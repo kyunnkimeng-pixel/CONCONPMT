@@ -7,6 +7,7 @@ interface AltInlineEditorProps {
   ariaLabel: string;
   compact?: boolean;
   editRequestKey?: number;
+  suppressLiveRegion?: boolean;
   validationMessage: string | null;
   validateDraft: (value: string) => string | null;
   onCommit: (value: string) => Promise<boolean> | boolean;
@@ -17,6 +18,7 @@ export function AltInlineEditor({
   ariaLabel,
   compact = false,
   editRequestKey,
+  suppressLiveRegion = false,
   validationMessage,
   validateDraft,
   onCommit,
@@ -148,7 +150,11 @@ export function AltInlineEditor({
       )}
 
       {errorMessage ? (
-        <p className="line-clamp-2 text-center text-[11px] leading-tight text-danger" role="alert">
+        <p
+          aria-hidden={suppressLiveRegion || undefined}
+          className="line-clamp-2 text-center text-[11px] leading-tight text-danger"
+          role={suppressLiveRegion ? undefined : "alert"}
+        >
           {errorMessage}
         </p>
       ) : null}

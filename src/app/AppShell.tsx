@@ -1,14 +1,14 @@
 import { useEffect, useMemo, useState } from "react";
 import { Link, Outlet, useRouterState } from "@tanstack/react-router";
-import { openUrl } from "@tauri-apps/plugin-opener";
-import { CircleHelp, ExternalLink, FolderOpen, Home, Images } from "lucide-react";
+import { CircleHelp, Clock3, ExternalLink, FolderOpen, Home, Images } from "lucide-react";
 
 import { useAppStore } from "@/app/app-store";
+import { AiHandoffHistoryDialog } from "@/features/ai-handoff-history/components/AiHandoffHistoryDialog";
 import { listCollections } from "@/features/collections/api";
 import { subscribeCollectionListChanged } from "@/features/collections/events";
 import type { CollectionSummary } from "@/features/collections/types";
 
-const USER_MANUAL_URL = "https://kyunnkimeng-pixel.github.io/CONCONPMT/";
+import { invokeCommand } from "@/lib/tauri";
 
 export function AppShell() {
   const productName = useAppStore((state) => state.productName);
@@ -20,6 +20,7 @@ export function AppShell() {
   }, [pathname]);
   const [collections, setCollections] = useState<CollectionSummary[]>([]);
   const [helpError, setHelpError] = useState<string | null>(null);
+  const [isAiHandoffHistoryOpen, setIsAiHandoffHistoryOpen] = useState(false);
 
   useEffect(() => {
     let isActive = true;
@@ -105,11 +106,22 @@ export function AppShell() {
           <nav aria-label="도움말" className="mt-auto border-t border-border/80 pt-3">
             <button
               className="flex w-full items-center gap-2 rounded-md px-3 py-2 text-left text-sm text-muted hover:bg-sidebar-active hover:text-foreground focus-visible:outline focus-visible:outline-2 focus-visible:outline-focus"
+              title="최근 웹 전달, 임시 저장 용량, 만료 정리 상태를 확인합니다."
+              type="button"
+              onClick={() => setIsAiHandoffHistoryOpen(true)}
+            >
+              <Clock3 aria-hidden="true" />
+              최근 AI 전달
+            </button>
+            <button
+              className="flex w-full items-center gap-2 rounded-md px-3 py-2 text-left text-sm text-muted hover:bg-sidebar-active hover:text-foreground focus-visible:outline focus-visible:outline-2 focus-visible:outline-focus"
               title="시트 가져오기·내보내기, GIF 작업 시트, 메모 등 전체 사용법을 엽니다."
               type="button"
               onClick={() => {
                 setHelpError(null);
-                void openUrl(USER_MANUAL_URL).catch(() => {
+                void invokeCommand("open_ai_official_resource", {
+                  resource: "user_manual",
+                }).catch(() => {
                   setHelpError("사용 설명서를 열지 못했습니다.");
                 });
               }}
@@ -130,6 +142,9 @@ export function AppShell() {
           <Outlet />
         </section>
       </div>
+      {isAiHandoffHistoryOpen ? (
+        <AiHandoffHistoryDialog onClose={() => setIsAiHandoffHistoryOpen(false)} />
+      ) : null}
     </main>
   );
 }

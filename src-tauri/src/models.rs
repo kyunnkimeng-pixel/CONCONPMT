@@ -71,7 +71,10 @@ pub struct SourceFileDto {
     pub id: String,
     pub original_filename: String,
     pub original_image_url: String,
+    pub original_extension: String,
     pub mime_type: String,
+    pub sha256: String,
+    pub has_alpha: Option<bool>,
     pub width: i64,
     pub height: i64,
     pub byte_size: i64,
@@ -102,12 +105,284 @@ pub struct CropSettingsDto {
 pub struct IconEditorStateDto {
     pub icon: IconDto,
     pub source: SourceFileDto,
+    pub visual_source: EffectiveVisualSourceDto,
     pub crop: CropSettingsDto,
     pub text_overlay: TextOverlayDto,
     pub effect_recipe: EffectRecipe,
     pub effect_revision: i64,
     pub motion_recipe: MotionRecipe,
     pub motion_revision: i64,
+}
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct EffectiveVisualSourceDto {
+    pub original_source: SourceFileDto,
+    pub effective_render_source: SourceFileDto,
+    pub original_lineage_id: String,
+    pub original_lineage_generation: i64,
+    pub active_version_id: Option<String>,
+    pub active_candidate_id: Option<String>,
+    pub activation_revision: i64,
+    pub normalization_recipe_hash: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct AiCandidateDto {
+    pub id: String,
+    pub request_id: String,
+    pub candidate_index: i64,
+    pub service_surface: String,
+    pub source: SourceFileDto,
+    pub is_available: bool,
+    pub unavailable_reason: Option<String>,
+    pub created_at: String,
+    pub is_materialized: bool,
+    pub created_icon_usage: AiCandidateUsageSummaryDto,
+    pub is_stale: bool,
+    pub stale_reason: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct AiVersionDto {
+    pub id: String,
+    pub candidate_id: String,
+    pub parent_version_id: Option<String>,
+    pub source: SourceFileDto,
+    pub is_available: bool,
+    pub unavailable_reason: Option<String>,
+    pub normalization_recipe_hash: String,
+    pub normalization_summary: Option<AiNormalizationSummaryDto>,
+    pub is_active: bool,
+    pub created_at: String,
+}
+
+#[derive(Debug, Clone, Serialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct AiNormalizationSummaryDto {
+    pub kind: String,
+    pub mode: Option<String>,
+    pub alignment: Option<String>,
+    pub resize_filter: Option<String>,
+    pub target_canvas_width: i64,
+    pub target_canvas_height: i64,
+}
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct AiReviewStateDto {
+    pub visual_source: EffectiveVisualSourceDto,
+    pub native_recipe_signature: String,
+    pub candidates: Vec<AiCandidateDto>,
+    pub versions: Vec<AiVersionDto>,
+}
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct AiCandidateUsageSummaryDto {
+    pub created_icon_count: i64,
+    pub latest_created_icon: Option<IconDto>,
+}
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct AiSourceMutationResultDto {
+    pub review_state: AiReviewStateDto,
+    pub editor_state: IconEditorStateDto,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct AiNormalizationOptionsPayload {
+    pub mode: String,
+    pub alignment: String,
+    pub resize_filter: String,
+    pub pad_rgba: [u8; 4],
+}
+
+impl Default for AiNormalizationOptionsPayload {
+    fn default() -> Self {
+        Self {
+            mode: "contain_pad".to_string(),
+            alignment: "center".to_string(),
+            resize_filter: "lanczos3".to_string(),
+            pad_rgba: [0, 0, 0, 0],
+        }
+    }
+}
+
+#[derive(Debug, Clone, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct PreviewAiCandidateNormalizationPayload {
+    pub icon_id: String,
+    pub candidate_id: String,
+    pub expected_revision: i64,
+    #[serde(default)]
+    pub normalization: AiNormalizationOptionsPayload,
+}
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct AiNormalizationGeometryDto {
+    pub kind: String,
+    pub resized_width: i64,
+    pub resized_height: i64,
+    pub crop_x: i64,
+    pub crop_y: i64,
+    pub paste_x: i64,
+    pub paste_y: i64,
+}
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct AiNormalizationCompatibilityDto {
+    pub allowed: bool,
+    pub reason_code: Option<String>,
+    pub reason: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct AiNormalizationWarningDto {
+    pub code: String,
+    pub severity: String,
+    pub message: String,
+}
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct AiNormalizationPreviewDto {
+    pub candidate_id: String,
+    pub raw_source: SourceFileDto,
+    pub normalized_preview_path: String,
+    pub final_preview_path: String,
+    pub target_canvas_width: i64,
+    pub target_canvas_height: i64,
+    pub final_render_width: i64,
+    pub final_render_height: i64,
+    pub piece_width: i64,
+    pub piece_height: i64,
+    pub normalization_recipe_hash: String,
+    pub preview_signature: String,
+    pub native_recipe_signature: String,
+    pub geometry: AiNormalizationGeometryDto,
+    pub normalized_has_alpha: bool,
+    pub current_icon_compatibility: AiNormalizationCompatibilityDto,
+    pub new_icon_compatibility: AiNormalizationCompatibilityDto,
+    pub warnings: Vec<AiNormalizationWarningDto>,
+    pub existing_version_id: Option<String>,
+    pub is_current_recipe: bool,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ImportAiCandidatePayload {
+    pub icon_id: String,
+    pub service_surface: String,
+    pub file: ImportImageFilePayload,
+}
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct AiProviderSessionStatusDto {
+    pub novel_ai_configured: bool,
+    pub gemini_configured: bool,
+}
+
+#[derive(Clone, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct SetAiSessionCredentialPayload {
+    pub provider: String,
+    pub credential: String,
+}
+
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct AiImageEditOptionsPayload {
+    pub negative_prompt: Option<String>,
+    pub action: Option<String>,
+    pub width: Option<i64>,
+    pub height: Option<i64>,
+    pub steps: Option<i64>,
+    pub scale: Option<f64>,
+    pub strength: Option<f64>,
+    pub noise: Option<f64>,
+}
+
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct AiImageEditConsentPayload {
+    pub human_action_confirmed: bool,
+    pub rights_confirmed: bool,
+    pub cost_confirmed: bool,
+    pub request_content_confirmed: bool,
+    pub contract_override_confirmed: bool,
+    pub adult_confirmed: bool,
+    pub under18_audience_excluded_confirmed: bool,
+    pub professional_business_confirmed: bool,
+    pub supported_region_confirmed: bool,
+    pub paid_service_confirmed: bool,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ExecuteAiImageEditPayload {
+    pub icon_id: String,
+    pub provider: String,
+    pub prompt: String,
+    pub model: String,
+    #[serde(default)]
+    pub options: AiImageEditOptionsPayload,
+    #[serde(default)]
+    pub consent: AiImageEditConsentPayload,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ActivateAiCandidatePayload {
+    pub icon_id: String,
+    pub candidate_id: String,
+    pub expected_revision: i64,
+    #[serde(default)]
+    pub normalization: AiNormalizationOptionsPayload,
+    #[serde(default)]
+    pub expected_preview_signature: Option<String>,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct CreateAiIconRootPayload {
+    pub icon_id: String,
+    pub candidate_id: String,
+    pub expected_revision: i64,
+    #[serde(default)]
+    pub normalization: AiNormalizationOptionsPayload,
+    #[serde(default)]
+    pub expected_preview_signature: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct CreateAiIconRootResultDto {
+    pub created_icon: IconDto,
+    pub source_review_state: AiReviewStateDto,
+    pub created_icon_usage: AiCandidateUsageSummaryDto,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct RestoreAiVersionPayload {
+    pub icon_id: String,
+    pub version_id: Option<String>,
+    pub expected_revision: i64,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct RepairAiToOriginalPayload {
+    pub icon_id: String,
 }
 
 #[derive(Debug, Clone, Serialize)]

@@ -1,44 +1,32 @@
-use std::collections::HashSet;
-use std::fmt::Write as FmtWrite;
 use std::fs;
-use std::io::BufReader;
-use std::path::{Path, PathBuf};
+use std::path::PathBuf;
 use std::time::{SystemTime, UNIX_EPOCH};
 
-use image::codecs::gif::GifDecoder;
-use image::imageops::{self, FilterType};
-use image::{AnimationDecoder, ImageFormat, Rgba, RgbaImage};
-use rusqlite::{params, Connection, OptionalExtension, Row};
+use image::ImageFormat;
+use rusqlite::{params, Connection, OptionalExtension};
 use serde::{Deserialize, Serialize};
-use sha2::{Digest, Sha256};
 
 use crate::error::{AppError, AppResult};
-use crate::imaging::effects::{apply_effect_recipe, parse_effect_recipe_json, EffectRecipe};
-use crate::imaging::export_render::ExportCropRect;
 use crate::imaging::import_limits::{
-    validate_crop_rect, validate_import_dimensions, ValidatedCropRect, MAX_GIF_TOTAL_FRAME_PIXELS,
-    MAX_IMPORT_DIMENSION,
+    validate_import_dimensions, MAX_GIF_TOTAL_FRAME_PIXELS, MAX_IMPORT_DIMENSION,
 };
-use crate::imaging::motion::{
-    apply_motion_recipe, parse_motion_recipe_json, MotionFrameContext, MotionRecipe,
-};
-use crate::imaging::text_overlay::{
-    apply_text_overlay, text_overlay_from_fields, TextOverlayRenderSpec,
-};
-use crate::imaging::transform::{apply_image_transform, source_viewport_geometry, ImageTransform};
-use crate::optimization::cache::{hash_text, render_recipe_crop_hash};
 use crate::paths::AppPaths;
 
-use super::grid::{
-    split_pages, PageCellPlacement, PageSplitPlan, PageSplitSettings, MAX_SHEET_CELLS,
+pub use super::composer::GuideLabelOptions;
+#[cfg(test)]
+use super::composer::{crop_and_resize, sha256_hex};
+use super::composer::{
+    load_static_render_targets, normalized_background, render_icon_items, render_sheet_page,
+    StaticRenderSelection,
 };
+use super::grid::{split_pages, PageSplitPlan, PageSplitSettings, MAX_SHEET_CELLS};
+#[cfg(test)]
 use super::importer::png_bytes_from_rgba;
 use super::manifest::{
     write_static_manifest, StaticSheetManifest, StaticSheetManifestItem, StaticSheetPage,
     StaticSheetProfile, APP_NAME, STATIC_SHEET_SCHEMA,
 };
 use super::path_string;
-
 #[derive(Debug, Clone, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct ExportEditSheetRequest {
@@ -76,19 +64,6 @@ pub struct ExportEditSheetRequest {
     pub open_output_folder: bool,
 }
 
-#[derive(Debug, Clone, Deserialize)]
-#[serde(rename_all = "camelCase")]
-pub struct GuideLabelOptions {
-    #[serde(default = "default_true")]
-    pub cell_number: bool,
-    #[serde(default)]
-    pub icon_name: bool,
-    #[serde(default)]
-    pub alt_value: bool,
-    #[serde(default)]
-    pub export_number: bool,
-}
-
 #[derive(Debug, Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct ExportEditSheetResult {
@@ -107,45 +82,6 @@ struct CollectionRecord {
     name: String,
 }
 
-#[derive(Debug)]
-struct IconRecord {
-    id: String,
-    display_name: String,
-    shape: String,
-    source_path: String,
-    source_extension: String,
-    source_hash: String,
-    source_is_animated: bool,
-    crop_x: f64,
-    crop_y: f64,
-    crop_w: f64,
-    crop_h: f64,
-    transform: ImageTransform,
-    text_overlay: Option<TextOverlayRenderSpec>,
-    effects: EffectRecipe,
-    motion: MotionRecipe,
-}
-
-#[derive(Debug)]
-struct PieceRecord {
-    id: String,
-    piece_index: i64,
-    alt_text: String,
-}
-
-#[derive(Debug)]
-struct RenderedSheetItem {
-    icon_id: String,
-    piece_id: Option<String>,
-    display_name: String,
-    alt: String,
-    icon_type: String,
-    source_hash: Option<String>,
-    render_hash: String,
-    render_recipe_hash: String,
-    image: RgbaImage,
-}
-
 pub fn export_edit_sheet(
     connection: &Connection,
     paths: &AppPaths,
@@ -160,7 +96,14 @@ pub fn export_edit_sheet(
     }
 
     let collection = load_collection(connection, &request.collection_id)?;
-    let icons = load_icons(connection, &request)?;
+    let icons = load_static_render_targets(
+        connection,
+        &request.collection_id,
+        StaticRenderSelection::LegacyWorkSheet {
+            source: &request.source,
+            selected_icon_ids: &request.selected_icon_ids,
+        },
+    )?;
     if icons.is_empty() {
         return Err(AppError::new(
             "validation",
@@ -291,6 +234,7 @@ pub fn export_edit_sheet(
             format: "png".to_string(),
             source_hash: item.source_hash.clone(),
             render_hash: Some(item.render_hash.clone()),
+            visual_source: Some(item.visual_source.clone()),
             render_recipe_hash: Some(item.render_recipe_hash.clone()),
         });
     }
@@ -461,543 +405,6 @@ fn load_collection(connection: &Connection, collection_id: &str) -> AppResult<Co
         .ok_or_else(|| AppError::not_found("작업 시트로 내보낼 모음을 찾을 수 없습니다."))
 }
 
-const ICON_RECORD_SELECT: &str = "SELECT
-   i.id,
-   i.display_name,
-   i.shape,
-   s.original_path_in_library,
-   s.original_extension,
-   s.sha256,
-   s.is_animated,
-   cs.crop_x,
-   cs.crop_y,
-   cs.crop_w,
-   cs.crop_h,
-   i.transform_quarter_turns,
-   i.transform_flip_horizontal,
-   i.transform_flip_vertical,
-   i.text_overlay_enabled,
-   i.text_overlay_text,
-   i.text_overlay_font_path,
-   i.text_overlay_font_size,
-   i.text_overlay_x,
-   i.text_overlay_y,
-   i.text_overlay_color,
-   i.text_overlay_stroke_color,
-   i.text_overlay_stroke_width,
-   er.effects_json AS effect_recipe_json,
-   mr.motion_json AS motion_recipe_json
- FROM icons i
- JOIN source_files s ON s.id = i.source_file_id
- JOIN crop_settings cs ON cs.icon_id = i.id
- LEFT JOIN icon_effect_recipes er ON er.icon_id = i.id
- LEFT JOIN icon_motion_recipes mr ON mr.icon_id = i.id";
-
-fn load_icons(
-    connection: &Connection,
-    request: &ExportEditSheetRequest,
-) -> AppResult<Vec<IconRecord>> {
-    let selected_ids = request
-        .selected_icon_ids
-        .iter()
-        .map(String::as_str)
-        .collect::<HashSet<_>>();
-    let query = format!(
-        "{ICON_RECORD_SELECT}
-         WHERE i.collection_id = ?1
-           AND i.deleted_at IS NULL
-           AND i.icon_kind = 'image'
-         ORDER BY i.order_index ASC, i.created_at ASC"
-    );
-    let mut statement = connection.prepare(&query)?;
-    let icons = statement
-        .query_map(params![request.collection_id], icon_record_from_row)?
-        .collect::<Result<Vec<_>, _>>()?;
-
-    if request.source == "selected_icons" && !selected_ids.is_empty() {
-        Ok(icons
-            .into_iter()
-            .filter(|icon| selected_ids.contains(icon.id.as_str()))
-            .collect())
-    } else {
-        Ok(icons)
-    }
-}
-
-fn icon_record_from_row(row: &Row<'_>) -> rusqlite::Result<IconRecord> {
-    Ok(IconRecord {
-        id: row.get("id")?,
-        display_name: row.get("display_name")?,
-        shape: row.get("shape")?,
-        source_path: row.get("original_path_in_library")?,
-        source_extension: row.get("original_extension")?,
-        source_hash: row.get("sha256")?,
-        source_is_animated: row.get::<_, i64>("is_animated")? == 1,
-        crop_x: row.get("crop_x")?,
-        crop_y: row.get("crop_y")?,
-        crop_w: row.get("crop_w")?,
-        crop_h: row.get("crop_h")?,
-        transform: ImageTransform {
-            quarter_turns: row.get("transform_quarter_turns")?,
-            flip_horizontal: row.get::<_, i64>("transform_flip_horizontal")? != 0,
-            flip_vertical: row.get::<_, i64>("transform_flip_vertical")? != 0,
-        },
-        text_overlay: text_overlay_from_fields(
-            row.get::<_, i64>("text_overlay_enabled")? != 0,
-            row.get("text_overlay_text")?,
-            row.get("text_overlay_font_path")?,
-            row.get("text_overlay_font_size")?,
-            row.get("text_overlay_x")?,
-            row.get("text_overlay_y")?,
-            row.get("text_overlay_color")?,
-            row.get("text_overlay_stroke_color")?,
-            row.get("text_overlay_stroke_width")?,
-        )
-        .map_err(sql_conversion_error)?,
-        effects: parse_effect_recipe_json(
-            row.get::<_, Option<String>>("effect_recipe_json")?
-                .as_deref()
-                .unwrap_or_default(),
-        )
-        .map_err(sql_conversion_error)?,
-        motion: parse_motion_recipe_json(
-            row.get::<_, Option<String>>("motion_recipe_json")?
-                .as_deref()
-                .unwrap_or_default(),
-        )
-        .map_err(sql_conversion_error)?,
-    })
-}
-
-fn sql_conversion_error(error: AppError) -> rusqlite::Error {
-    rusqlite::Error::FromSqlConversionFailure(0, rusqlite::types::Type::Text, Box::new(error))
-}
-
-pub(super) fn current_static_sheet_render_guard(
-    connection: &Connection,
-    collection_id: &str,
-    icon_id: &str,
-    piece_id: Option<&str>,
-    cell_width: i64,
-    cell_height: i64,
-) -> AppResult<(String, String)> {
-    if cell_width <= 0 || cell_height <= 0 {
-        return Err(AppError::new(
-            "validation",
-            "작업 시트 셀 크기는 1 이상이어야 합니다.",
-        ));
-    }
-    let query = format!(
-        "{ICON_RECORD_SELECT}
-         WHERE i.id = ?1
-           AND i.collection_id = ?2
-           AND i.deleted_at IS NULL
-           AND i.icon_kind = 'image'"
-    );
-    let icon = connection
-        .query_row(
-            &query,
-            params![icon_id, collection_id],
-            icon_record_from_row,
-        )
-        .optional()?
-        .ok_or_else(|| AppError::not_found("작업 시트 원본 아이콘을 찾을 수 없습니다."))?;
-    let piece_index = match piece_id {
-        Some(piece_id) => connection
-            .query_row(
-                "SELECT piece_index
-                 FROM icon_pieces
-                 WHERE id = ?1
-                   AND icon_id = ?2",
-                params![piece_id, icon_id],
-                |row| row.get::<_, i64>(0),
-            )
-            .optional()?
-            .ok_or_else(|| AppError::not_found("작업 시트 원본 조각을 찾을 수 없습니다."))?,
-        None => connection
-            .query_row(
-                "SELECT piece_index
-                 FROM icon_pieces
-                 WHERE icon_id = ?1
-                 ORDER BY piece_index ASC
-                 LIMIT 1",
-                params![icon_id],
-                |row| row.get::<_, i64>(0),
-            )
-            .optional()?
-            .ok_or_else(|| AppError::not_found("작업 시트 원본 조각을 찾을 수 없습니다."))?,
-    };
-    let piece_index = usize::try_from(piece_index)
-        .map_err(|_| AppError::new("validation", "작업 시트 조각 번호가 올바르지 않습니다."))?;
-    let render_recipe_hash =
-        static_sheet_render_recipe_hash(&icon, piece_index, cell_width, cell_height)?;
-    Ok((icon.source_hash, render_recipe_hash))
-}
-
-fn static_sheet_render_recipe_hash(
-    icon: &IconRecord,
-    piece_index: usize,
-    cell_width: i64,
-    cell_height: i64,
-) -> AppResult<String> {
-    let recipe_hash = render_recipe_crop_hash(
-        &icon.shape,
-        &ExportCropRect {
-            x: icon.crop_x,
-            y: icon.crop_y,
-            width: icon.crop_w,
-            height: icon.crop_h,
-        },
-        cell_width,
-        cell_height,
-        piece_index,
-        icon.transform,
-        "static_sheet_poster",
-        None,
-        icon.text_overlay.as_ref(),
-        &icon.effects,
-        &icon.motion,
-    )?;
-    Ok(hash_text(&[
-        "static_sheet_render_guard_v1".to_string(),
-        icon.source_hash.clone(),
-        icon.source_extension.to_ascii_lowercase(),
-        "source_frame:0".to_string(),
-        "motion_elapsed_ms:0".to_string(),
-        "resize_filter:lanczos3".to_string(),
-        recipe_hash,
-    ]))
-}
-
-fn load_pieces(connection: &Connection, icon_id: &str) -> AppResult<Vec<PieceRecord>> {
-    let mut statement = connection.prepare(
-        "SELECT id, piece_index, alt_text
-         FROM icon_pieces
-         WHERE icon_id = ?1
-         ORDER BY piece_index ASC",
-    )?;
-    let pieces = statement
-        .query_map(params![icon_id], |row| {
-            Ok(PieceRecord {
-                id: row.get("id")?,
-                piece_index: row.get("piece_index")?,
-                alt_text: row.get("alt_text")?,
-            })
-        })?
-        .collect::<Result<Vec<_>, _>>()?;
-    Ok(pieces)
-}
-
-fn render_icon_items(
-    connection: &Connection,
-    icon: &IconRecord,
-    cell_width: i64,
-    cell_height: i64,
-) -> AppResult<Vec<RenderedSheetItem>> {
-    let mut source = load_source_first_frame(Path::new(&icon.source_path), &icon.source_extension)?;
-    apply_text_overlay(&mut source, icon.text_overlay.as_ref())?;
-    let source_geometry =
-        source_viewport_geometry(&icon.shape, cell_width, cell_height, icon.transform)?;
-    let viewport = crop_and_resize(
-        &source,
-        icon.crop_x,
-        icon.crop_y,
-        icon.crop_w,
-        icon.crop_h,
-        source_geometry.viewport.width,
-        source_geometry.viewport.height,
-    )?;
-    let viewport = apply_image_transform(viewport, icon.transform)?;
-    let mut viewport = viewport;
-    apply_effect_recipe(&mut viewport, &icon.effects)?;
-    let motion_result = apply_motion_recipe(
-        &viewport,
-        &icon.motion,
-        MotionFrameContext {
-            elapsed_ms: 0,
-            total_duration_ms: u64::try_from(icon.motion.duration_ms).unwrap_or(1).max(1),
-        },
-    )?;
-    let viewport = motion_result.image;
-    if i64::from(viewport.width()) != viewport_width(&icon.shape, cell_width)
-        || i64::from(viewport.height()) != viewport_height(&icon.shape, cell_height)
-    {
-        return Err(AppError::new(
-            "validation",
-            "회전 후 작업 시트 조각 크기가 아이콘 모양과 일치하지 않습니다.",
-        ));
-    }
-    let split = split_viewport(&viewport, &icon.shape, cell_width, cell_height)?;
-    let pieces = load_pieces(connection, &icon.id)?;
-    let mut items = Vec::new();
-
-    for (piece_position, piece_image) in split.into_iter().enumerate() {
-        let piece = pieces
-            .iter()
-            .find(|piece| piece.piece_index as usize == piece_position);
-        let render_hash = sha256_hex(&png_bytes_from_rgba(&piece_image)?);
-        let render_recipe_hash =
-            static_sheet_render_recipe_hash(icon, piece_position, cell_width, cell_height)?;
-        items.push(RenderedSheetItem {
-            icon_id: icon.id.clone(),
-            piece_id: piece.map(|piece| piece.id.clone()),
-            display_name: icon.display_name.clone(),
-            alt: piece
-                .map(|piece| piece.alt_text.clone())
-                .unwrap_or_default(),
-            icon_type: icon.shape.clone(),
-            source_hash: Some(icon.source_hash.clone()),
-            render_hash,
-            render_recipe_hash,
-            image: piece_image,
-        });
-    }
-
-    Ok(items)
-}
-
-fn load_source_first_frame(path: &Path, extension: &str) -> AppResult<RgbaImage> {
-    if extension == "gif" {
-        let file = fs::File::open(path)?;
-        let decoder = GifDecoder::new(BufReader::new(file))?;
-        let mut frames = decoder.into_frames();
-        let frame = frames
-            .next()
-            .transpose()?
-            .ok_or_else(|| AppError::new("gif", "GIF 첫 프레임을 읽을 수 없습니다."))?;
-        return Ok(frame.into_buffer());
-    }
-
-    Ok(image::open(path)?.to_rgba8())
-}
-
-fn crop_and_resize(
-    image: &RgbaImage,
-    crop_x: f64,
-    crop_y: f64,
-    crop_w: f64,
-    crop_h: f64,
-    width: i64,
-    height: i64,
-) -> AppResult<RgbaImage> {
-    let crop = validate_crop_rect(crop_x, crop_y, crop_w, crop_h)?;
-    let cropped = crop_with_padding(image, crop);
-    let width = u32::try_from(width)
-        .map_err(|_| AppError::new("validation", "작업 시트 조각 너비가 올바르지 않습니다."))?;
-    let height = u32::try_from(height)
-        .map_err(|_| AppError::new("validation", "작업 시트 조각 높이가 올바르지 않습니다."))?;
-    validate_import_dimensions(width, height)?;
-    Ok(imageops::resize(
-        &cropped,
-        width,
-        height,
-        FilterType::Lanczos3,
-    ))
-}
-
-fn crop_with_padding(source: &RgbaImage, crop: ValidatedCropRect) -> RgbaImage {
-    let crop_x = crop.x;
-    let crop_y = crop.y;
-    let crop_width = crop.width;
-    let crop_height = crop.height;
-    let mut output = RgbaImage::from_pixel(crop_width, crop_height, Rgba([0, 0, 0, 0]));
-    let source_width = i64::from(source.width());
-    let source_height = i64::from(source.height());
-    let src_x = crop_x.max(0);
-    let src_y = crop_y.max(0);
-    let dst_x = crop_x.saturating_neg().max(0);
-    let dst_y = crop_y.saturating_neg().max(0);
-    let copy_width = (source_width - src_x)
-        .min(i64::from(crop_width) - dst_x)
-        .max(0) as u32;
-    let copy_height = (source_height - src_y)
-        .min(i64::from(crop_height) - dst_y)
-        .max(0) as u32;
-
-    for y in 0..copy_height {
-        for x in 0..copy_width {
-            output.put_pixel(
-                (dst_x as u32) + x,
-                (dst_y as u32) + y,
-                *source.get_pixel((src_x as u32) + x, (src_y as u32) + y),
-            );
-        }
-    }
-    output
-}
-
-fn split_viewport(
-    viewport: &RgbaImage,
-    shape: &str,
-    cell_width: i64,
-    cell_height: i64,
-) -> AppResult<Vec<RgbaImage>> {
-    let width = u32::try_from(cell_width)
-        .map_err(|_| AppError::new("validation", "작업 시트 조각 너비가 올바르지 않습니다."))?;
-    let height = u32::try_from(cell_height)
-        .map_err(|_| AppError::new("validation", "작업 시트 조각 높이가 올바르지 않습니다."))?;
-    validate_import_dimensions(width, height)?;
-    match shape {
-        "horizontal_double" => Ok(vec![
-            imageops::crop_imm(viewport, 0, 0, width, height).to_image(),
-            imageops::crop_imm(viewport, width, 0, width, height).to_image(),
-        ]),
-        "vertical_double" => Ok(vec![
-            imageops::crop_imm(viewport, 0, 0, width, height).to_image(),
-            imageops::crop_imm(viewport, 0, height, width, height).to_image(),
-        ]),
-        "single" => Ok(vec![viewport.clone()]),
-        _ => Err(AppError::new(
-            "validation",
-            "지원하지 않는 아이콘 모양입니다.",
-        )),
-    }
-}
-
-fn render_sheet_page(
-    items: &[RenderedSheetItem],
-    placements: &[&PageCellPlacement],
-    width: i64,
-    height: i64,
-    background: &str,
-    guide: bool,
-    labels: Option<&GuideLabelOptions>,
-) -> AppResult<RgbaImage> {
-    let width = u32::try_from(width)
-        .map_err(|_| AppError::new("validation", "작업 시트 너비가 올바르지 않습니다."))?;
-    let height = u32::try_from(height)
-        .map_err(|_| AppError::new("validation", "작업 시트 높이가 올바르지 않습니다."))?;
-    validate_import_dimensions(width, height)?;
-    let mut sheet = background_image(width, height, background, guide);
-    for placement in placements {
-        let item = &items[placement.item_index];
-        imageops::overlay(&mut sheet, &item.image, placement.x, placement.y);
-    }
-    if guide {
-        let _text_labels_requested =
-            labels.is_some_and(|labels| labels.icon_name || labels.alt_value);
-        for (local_index, placement) in placements.iter().enumerate() {
-            draw_grid_rect(&mut sheet, placement);
-            let label_number = if labels.is_some_and(|labels| labels.export_number) {
-                placement.item_index + 1
-            } else {
-                local_index + 1
-            };
-            if labels
-                .map(|labels| labels.cell_number || labels.export_number)
-                .unwrap_or(true)
-            {
-                draw_number_label(&mut sheet, placement.x + 4, placement.y + 4, label_number);
-            }
-        }
-    }
-    Ok(sheet)
-}
-
-fn background_image(width: u32, height: u32, background: &str, guide: bool) -> RgbaImage {
-    let normalized = normalized_background(background);
-    if normalized == "checker" || (guide && normalized == "transparent") {
-        return checkerboard(width, height);
-    }
-    let pixel = match normalized.as_str() {
-        "white" => Rgba([255, 255, 255, 255]),
-        "black" => Rgba([0, 0, 0, 255]),
-        _ => Rgba([0, 0, 0, 0]),
-    };
-    RgbaImage::from_pixel(width, height, pixel)
-}
-
-fn checkerboard(width: u32, height: u32) -> RgbaImage {
-    let mut image = RgbaImage::from_pixel(width, height, Rgba([235, 238, 242, 255]));
-    for y in 0..height {
-        for x in 0..width {
-            if ((x / 12) + (y / 12)) % 2 == 0 {
-                image.put_pixel(x, y, Rgba([255, 255, 255, 255]));
-            }
-        }
-    }
-    image
-}
-
-fn draw_grid_rect(sheet: &mut RgbaImage, placement: &PageCellPlacement) {
-    let color = Rgba([37, 48, 61, 210]);
-    let x0 = placement.x.max(0) as u32;
-    let y0 = placement.y.max(0) as u32;
-    let x1 = (placement.x + placement.w - 1).max(0) as u32;
-    let y1 = (placement.y + placement.h - 1).max(0) as u32;
-
-    for x in x0..=x1.min(sheet.width().saturating_sub(1)) {
-        if y0 < sheet.height() {
-            sheet.put_pixel(x, y0, color);
-        }
-        if y1 < sheet.height() {
-            sheet.put_pixel(x, y1, color);
-        }
-    }
-    for y in y0..=y1.min(sheet.height().saturating_sub(1)) {
-        if x0 < sheet.width() {
-            sheet.put_pixel(x0, y, color);
-        }
-        if x1 < sheet.width() {
-            sheet.put_pixel(x1, y, color);
-        }
-    }
-}
-
-fn draw_number_label(sheet: &mut RgbaImage, x: i64, y: i64, number: usize) {
-    let label = number.to_string();
-    let mut cursor_x = x.max(0) as u32;
-    let y = y.max(0) as u32;
-    for character in label.chars() {
-        draw_digit(sheet, cursor_x, y, character);
-        cursor_x += 5;
-    }
-}
-
-fn draw_digit(sheet: &mut RgbaImage, x: u32, y: u32, character: char) {
-    let Some(pattern) = digit_pattern(character) else {
-        return;
-    };
-    let background = Rgba([255, 255, 255, 210]);
-    let foreground = Rgba([20, 28, 38, 255]);
-    for yy in 0..7 {
-        for xx in 0..4 {
-            let px = x + xx;
-            let py = y + yy;
-            if px < sheet.width() && py < sheet.height() {
-                sheet.put_pixel(px, py, background);
-            }
-        }
-    }
-    for (row, bits) in pattern.iter().enumerate() {
-        for col in 0..3 {
-            if bits & (1 << (2 - col)) != 0 {
-                let px = x + col;
-                let py = y + row as u32 + 1;
-                if px < sheet.width() && py < sheet.height() {
-                    sheet.put_pixel(px, py, foreground);
-                }
-            }
-        }
-    }
-}
-
-fn digit_pattern(character: char) -> Option<[u8; 5]> {
-    match character {
-        '0' => Some([0b111, 0b101, 0b101, 0b101, 0b111]),
-        '1' => Some([0b010, 0b110, 0b010, 0b010, 0b111]),
-        '2' => Some([0b111, 0b001, 0b111, 0b100, 0b111]),
-        '3' => Some([0b111, 0b001, 0b111, 0b001, 0b111]),
-        '4' => Some([0b101, 0b101, 0b111, 0b001, 0b001]),
-        '5' => Some([0b111, 0b100, 0b111, 0b001, 0b111]),
-        '6' => Some([0b111, 0b100, 0b111, 0b101, 0b111]),
-        '7' => Some([0b111, 0b001, 0b010, 0b010, 0b010]),
-        '8' => Some([0b111, 0b101, 0b111, 0b101, 0b111]),
-        '9' => Some([0b111, 0b101, 0b111, 0b001, 0b111]),
-        _ => None,
-    }
-}
-
 fn output_directory(
     paths: &AppPaths,
     request: &ExportEditSheetRequest,
@@ -1019,29 +426,6 @@ fn output_directory(
     Ok(output_root)
 }
 
-fn viewport_width(shape: &str, cell_width: i64) -> i64 {
-    if shape == "horizontal_double" {
-        cell_width * 2
-    } else {
-        cell_width
-    }
-}
-
-fn viewport_height(shape: &str, cell_height: i64) -> i64 {
-    if shape == "vertical_double" {
-        cell_height * 2
-    } else {
-        cell_height
-    }
-}
-
-fn normalized_background(value: &str) -> String {
-    match value {
-        "checker" | "white" | "black" => value.to_string(),
-        _ => "transparent".to_string(),
-    }
-}
-
 fn sanitize_name(value: &str) -> String {
     let name = value
         .chars()
@@ -1058,15 +442,6 @@ fn sanitize_name(value: &str) -> String {
     } else {
         name
     }
-}
-
-fn sha256_hex(bytes: &[u8]) -> String {
-    let digest = Sha256::digest(bytes);
-    let mut output = String::with_capacity(64);
-    for byte in digest {
-        let _ = write!(&mut output, "{byte:02x}");
-    }
-    output
 }
 
 fn timestamp_suffix() -> String {

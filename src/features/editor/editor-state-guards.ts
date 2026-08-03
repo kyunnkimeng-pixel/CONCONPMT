@@ -60,6 +60,10 @@ export function isRevisionConflict(error: unknown) {
   return hasCommandErrorCode(error, "conflict");
 }
 
+export function isAiSourceRepairRequired(error: unknown) {
+  return hasCommandErrorCode(error, "ai_source_repair_required");
+}
+
 export function isStaleMeasurement(error: unknown) {
   return hasCommandErrorCode(error, "stale_measurement");
 }

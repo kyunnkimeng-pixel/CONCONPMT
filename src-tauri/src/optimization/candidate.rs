@@ -71,6 +71,7 @@ mod tests {
             settings_json: "{}".to_string(),
             source_hash: "source".to_string(),
             crop_hash: "crop".to_string(),
+            output_sha256: None,
             profile_hash: "profile".to_string(),
             settings_hash: preset.to_string(),
             is_active_for_export: false,

@@ -246,6 +246,13 @@ export interface GifFrameSheetSettings {
   openOutputFolder: boolean;
 }
 
+export interface GifFrameSheetPageAnalysis {
+  pageIndex: number;
+  itemCount: number;
+  width: number;
+  height: number;
+}
+
 export interface GifFrameSheetExportAnalysis {
   iconId: string;
   displayName: string;
@@ -255,6 +262,7 @@ export interface GifFrameSheetExportAnalysis {
   loopMode: string;
   loopCount: number | null;
   pageCount: number;
+  pages: GifFrameSheetPageAnalysis[];
   sheetWidth: number;
   sheetHeight: number;
   columns: number;
@@ -270,6 +278,12 @@ export interface GifFrameSheetExportResult {
   frameCount: number;
   pageCount: number;
   warnings: string[];
+}
+
+export interface GifFrameSheetPageDragResult {
+  message: string;
+  nativeDragSupported: boolean;
+  started: boolean;
 }
 
 export interface GifFrameSheetReimportValidation {

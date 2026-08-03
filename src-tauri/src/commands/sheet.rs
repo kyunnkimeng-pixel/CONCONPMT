@@ -1,3 +1,4 @@
+use serde::Serialize;
 use tauri::State;
 
 use crate::app_state::AppState;
@@ -149,6 +150,62 @@ pub fn export_gif_frame_sheet(
     let paths = state.paths().clone();
     let connection = state.render_connection()?;
     crate::sheet::gif_frames::export_gif_frame_sheet(&connection, &paths, request)
+}
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct GifFrameSheetPageDragResultDto {
+    pub started: bool,
+    pub native_drag_supported: bool,
+    pub message: String,
+}
+
+#[tauri::command]
+pub fn start_gif_frame_sheet_page_drag(
+    window: tauri::Window,
+    state: State<'_, AppState>,
+    manifest_path: String,
+    page_index: i64,
+) -> AppResult<GifFrameSheetPageDragResultDto> {
+    let paths = state.paths().clone();
+    let prepared = crate::sheet::gif_frames::prepare_gif_frame_sheet_page_handoff(
+        &paths,
+        &manifest_path,
+        page_index,
+    )?;
+    let outcome =
+        crate::native_drag::start_verified_file_drag(&window, &paths, &prepared.staged_path)?;
+    let message = match outcome {
+        crate::native_drag::NativeFileDragOutcome::Dropped => format!(
+            "{} 페이지 clean PNG({})를 놓았습니다. 웹 화면에 첨부됐는지 확인하세요.",
+            prepared.page_index + 1,
+            prepared.file_name
+        ),
+        crate::native_drag::NativeFileDragOutcome::Cancelled => format!(
+            "{} 페이지 파일 끌기를 취소했습니다. 다시 끌거나 ‘파일 위치 열기’를 사용하세요.",
+            prepared.page_index + 1
+        ),
+    };
+    Ok(GifFrameSheetPageDragResultDto {
+        started: true,
+        native_drag_supported: crate::native_drag::NATIVE_FILE_DRAG_SUPPORTED,
+        message,
+    })
+}
+
+#[tauri::command]
+pub fn reveal_gif_frame_sheet_page(
+    state: State<'_, AppState>,
+    manifest_path: String,
+    page_index: i64,
+) -> AppResult<()> {
+    let paths = state.paths().clone();
+    let prepared = crate::sheet::gif_frames::prepare_gif_frame_sheet_page_handoff(
+        &paths,
+        &manifest_path,
+        page_index,
+    )?;
+    crate::export::open_export_path(&prepared.staged_path.to_string_lossy())
 }
 
 #[tauri::command]

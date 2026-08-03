@@ -1,13 +1,15 @@
 use std::collections::{HashMap, HashSet};
+use std::fs;
 use std::io::Cursor;
-use std::path::Path;
+use std::path::{Path, PathBuf};
 
 use image::{DynamicImage, ImageBuffer, ImageFormat, Rgba};
 use rusqlite::{params, Connection, OptionalExtension, Row, Transaction};
 
 use crate::db::repositories::clone_artifacts::{
-    cleanup_cloned_icon_previews, clone_current_preview, clone_effective_active_variants,
-    clone_frame_sheet_gif_recipe, clone_piece_preview,
+    cleanup_cloned_icon_previews, clone_current_ai_lineage, clone_effective_active_variants,
+    clone_frame_sheet_gif_recipe, clone_source_free_root_provenance,
+    materialize_clone_native_preview, validate_icon_clone_source, validate_icon_clone_target,
 };
 use crate::db::repositories::effects as effect_repository;
 use crate::db::repositories::source_files::{
@@ -18,7 +20,7 @@ use crate::ids::create_id;
 use crate::imaging::geometry::viewport_size;
 use crate::imaging::motion::parse_motion_recipe_json;
 use crate::imaging::preview::{
-    generate_icon_preview, CropRect as PreviewCropRect, GeneratePreviewRequest,
+    generate_icon_preview_in_directory, CropRect as PreviewCropRect, GeneratePreviewRequest,
 };
 use crate::imaging::text_overlay::text_overlay_from_fields;
 use crate::imaging::transform::ImageTransform;
@@ -62,7 +64,14 @@ pub fn list_icons(connection: &Connection, collection_id: &str) -> AppResult<Vec
            order_index,
            cell_width_override,
            cell_height_override,
-           thumbnail_path,
+           CASE
+             WHEN current_preview_path IS NULL AND EXISTS (
+               SELECT 1 FROM icon_ai_state preview_state
+               WHERE preview_state.icon_id = icons.id
+                 AND preview_state.active_version_id IS NOT NULL
+             ) THEN NULL
+             ELSE thumbnail_path
+           END AS thumbnail_path,
            thumbnail_override_path,
            current_preview_path,
            transform_quarter_turns,
@@ -405,8 +414,17 @@ pub fn replace_icon_source(
         )
         .optional()?;
     let motion = parse_motion_recipe_json(motion_json.as_deref().unwrap_or_default())?;
-    let preview = generate_icon_preview(
-        paths,
+    if icon.original_lineage_generation == i64::MAX {
+        return Err(AppError::new(
+            "ai_lineage_overflow",
+            "AI 원본 계보 번호를 증가시킬 수 없습니다.",
+        ));
+    }
+    let operation_id = create_id("source_replace");
+    let staging_dir = paths.ai_activation_staging_dir.join(&operation_id);
+    let _ = fs::remove_dir_all(&staging_dir);
+    let preview = match generate_icon_preview_in_directory(
+        &staging_dir,
         GeneratePreviewRequest {
             collection_id,
             icon_id,
@@ -430,68 +448,188 @@ pub fn replace_icon_source(
             effects: effects.recipe,
             motion,
         },
-    )?;
-    let current_preview_path = preview.current_preview_path.to_string_lossy().to_string();
+    ) {
+        Ok(preview) => preview,
+        Err(error) => {
+            let _ = fs::remove_dir_all(&staging_dir);
+            return Err(error);
+        }
+    };
+    let next_lineage_id = create_id("lineage");
+    let next_lineage_generation =
+        icon.original_lineage_generation
+            .checked_add(1)
+            .ok_or_else(|| {
+                AppError::new(
+                    "ai_lineage_overflow",
+                    "AI 원본 계보 번호를 증가시킬 수 없습니다.",
+                )
+            })?;
 
-    transaction.execute(
-        "UPDATE icons
+    let final_dir = paths
+        .ai_activation_previews_dir
+        .join(collection_id)
+        .join(icon_id)
+        .join(&operation_id);
+    let promoted = (|| -> AppResult<(String, Vec<PathBuf>)> {
+        if let Some(parent) = final_dir.parent() {
+            fs::create_dir_all(parent)?;
+        }
+        if final_dir.exists() {
+            return Err(AppError::new(
+                "source_replace_preview_path",
+                "원본 교체 미리보기 경로가 이미 존재합니다.",
+            ));
+        }
+        fs::rename(&staging_dir, &final_dir)?;
+        let current_preview_path =
+            rebase_preview_artifact(&preview.current_preview_path, &staging_dir, &final_dir)?
+                .to_string_lossy()
+                .to_string();
+        let piece_paths = preview
+            .piece_paths
+            .iter()
+            .map(|path| rebase_preview_artifact(path, &staging_dir, &final_dir))
+            .collect::<AppResult<Vec<_>>>()?;
+        Ok((current_preview_path, piece_paths))
+    })();
+    let (current_preview_path, promoted_piece_paths) = match promoted {
+        Ok(paths) => paths,
+        Err(error) => {
+            let _ = fs::remove_dir_all(&staging_dir);
+            let _ = fs::remove_dir_all(&final_dir);
+            return Err(error);
+        }
+    };
+
+    let commit_result = (|| -> AppResult<()> {
+        transaction.execute(
+            "UPDATE ai_requests
+         SET status = 'cancelled',
+             superseded_at = strftime('%Y-%m-%dT%H:%M:%fZ', 'now'),
+             superseded_reason = 'original_source_replaced',
+             updated_at = strftime('%Y-%m-%dT%H:%M:%fZ', 'now')
+         WHERE (
+             origin_icon_id = ?1
+             OR EXISTS (
+               SELECT 1
+               FROM ai_request_items request_item
+               WHERE request_item.request_id = ai_requests.id
+                 AND request_item.origin_icon_id = ?1
+             )
+           )
+           AND status IN ('draft', 'prepared', 'awaiting_result', 'running', 'layout_review_pending')",
+            [icon_id],
+        )?;
+        let state_rows = transaction.execute(
+            "UPDATE icon_ai_state
+         SET active_version_id = NULL,
+             revision = revision + 1,
+             updated_at = strftime('%Y-%m-%dT%H:%M:%fZ', 'now')
+         WHERE icon_id = ?1",
+            [icon_id],
+        )?;
+        if state_rows != 1 {
+            return Err(AppError::new(
+                "ai_state_missing",
+                "원본 교체 전에 아이콘의 AI 상태를 찾을 수 없습니다.",
+            ));
+        }
+        transaction.execute(
+            "UPDATE processed_asset_variants
+         SET is_active_for_export = 0
+         WHERE icon_id = ?1
+           AND is_active_for_export = 1",
+            [icon_id],
+        )?;
+        transaction.execute(
+            "UPDATE optimization_jobs
+         SET status = 'cancelled',
+             message = '원본 이미지 교체로 취소됨',
+             finished_at = strftime('%Y-%m-%dT%H:%M:%fZ', 'now')
+         WHERE icon_id = ?1
+           AND status IN ('queued', 'running')",
+            [icon_id],
+        )?;
+
+        transaction.execute(
+            "UPDATE icons
          SET source_file_id = ?1,
-             display_name = ?2,
+             original_lineage_id = ?2,
+             original_lineage_generation = ?3,
+             display_name = ?4,
              icon_kind = 'image',
              placeholder_text = NULL,
-             thumbnail_path = ?3,
+             thumbnail_path = ?5,
              thumbnail_override_source_file_id = NULL,
              thumbnail_override_path = NULL,
-             current_preview_path = ?4,
+             current_preview_path = ?6,
              transform_quarter_turns = 0,
              transform_flip_horizontal = 0,
              transform_flip_vertical = 0,
              updated_at = strftime('%Y-%m-%dT%H:%M:%fZ', 'now')
-         WHERE id = ?5
-           AND collection_id = ?6
+         WHERE id = ?7
+           AND collection_id = ?8
            AND deleted_at IS NULL",
-        params![
-            source_file.id,
-            display_name,
-            source_file.thumbnail_path,
-            current_preview_path,
+            params![
+                source_file.id,
+                next_lineage_id,
+                next_lineage_generation,
+                display_name,
+                source_file.thumbnail_path,
+                current_preview_path,
+                icon_id,
+                collection_id,
+            ],
+        )?;
+        transaction.execute(
+            "UPDATE collections
+         SET cover_source_file_id = ?1,
+             updated_at = strftime('%Y-%m-%dT%H:%M:%fZ', 'now')
+         WHERE id = ?2
+           AND cover_icon_id = ?3",
+            params![source_file.id, collection_id, icon_id],
+        )?;
+        replace_crop_settings(
+            &transaction,
             icon_id,
-            collection_id,
-        ],
-    )?;
-    replace_crop_settings(
-        &transaction,
-        icon_id,
-        crop,
-        source_file.width,
-        source_file.height,
-        viewport.width,
-        viewport.height,
-    )?;
-    let mut updated_piece_previews = 0;
-    for (piece_index, piece_path) in preview.piece_paths.iter().enumerate() {
-        updated_piece_previews += transaction.execute(
-            "UPDATE icon_pieces
+            crop,
+            source_file.width,
+            source_file.height,
+            viewport.width,
+            viewport.height,
+        )?;
+        let mut updated_piece_previews = 0;
+        for (piece_index, piece_path) in promoted_piece_paths.iter().enumerate() {
+            updated_piece_previews += transaction.execute(
+                "UPDATE icon_pieces
              SET generated_preview_path = ?1,
                  last_export_path = NULL,
                  export_status = 'ready',
                  updated_at = strftime('%Y-%m-%dT%H:%M:%fZ', 'now')
              WHERE icon_id = ?2
                AND piece_index = ?3",
-            params![
-                piece_path.to_string_lossy().to_string(),
-                icon_id,
-                piece_index as i64,
-            ],
-        )?;
+                params![
+                    piece_path.to_string_lossy().to_string(),
+                    icon_id,
+                    piece_index as i64,
+                ],
+            )?;
+        }
+        if updated_piece_previews != promoted_piece_paths.len() {
+            return Err(AppError::new(
+                "validation",
+                "교체한 이미지의 조각 미리보기를 연결할 수 없습니다.",
+            ));
+        }
+        transaction.commit()?;
+        Ok(())
+    })();
+    if commit_result.is_err() {
+        let _ = fs::remove_dir_all(&staging_dir);
+        let _ = fs::remove_dir_all(&final_dir);
     }
-    if updated_piece_previews != preview.piece_paths.len() {
-        return Err(AppError::new(
-            "validation",
-            "교체한 이미지의 조각 미리보기를 연결할 수 없습니다.",
-        ));
-    }
-    transaction.commit()?;
+    commit_result?;
 
     get_icon(connection, collection_id, icon_id)
 }
@@ -536,6 +674,7 @@ pub fn duplicate_icon(
     collection_id: &str,
     icon_id: &str,
 ) -> AppResult<IconDto> {
+    validate_icon_clone_source(connection, collection_id, icon_id)?;
     let duplicate_icon_id = create_id("icon");
     let duplicate_result = (|| -> AppResult<IconDto> {
         let transaction = connection.transaction()?;
@@ -551,13 +690,6 @@ pub fn duplicate_icon(
             params![collection_id, order_index],
         )?;
         let duplicate_name = format!("{} 복사본", icon.display_name);
-        let cloned_preview_path = clone_current_preview(
-            paths,
-            collection_id,
-            &duplicate_icon_id,
-            icon.current_preview_path.as_deref(),
-        )?;
-
         transaction.execute(
             "INSERT INTO icons (
                id,
@@ -642,7 +774,7 @@ pub fn duplicate_icon(
                 icon.thumbnail_path,
                 icon.thumbnail_override_source_file_id,
                 icon.thumbnail_override_path,
-                cloned_preview_path,
+                Option::<String>::None,
                 icon.text_overlay_enabled,
                 icon.text_overlay_text,
                 icon.text_overlay_font_path,
@@ -673,6 +805,10 @@ pub fn duplicate_icon(
         duplicate_icon_effect_recipe(&transaction, icon_id, &duplicate_icon_id)?;
         duplicate_icon_motion_recipe(&transaction, icon_id, &duplicate_icon_id)?;
         clone_frame_sheet_gif_recipe(&transaction, icon_id, &duplicate_icon_id)?;
+        clone_current_ai_lineage(&transaction, icon_id, &duplicate_icon_id)?;
+        clone_source_free_root_provenance(&transaction, icon_id, &duplicate_icon_id)?;
+        validate_icon_clone_target(&transaction, collection_id, &duplicate_icon_id)?;
+        materialize_clone_native_preview(&transaction, paths, collection_id, &duplicate_icon_id)?;
         clone_effective_active_variants(
             &transaction,
             paths,
@@ -709,6 +845,24 @@ pub fn delete_icons(
     let mut deleted_count = 0;
 
     for icon_id in &requested_ids {
+        transaction.execute(
+            "UPDATE ai_requests
+             SET status = 'cancelled',
+                 superseded_at = strftime('%Y-%m-%dT%H:%M:%fZ', 'now'),
+                 superseded_reason = 'target_icon_deleted',
+                 updated_at = strftime('%Y-%m-%dT%H:%M:%fZ', 'now')
+             WHERE (
+                 origin_icon_id = ?1
+                 OR EXISTS (
+                   SELECT 1
+                   FROM ai_request_items request_item
+                   WHERE request_item.request_id = ai_requests.id
+                     AND request_item.origin_icon_id = ?1
+                 )
+               )
+               AND status IN ('draft', 'prepared', 'awaiting_result', 'running', 'layout_review_pending')",
+            [icon_id],
+        )?;
         let changed = transaction.execute(
             "UPDATE icons
              SET deleted_at = strftime('%Y-%m-%dT%H:%M:%fZ', 'now'),
@@ -907,7 +1061,14 @@ pub(crate) fn get_icon(
                order_index,
                cell_width_override,
                cell_height_override,
-               thumbnail_path,
+               CASE
+                 WHEN current_preview_path IS NULL AND EXISTS (
+                   SELECT 1 FROM icon_ai_state preview_state
+                   WHERE preview_state.icon_id = icons.id
+                     AND preview_state.active_version_id IS NOT NULL
+                 ) THEN NULL
+                 ELSE thumbnail_path
+               END AS thumbnail_path,
                thumbnail_override_path,
                current_preview_path,
                transform_quarter_turns,
@@ -1037,6 +1198,7 @@ struct CollectionSizingRecord {
 struct IconReplaceRecord {
     display_name: String,
     icon_kind: String,
+    original_lineage_generation: i64,
     shape: String,
     cell_width: i64,
     cell_height: i64,
@@ -1187,6 +1349,7 @@ fn icon_record_for_replace(
             "SELECT
                i.display_name,
                i.icon_kind,
+               i.original_lineage_generation,
                i.shape,
                COALESCE(i.cell_width_override, c.default_cell_width) AS cell_width,
                COALESCE(i.cell_height_override, c.default_cell_height) AS cell_height,
@@ -1212,6 +1375,7 @@ fn icon_record_for_replace(
                 Ok(IconReplaceRecord {
                     display_name: row.get("display_name")?,
                     icon_kind: row.get("icon_kind")?,
+                    original_lineage_generation: row.get("original_lineage_generation")?,
                     shape: row.get("shape")?,
                     cell_width: row.get("cell_width")?,
                     cell_height: row.get("cell_height")?,
@@ -1235,8 +1399,8 @@ fn icon_record_for_replace(
 
 fn duplicate_icon_pieces(
     transaction: &Transaction<'_>,
-    paths: &AppPaths,
-    collection_id: &str,
+    _paths: &AppPaths,
+    _collection_id: &str,
     source_icon_id: &str,
     target_icon_id: &str,
 ) -> AppResult<HashMap<String, String>> {
@@ -1270,13 +1434,7 @@ fn duplicate_icon_pieces(
     let mut piece_id_map = HashMap::new();
     for piece in pieces {
         let target_piece_id = create_id("piece");
-        let cloned_preview_path = clone_piece_preview(
-            paths,
-            collection_id,
-            target_icon_id,
-            piece.piece_index,
-            piece.generated_preview_path.as_deref(),
-        )?;
+        let cloned_preview_path = Option::<String>::None;
         transaction.execute(
             "INSERT INTO icon_pieces (
                id,
@@ -1825,19 +1983,36 @@ fn display_name_from_filename(filename: &str) -> String {
         .to_string()
 }
 
+fn rebase_preview_artifact(path: &Path, from: &Path, to: &Path) -> AppResult<PathBuf> {
+    let relative = path.strip_prefix(from).map_err(|_| {
+        AppError::new(
+            "source_replace_preview_path",
+            "원본 교체 미리보기 경로가 staging 디렉터리를 벗어났습니다.",
+        )
+    })?;
+    Ok(to.join(relative))
+}
+
 #[cfg(test)]
 mod tests {
+    use std::collections::HashMap;
     use std::fs;
     use std::io::Cursor;
     use std::time::{SystemTime, UNIX_EPOCH};
 
     use image::{DynamicImage, ImageBuffer, ImageFormat, Rgba};
     use rusqlite::{params, Connection};
+    use sha2::{Digest, Sha256};
 
     use crate::db::migrations;
+    use crate::db::repositories::ai::{activate_ai_candidate, import_local_ai_candidate};
     use crate::db::repositories::collections::create_collection;
+    use crate::db::repositories::imports::import_image_files;
     use crate::ids::create_id;
-    use crate::models::{CreatePlaceholderIconPayload, ImportImageFilePayload};
+    use crate::models::{
+        ActivateAiCandidatePayload, CreatePlaceholderIconPayload, IconDto,
+        ImportAiCandidatePayload, ImportImageFilePayload,
+    };
     use crate::paths::AppPaths;
 
     use super::{
@@ -1861,12 +2036,81 @@ mod tests {
     }
 
     fn png_bytes() -> Vec<u8> {
-        let image = ImageBuffer::from_pixel(20, 20, Rgba([0, 0, 255, 255]));
+        png_bytes_with_color([0, 0, 255, 255])
+    }
+
+    fn png_bytes_with_color(color: [u8; 4]) -> Vec<u8> {
+        let image = ImageBuffer::from_pixel(20, 20, Rgba(color));
         let mut cursor = Cursor::new(Vec::new());
         DynamicImage::ImageRgba8(image)
             .write_to(&mut cursor, ImageFormat::Png)
             .unwrap();
         cursor.into_inner()
+    }
+
+    fn import_test_icon(
+        connection: &mut Connection,
+        paths: &AppPaths,
+        collection_id: &str,
+    ) -> IconDto {
+        import_image_files(
+            connection,
+            paths,
+            collection_id,
+            vec![ImportImageFilePayload {
+                original_filename: "original.png".to_string(),
+                bytes: png_bytes_with_color([0, 40, 255, 255]),
+            }],
+        )
+        .unwrap()
+        .imported_icons
+        .into_iter()
+        .next()
+        .unwrap()
+    }
+
+    fn import_and_activate_ai_candidate(
+        connection: &mut Connection,
+        paths: &AppPaths,
+        collection_id: &str,
+        icon_id: &str,
+        color: [u8; 4],
+    ) -> String {
+        let review = import_local_ai_candidate(
+            connection,
+            paths,
+            collection_id,
+            ImportAiCandidatePayload {
+                icon_id: icon_id.to_string(),
+                service_surface: "gemini_web".to_string(),
+                file: ImportImageFilePayload {
+                    original_filename: format!("candidate-{}.png", color[0]),
+                    bytes: png_bytes_with_color(color),
+                },
+            },
+        )
+        .unwrap();
+        let candidate_id = review
+            .candidates
+            .iter()
+            .find(|candidate| !candidate.is_materialized)
+            .unwrap()
+            .id
+            .clone();
+        activate_ai_candidate(
+            connection,
+            paths,
+            collection_id,
+            ActivateAiCandidatePayload {
+                icon_id: icon_id.to_string(),
+                candidate_id: candidate_id.clone(),
+                expected_revision: review.visual_source.activation_revision,
+                normalization: Default::default(),
+                expected_preview_signature: None,
+            },
+        )
+        .unwrap();
+        candidate_id
     }
 
     fn seed_icon(
@@ -1878,6 +2122,12 @@ mod tests {
         let source_file_id = create_id("source");
         let icon_id = create_id("icon");
         let piece_id = create_id("piece");
+        let source_color = u8::try_from(order_index.rem_euclid(256)).unwrap();
+        let source_bytes = png_bytes_with_color([source_color, 40, 60, 255]);
+        let source_path = std::env::temp_dir().join(format!("pmtconcon-seed-{icon_id}.png"));
+        fs::write(&source_path, &source_bytes).unwrap();
+        let source_sha256 = format!("{:x}", Sha256::digest(&source_bytes));
+        let source_byte_size = i64::try_from(source_bytes.len()).unwrap();
 
         connection
             .execute(
@@ -1901,15 +2151,16 @@ mod tests {
                    'image/png',
                    20,
                    20,
-                   20,
                    ?4,
+                   ?5,
                    strftime('%Y-%m-%dT%H:%M:%fZ', 'now')
                  )",
                 params![
                     source_file_id,
                     format!("{icon_id}.png"),
-                    format!("C:/tmp/{icon_id}.png"),
-                    icon_id,
+                    source_path.to_string_lossy(),
+                    source_byte_size,
+                    source_sha256,
                 ],
             )
             .unwrap();
@@ -1973,6 +2224,20 @@ mod tests {
                    strftime('%Y-%m-%dT%H:%M:%fZ', 'now')
                  )",
                 params![piece_id, icon_id, alt_text],
+            )
+            .unwrap();
+
+        connection
+            .execute(
+                "INSERT INTO crop_settings (
+                   id, icon_id, crop_mode, crop_x, crop_y, crop_w, crop_h,
+                   preset_position, source_width_at_apply, source_height_at_apply,
+                   viewport_width_at_apply, viewport_height_at_apply, updated_at
+                 ) VALUES (
+                   ?1, ?2, 'free', 0, 0, 20, 20, 'center', 20, 20, 200, 200,
+                   strftime('%Y-%m-%dT%H:%M:%fZ', 'now')
+                 )",
+                params![create_id("crop"), icon_id],
             )
             .unwrap();
 
@@ -2531,23 +2796,23 @@ mod tests {
                 .unwrap();
         assert_ne!(duplicate_preview, source_preview.to_string_lossy());
         assert_ne!(duplicate_piece, source_piece.to_string_lossy());
+        let native_root = paths
+            .ai_activation_previews_dir
+            .join(&collection.id)
+            .join(&duplicated.id)
+            .join("native-clone");
+        assert!(std::path::Path::new(&duplicate_preview).starts_with(&native_root));
+        assert!(std::path::Path::new(&duplicate_piece).starts_with(&native_root));
         assert_eq!(
-            fs::read(&duplicate_preview).unwrap(),
-            fs::read(&source_preview).unwrap()
+            image::image_dimensions(&duplicate_preview).unwrap(),
+            (200, 200)
         );
         assert_eq!(
-            fs::read(&duplicate_piece).unwrap(),
-            fs::read(&source_piece).unwrap()
+            image::image_dimensions(&duplicate_piece).unwrap(),
+            (200, 200)
         );
-        assert!(std::path::Path::new(&duplicate_preview).starts_with(
-            paths
-                .collection_previews_dir
-                .join(&collection.id)
-                .join(&duplicated.id)
-                .join("cloned")
-        ));
         assert_eq!(last_export, None);
-        assert_eq!(export_status, "not_exported");
+        assert_eq!(export_status, "ready");
 
         let source_text_state: (
             i64,
@@ -2697,5 +2962,546 @@ mod tests {
             )
             .unwrap();
         assert_eq!(cover_icon_id, Some(second_icon_id));
+    }
+
+    #[test]
+    fn replacing_source_advances_ai_lineage_and_supersedes_pending_work() {
+        let mut connection = connection();
+        let paths = temp_paths();
+        let collection =
+            create_collection(&mut connection, Some("AI 원본 교체 테스트".to_string())).unwrap();
+        let icon = import_test_icon(&mut connection, &paths, &collection.id);
+        let candidate_id = import_and_activate_ai_candidate(
+            &mut connection,
+            &paths,
+            &collection.id,
+            &icon.id,
+            [30, 220, 90, 255],
+        );
+        let request_id: String = connection
+            .query_row(
+                "SELECT request_id FROM ai_candidates WHERE id = ?1",
+                [&candidate_id],
+                |row| row.get(0),
+            )
+            .unwrap();
+        connection
+            .execute(
+                "UPDATE ai_requests
+                 SET status = 'awaiting_result', completed_at = NULL
+                 WHERE id = ?1",
+                [&request_id],
+            )
+            .unwrap();
+        let before: (String, String, i64, Option<String>, i64) = connection
+            .query_row(
+                "SELECT i.source_file_id, i.original_lineage_id,
+                        i.original_lineage_generation, st.active_version_id, st.revision
+                 FROM icons i JOIN icon_ai_state st ON st.icon_id = i.id
+                 WHERE i.id = ?1",
+                [&icon.id],
+                |row| {
+                    Ok((
+                        row.get(0)?,
+                        row.get(1)?,
+                        row.get(2)?,
+                        row.get(3)?,
+                        row.get(4)?,
+                    ))
+                },
+            )
+            .unwrap();
+        assert!(before.3.is_some());
+
+        replace_icon_source(
+            &mut connection,
+            &paths,
+            &collection.id,
+            &icon.id,
+            ImportImageFilePayload {
+                original_filename: "replacement.png".to_string(),
+                bytes: png_bytes_with_color([240, 50, 30, 255]),
+            },
+        )
+        .unwrap();
+
+        let after: (String, String, i64, Option<String>, i64) = connection
+            .query_row(
+                "SELECT i.source_file_id, i.original_lineage_id,
+                        i.original_lineage_generation, st.active_version_id, st.revision
+                 FROM icons i JOIN icon_ai_state st ON st.icon_id = i.id
+                 WHERE i.id = ?1",
+                [&icon.id],
+                |row| {
+                    Ok((
+                        row.get(0)?,
+                        row.get(1)?,
+                        row.get(2)?,
+                        row.get(3)?,
+                        row.get(4)?,
+                    ))
+                },
+            )
+            .unwrap();
+        assert_ne!(after.0, before.0);
+        assert_ne!(after.1, before.1);
+        assert_eq!(after.2, before.2 + 1);
+        assert_eq!(after.3, None);
+        assert_eq!(after.4, before.4 + 1);
+        let request_state: (String, Option<String>, Option<String>) = connection
+            .query_row(
+                "SELECT status, superseded_at, superseded_reason
+                 FROM ai_requests WHERE id = ?1",
+                [&request_id],
+                |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
+            )
+            .unwrap();
+        assert_eq!(request_state.0, "cancelled");
+        assert!(request_state.1.is_some());
+        assert_eq!(request_state.2.as_deref(), Some("original_source_replaced"));
+        let cover_source: Option<String> = connection
+            .query_row(
+                "SELECT cover_source_file_id FROM collections WHERE id = ?1",
+                [&collection.id],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert_eq!(cover_source.as_deref(), Some(after.0.as_str()));
+        fs::remove_dir_all(paths.root).unwrap();
+    }
+
+    #[test]
+    fn duplicate_icon_remaps_ai_version_dag_without_copying_requests() {
+        let mut connection = connection();
+        let paths = temp_paths();
+        let collection =
+            create_collection(&mut connection, Some("AI 계보 복제 테스트".to_string())).unwrap();
+        let icon = import_test_icon(&mut connection, &paths, &collection.id);
+        import_and_activate_ai_candidate(
+            &mut connection,
+            &paths,
+            &collection.id,
+            &icon.id,
+            [20, 200, 80, 255],
+        );
+        import_and_activate_ai_candidate(
+            &mut connection,
+            &paths,
+            &collection.id,
+            &icon.id,
+            [230, 120, 20, 255],
+        );
+        let request_count_before: i64 = connection
+            .query_row("SELECT COUNT(*) FROM ai_requests", [], |row| row.get(0))
+            .unwrap();
+        let candidate_count_before: i64 = connection
+            .query_row("SELECT COUNT(*) FROM ai_candidates", [], |row| row.get(0))
+            .unwrap();
+
+        let duplicate = duplicate_icon(&mut connection, &paths, &collection.id, &icon.id).unwrap();
+
+        let request_count_after: i64 = connection
+            .query_row("SELECT COUNT(*) FROM ai_requests", [], |row| row.get(0))
+            .unwrap();
+        let candidate_count_after: i64 = connection
+            .query_row("SELECT COUNT(*) FROM ai_candidates", [], |row| row.get(0))
+            .unwrap();
+        assert_eq!(request_count_after, request_count_before);
+        assert_eq!(candidate_count_after, candidate_count_before);
+
+        let load_versions = |target_icon_id: &str| {
+            let mut statement = connection
+                .prepare(
+                    "SELECT id, candidate_id, parent_version_id,
+                            base_original_lineage_id, effective_source_file_id
+                     FROM icon_ai_versions
+                     WHERE icon_id = ?1",
+                )
+                .unwrap();
+            let rows = statement
+                .query_map([target_icon_id], |row| {
+                    Ok((
+                        row.get::<_, String>(0)?,
+                        row.get::<_, String>(1)?,
+                        row.get::<_, Option<String>>(2)?,
+                        row.get::<_, String>(3)?,
+                        row.get::<_, String>(4)?,
+                    ))
+                })
+                .unwrap()
+                .collect::<Result<Vec<_>, _>>()
+                .unwrap();
+            rows
+        };
+        let source_versions = load_versions(&icon.id);
+        let target_versions = load_versions(&duplicate.id);
+        assert_eq!(source_versions.len(), 2);
+        assert_eq!(target_versions.len(), source_versions.len());
+        let source_by_candidate = source_versions
+            .iter()
+            .map(|version| (version.1.clone(), version))
+            .collect::<HashMap<_, _>>();
+        let target_by_candidate = target_versions
+            .iter()
+            .map(|version| (version.1.clone(), version))
+            .collect::<HashMap<_, _>>();
+        for (candidate_id, source_version) in &source_by_candidate {
+            let target_version = target_by_candidate.get(candidate_id).unwrap();
+            assert_ne!(target_version.0, source_version.0);
+            assert_eq!(target_version.4, source_version.4);
+            let source_parent_candidate = source_version.2.as_ref().map(|parent_id| {
+                source_versions
+                    .iter()
+                    .find(|version| &version.0 == parent_id)
+                    .unwrap()
+                    .1
+                    .clone()
+            });
+            let target_parent_candidate = target_version.2.as_ref().map(|parent_id| {
+                target_versions
+                    .iter()
+                    .find(|version| &version.0 == parent_id)
+                    .unwrap()
+                    .1
+                    .clone()
+            });
+            assert_eq!(target_parent_candidate, source_parent_candidate);
+        }
+        let source_state: (String, String, i64) = connection
+            .query_row(
+                "SELECT v.candidate_id, v.effective_source_file_id, st.revision
+                 FROM icon_ai_state st
+                 JOIN icon_ai_versions v ON v.icon_id = st.icon_id AND v.id = st.active_version_id
+                 WHERE st.icon_id = ?1",
+                [&icon.id],
+                |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
+            )
+            .unwrap();
+        let target_state: (String, String, i64) = connection
+            .query_row(
+                "SELECT v.candidate_id, v.effective_source_file_id, st.revision
+                 FROM icon_ai_state st
+                 JOIN icon_ai_versions v ON v.icon_id = st.icon_id AND v.id = st.active_version_id
+                 WHERE st.icon_id = ?1",
+                [&duplicate.id],
+                |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
+            )
+            .unwrap();
+        assert_eq!(target_state, source_state);
+        let lineages: (String, String) = connection
+            .query_row(
+                "SELECT source.original_lineage_id, target.original_lineage_id
+                 FROM icons source JOIN icons target ON target.id = ?2
+                 WHERE source.id = ?1",
+                params![icon.id, duplicate.id],
+                |row| Ok((row.get(0)?, row.get(1)?)),
+            )
+            .unwrap();
+        assert_ne!(lineages.0, lineages.1);
+        assert!(target_versions
+            .iter()
+            .all(|version| version.3 == lineages.1));
+        fs::remove_dir_all(paths.root).unwrap();
+    }
+
+    #[test]
+    fn duplicate_icon_maps_every_ai_lineage_without_merging_history() {
+        let mut connection = connection();
+        let paths = temp_paths();
+        let collection =
+            create_collection(&mut connection, Some("AI multi-lineage clone".to_string())).unwrap();
+        let icon = import_test_icon(&mut connection, &paths, &collection.id);
+        let historical_candidate_id = import_and_activate_ai_candidate(
+            &mut connection,
+            &paths,
+            &collection.id,
+            &icon.id,
+            [30, 180, 90, 255],
+        );
+
+        replace_icon_source(
+            &mut connection,
+            &paths,
+            &collection.id,
+            &icon.id,
+            ImportImageFilePayload {
+                original_filename: "replacement-for-clone.png".to_string(),
+                bytes: png_bytes_with_color([240, 40, 60, 255]),
+            },
+        )
+        .unwrap();
+        replace_icon_source(
+            &mut connection,
+            &paths,
+            &collection.id,
+            &icon.id,
+            ImportImageFilePayload {
+                original_filename: "current-source-for-clone.png".to_string(),
+                bytes: png_bytes_with_color([210, 150, 35, 255]),
+            },
+        )
+        .unwrap();
+
+        let current_candidate_id = import_and_activate_ai_candidate(
+            &mut connection,
+            &paths,
+            &collection.id,
+            &icon.id,
+            [80, 90, 230, 255],
+        );
+
+        let duplicate = duplicate_icon(&mut connection, &paths, &collection.id, &icon.id).unwrap();
+        let load_version_lineage = |target_icon_id: &str, candidate_id: &str| {
+            connection
+                .query_row(
+                    "SELECT base_original_source_file_id,
+                            base_original_lineage_id,
+                            base_original_lineage_generation
+                     FROM icon_ai_versions
+                     WHERE icon_id = ?1 AND candidate_id = ?2",
+                    params![target_icon_id, candidate_id],
+                    |row| {
+                        Ok((
+                            row.get::<_, String>(0)?,
+                            row.get::<_, String>(1)?,
+                            row.get::<_, i64>(2)?,
+                        ))
+                    },
+                )
+                .unwrap()
+        };
+
+        let source_historical = load_version_lineage(&icon.id, &historical_candidate_id);
+        let source_current = load_version_lineage(&icon.id, &current_candidate_id);
+        let target_historical = load_version_lineage(&duplicate.id, &historical_candidate_id);
+        let target_current = load_version_lineage(&duplicate.id, &current_candidate_id);
+
+        assert_ne!(source_historical.1, source_current.1);
+        assert_ne!(target_historical.1, target_current.1);
+        assert_eq!(target_historical.0, source_historical.0);
+        assert_eq!(target_historical.2, source_historical.2);
+        assert_eq!(target_current.0, source_current.0);
+        assert_eq!(target_current.2, source_current.2);
+        assert_ne!(target_historical.1, source_historical.1);
+        assert_ne!(target_current.1, source_current.1);
+
+        let target_icon_lineage: (String, String, i64) = connection
+            .query_row(
+                "SELECT source_file_id, original_lineage_id, original_lineage_generation
+                 FROM icons WHERE id = ?1",
+                [&duplicate.id],
+                |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
+            )
+            .unwrap();
+        assert_eq!(
+            target_icon_lineage,
+            (
+                target_current.0.clone(),
+                target_current.1.clone(),
+                target_current.2,
+            )
+        );
+        assert_ne!(target_historical.1, target_icon_lineage.1);
+
+        let target_version_lineage_count: i64 = connection
+            .query_row(
+                "SELECT COUNT(*) FROM (
+                   SELECT DISTINCT base_original_source_file_id,
+                                   base_original_lineage_id,
+                                   base_original_lineage_generation
+                   FROM icon_ai_versions
+                   WHERE icon_id = ?1
+                 )",
+                [&duplicate.id],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert_eq!(target_version_lineage_count, 2);
+        let source_registry_count: i64 = connection
+            .query_row(
+                "SELECT COUNT(*) FROM icon_ai_lineages WHERE icon_id = ?1",
+                [&icon.id],
+                |row| row.get(0),
+            )
+            .unwrap();
+        let target_registry_count: i64 = connection
+            .query_row(
+                "SELECT COUNT(*) FROM icon_ai_lineages WHERE icon_id = ?1",
+                [&duplicate.id],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert_eq!(source_registry_count, 3);
+        assert_eq!(target_registry_count, source_registry_count);
+
+        let matched_registry_tuples: i64 = connection
+            .query_row(
+                "SELECT COUNT(*)
+                 FROM icon_ai_lineages source
+                 JOIN icon_ai_lineages target
+                   ON target.original_source_file_id = source.original_source_file_id
+                  AND target.lineage_generation = source.lineage_generation
+                 WHERE source.icon_id = ?1
+                   AND target.icon_id = ?2",
+                params![icon.id, duplicate.id],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert_eq!(matched_registry_tuples, source_registry_count);
+        let reused_lineage_ids: i64 = connection
+            .query_row(
+                "SELECT COUNT(*)
+                 FROM icon_ai_lineages source
+                 JOIN icon_ai_lineages target
+                   ON target.original_source_file_id = source.original_source_file_id
+                  AND target.lineage_generation = source.lineage_generation
+                  AND target.lineage_id = source.lineage_id
+                 WHERE source.icon_id = ?1
+                   AND target.icon_id = ?2",
+                params![icon.id, duplicate.id],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert_eq!(reused_lineage_ids, 0);
+
+        let active_candidate_id: String = connection
+            .query_row(
+                "SELECT v.candidate_id
+                 FROM icon_ai_state st
+                 JOIN icon_ai_versions v ON v.id = st.active_version_id
+                 WHERE st.icon_id = ?1 AND v.icon_id = st.icon_id",
+                [&duplicate.id],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert_eq!(active_candidate_id, current_candidate_id);
+
+        let violations = connection
+            .prepare("PRAGMA foreign_key_check")
+            .unwrap()
+            .query_map([], |_| Ok(()))
+            .unwrap()
+            .collect::<Result<Vec<_>, _>>()
+            .unwrap();
+        assert!(violations.is_empty());
+        fs::remove_dir_all(paths.root).unwrap();
+    }
+    fn active_effective_source_path(connection: &Connection, icon_id: &str) -> String {
+        connection
+            .query_row(
+                "SELECT sf.original_path_in_library
+                 FROM icon_ai_state st
+                 JOIN icon_ai_versions version
+                   ON version.id = st.active_version_id
+                  AND version.icon_id = st.icon_id
+                 JOIN source_files sf ON sf.id = version.effective_source_file_id
+                 WHERE st.icon_id = ?1",
+                [icon_id],
+                |row| row.get(0),
+            )
+            .unwrap()
+    }
+
+    #[test]
+    fn duplicate_icon_rejects_missing_active_effective_source_even_with_preview_remaining() {
+        let mut connection = connection();
+        let paths = temp_paths();
+        let collection = create_collection(
+            &mut connection,
+            Some("missing active AI source clone".to_string()),
+        )
+        .unwrap();
+        let icon = import_test_icon(&mut connection, &paths, &collection.id);
+        import_and_activate_ai_candidate(
+            &mut connection,
+            &paths,
+            &collection.id,
+            &icon.id,
+            [20, 220, 80, 255],
+        );
+        let effective_source_path = active_effective_source_path(&connection, &icon.id);
+        let preview_path: String = connection
+            .query_row(
+                "SELECT current_preview_path FROM icons WHERE id = ?1",
+                [&icon.id],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert!(std::path::Path::new(&preview_path).is_file());
+        let count_before: i64 = connection
+            .query_row(
+                "SELECT COUNT(*) FROM icons WHERE collection_id = ?1 AND deleted_at IS NULL",
+                [&collection.id],
+                |row| row.get(0),
+            )
+            .unwrap();
+
+        fs::remove_file(&effective_source_path).unwrap();
+        let result = duplicate_icon(&mut connection, &paths, &collection.id, &icon.id);
+
+        assert!(result.is_err());
+        let count_after: i64 = connection
+            .query_row(
+                "SELECT COUNT(*) FROM icons WHERE collection_id = ?1 AND deleted_at IS NULL",
+                [&collection.id],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert_eq!(count_after, count_before);
+        assert!(std::path::Path::new(&preview_path).is_file());
+        fs::remove_dir_all(paths.root).unwrap();
+    }
+
+    #[test]
+    fn duplicate_icon_rejects_tampered_active_effective_source_even_with_preview_remaining() {
+        let mut connection = connection();
+        let paths = temp_paths();
+        let collection = create_collection(
+            &mut connection,
+            Some("tampered active AI source clone".to_string()),
+        )
+        .unwrap();
+        let icon = import_test_icon(&mut connection, &paths, &collection.id);
+        import_and_activate_ai_candidate(
+            &mut connection,
+            &paths,
+            &collection.id,
+            &icon.id,
+            [230, 60, 100, 255],
+        );
+        let effective_source_path = active_effective_source_path(&connection, &icon.id);
+        let preview_path: String = connection
+            .query_row(
+                "SELECT current_preview_path FROM icons WHERE id = ?1",
+                [&icon.id],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert!(std::path::Path::new(&preview_path).is_file());
+        let count_before: i64 = connection
+            .query_row(
+                "SELECT COUNT(*) FROM icons WHERE collection_id = ?1 AND deleted_at IS NULL",
+                [&collection.id],
+                |row| row.get(0),
+            )
+            .unwrap();
+        let mut tampered = fs::read(&effective_source_path).unwrap();
+        let tamper_index = tampered.len() / 2;
+        tampered[tamper_index] ^= 0x01;
+        fs::write(&effective_source_path, &tampered).unwrap();
+
+        let result = duplicate_icon(&mut connection, &paths, &collection.id, &icon.id);
+
+        assert!(result.is_err());
+        let count_after: i64 = connection
+            .query_row(
+                "SELECT COUNT(*) FROM icons WHERE collection_id = ?1 AND deleted_at IS NULL",
+                [&collection.id],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert_eq!(count_after, count_before);
+        assert!(std::path::Path::new(&preview_path).is_file());
+        fs::remove_dir_all(paths.root).unwrap();
     }
 }

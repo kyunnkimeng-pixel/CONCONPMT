@@ -1,6 +1,6 @@
 ﻿# Third-Party Licenses
 
-Generated: 2026-07-26T09:07:16Z
+Generated: 2026-08-03T02:12:17Z
 
 This file is a best-effort notice index for PMTCONCON Studio. It does not replace legal review. Preserve upstream copyright and license notices when distributing binaries.
 
@@ -17,31 +17,32 @@ PMTCONCON Studio is MIT licensed. Built-in optimization must not bundle or link 
 - @dnd-kit/core 6.3.1 (dependency, declared ^6.3.1): MIT; from node_modules package.json.
 - @dnd-kit/sortable 10.0.0 (dependency, declared ^10.0.0): MIT; from node_modules package.json.
 - @dnd-kit/utilities 3.2.2 (dependency, declared ^3.2.2): MIT; from node_modules package.json.
-- @fontsource-variable/geist 5.2.8 (dependency, declared ^5.2.8): OFL-1.1; from node_modules package.json.
-- @tailwindcss/vite 4.2.4 (dependency, declared ^4.2.4): MIT; from node_modules package.json.
-- @tanstack/react-router 1.169.2 (dependency, declared ^1.169.2): MIT; from node_modules package.json.
-- @tauri-apps/api 2.11.0 (dependency, declared ^2): Apache-2.0 OR MIT; from node_modules package.json.
-- @tauri-apps/cli 2.11.1 (devDependency, declared ^2): Apache-2.0 OR MIT; from node_modules package.json.
+- @fontsource-variable/geist 5.3.0 (dependency, declared ^5.2.8): OFL-1.1; from node_modules package.json.
+- @tailwindcss/vite 4.3.3 (dependency, declared ^4.2.4): MIT; from node_modules package.json.
+- @tanstack/react-router 1.170.18 (dependency, declared ^1.169.2): MIT; from node_modules package.json.
+- @tauri-apps/api 2.11.1 (dependency, declared ^2): Apache-2.0 OR MIT; from node_modules package.json.
+- @tauri-apps/cli 2.11.4 (devDependency, declared ^2): Apache-2.0 OR MIT; from node_modules package.json.
 - @tauri-apps/plugin-opener 2.5.4 (dependency, declared ^2): MIT OR Apache-2.0; from node_modules package.json.
-- @types/node 25.6.2 (devDependency, declared ^25.6.2): MIT; from node_modules package.json.
-- @types/react 19.2.14 (devDependency, declared ^19.1.8): MIT; from node_modules package.json.
+- @types/node 25.9.5 (devDependency, declared ^25.6.2): MIT; from node_modules package.json.
+- @types/react 19.2.17 (devDependency, declared ^19.1.8): MIT; from node_modules package.json.
 - @types/react-dom 19.2.3 (devDependency, declared ^19.1.6): MIT; from node_modules package.json.
 - @vitejs/plugin-react 4.7.0 (devDependency, declared ^4.6.0): MIT; from node_modules package.json.
 - class-variance-authority 0.7.1 (dependency, declared ^0.7.1): Apache-2.0; from node_modules package.json.
 - clsx 2.1.1 (dependency, declared ^2.1.1): MIT; from node_modules package.json.
+- happy-dom 20.11.1 (devDependency, declared 20.11.1): MIT; from node_modules package.json.
 - konva 10.3.0 (dependency, declared ^10.3.0): MIT; from node_modules package.json.
-- lucide-react 1.14.0 (dependency, declared ^1.14.0): ISC; from node_modules package.json.
-- radix-ui 1.4.3 (dependency, declared ^1.4.3): MIT; from node_modules package.json.
-- react 19.2.6 (dependency, declared ^19.1.0): MIT; from node_modules package.json.
-- react-dom 19.2.6 (dependency, declared ^19.1.0): MIT; from node_modules package.json.
-- react-konva 19.2.4 (dependency, declared ^19.2.4): MIT; from node_modules package.json.
-- tailwindcss 4.2.4 (dependency, declared ^4.2.4): MIT; from node_modules package.json.
-- tailwind-merge 3.5.0 (dependency, declared ^3.5.0): MIT; from node_modules package.json.
+- lucide-react 1.25.0 (dependency, declared ^1.14.0): ISC; from node_modules package.json.
+- radix-ui 1.6.4 (dependency, declared ^1.4.3): MIT; from node_modules package.json.
+- react 19.2.8 (dependency, declared ^19.1.0): MIT; from node_modules package.json.
+- react-dom 19.2.8 (dependency, declared ^19.1.0): MIT; from node_modules package.json.
+- react-konva 19.2.5 (dependency, declared ^19.2.4): MIT; from node_modules package.json.
+- tailwindcss 4.3.3 (dependency, declared ^4.2.4): MIT; from node_modules package.json.
+- tailwind-merge 3.6.0 (dependency, declared ^3.5.0): MIT; from node_modules package.json.
 - tw-animate-css 1.4.0 (dependency, declared ^1.4.0): MIT; from node_modules package.json.
 - typescript 5.8.3 (devDependency, declared ~5.8.3): Apache-2.0; from node_modules package.json.
-- vite 7.3.3 (devDependency, declared ^7.0.4): MIT; from node_modules package.json.
-- vitest 4.1.5 (devDependency, declared ^4.1.5): MIT; from node_modules package.json.
-- zustand 5.0.13 (dependency, declared ^5.0.13): MIT; from node_modules package.json.
+- vite 7.3.6 (devDependency, declared ^7.0.4): MIT; from node_modules package.json.
+- vitest 4.1.10 (devDependency, declared ^4.1.5): MIT; from node_modules package.json.
+- zustand 5.0.14 (dependency, declared ^5.0.13): MIT; from node_modules package.json.
 
 ## Rust Crates
 
@@ -55,6 +56,7 @@ PMTCONCON Studio is MIT licensed. Built-in optimization must not bundle or link 
 - arg_enum_proc_macro 0.3.4: MIT; from local cargo registry Cargo.toml.
 - arrayvec 0.7.6: MIT OR Apache-2.0; from local cargo registry Cargo.toml.
 - as-slice 0.2.1: MIT OR Apache-2.0; from local cargo registry Cargo.toml.
+- atomic-waker 1.1.2: Apache-2.0 OR MIT; from local cargo registry Cargo.toml.
 - autocfg 1.5.0: Apache-2.0 OR MIT; from local cargo registry Cargo.toml.
 - av1-grain 0.2.5: BSD-2-Clause; from local cargo registry Cargo.toml.
 - avif-serialize 0.8.9: BSD-3-Clause; from local cargo registry Cargo.toml.
@@ -66,7 +68,6 @@ PMTCONCON Studio is MIT licensed. Built-in optimization must not bundle or link 
 - bit-set 0.8.0: Apache-2.0 OR MIT; from local cargo registry Cargo.toml.
 - bitstream-io 4.10.0: MIT/Apache-2.0; from local cargo registry Cargo.toml.
 - bit-vec 0.8.0: Apache-2.0 OR MIT; from local cargo registry Cargo.toml.
-- block2 0.6.2: MIT; from local cargo registry Cargo.toml.
 - block-buffer 0.10.4: MIT OR Apache-2.0; from local cargo registry Cargo.toml.
 - brotli 8.0.2: BSD-3-Clause AND MIT; from local cargo registry Cargo.toml.
 - brotli-decompressor 5.0.0: BSD-3-Clause/MIT; from local cargo registry Cargo.toml.
@@ -82,17 +83,19 @@ PMTCONCON Studio is MIT licensed. Built-in optimization must not bundle or link 
 - cargo-platform 0.1.9: MIT OR Apache-2.0; from local cargo registry Cargo.toml.
 - cc 1.2.62: MIT OR Apache-2.0; from local cargo registry Cargo.toml.
 - cfb 0.7.3: MIT; from local cargo registry Cargo.toml.
+- cfg_aliases 0.2.2: MIT; from local cargo registry Cargo.toml.
 - cfg-if 1.0.4: MIT OR Apache-2.0; from local cargo registry Cargo.toml.
+- chacha20 0.10.1: MIT OR Apache-2.0; from local cargo registry Cargo.toml.
 - chrono 0.4.44: MIT OR Apache-2.0; from local cargo registry Cargo.toml.
 - color_quant 1.1.0: MIT; from local cargo registry Cargo.toml.
 - cookie 0.18.1: MIT OR Apache-2.0; from local cargo registry Cargo.toml.
 - cpufeatures 0.2.17: MIT OR Apache-2.0; from local cargo registry Cargo.toml.
+- cpufeatures 0.3.0: MIT OR Apache-2.0; from local cargo registry Cargo.toml.
 - crc32fast 1.5.0: MIT OR Apache-2.0; from local cargo registry Cargo.toml.
 - crossbeam-channel 0.5.15: MIT OR Apache-2.0; from local cargo registry Cargo.toml.
 - crossbeam-deque 0.8.6: MIT OR Apache-2.0; from local cargo registry Cargo.toml.
 - crossbeam-epoch 0.9.18: MIT OR Apache-2.0; from local cargo registry Cargo.toml.
 - crossbeam-utils 0.8.21: MIT OR Apache-2.0; from local cargo registry Cargo.toml.
-- crunchy 0.2.4: MIT; from local cargo registry Cargo.toml.
 - crypto-common 0.1.7: MIT OR Apache-2.0; from local cargo registry Cargo.toml.
 - cssparser 0.36.0: MPL-2.0; from local cargo registry Cargo.toml.
 - cssparser-macros 0.6.1: MPL-2.0; from local cargo registry Cargo.toml.
@@ -107,11 +110,11 @@ PMTCONCON Studio is MIT licensed. Built-in optimization must not bundle or link 
 - digest 0.10.7: MIT OR Apache-2.0; from local cargo registry Cargo.toml.
 - dirs 6.0.0: MIT OR Apache-2.0; from local cargo registry Cargo.toml.
 - dirs-sys 0.5.0: MIT OR Apache-2.0; from local cargo registry Cargo.toml.
-- dispatch2 0.3.1: Zlib OR Apache-2.0 OR MIT; from local cargo registry Cargo.toml.
 - displaydoc 0.2.5: MIT OR Apache-2.0; from local cargo registry Cargo.toml.
 - document-features 0.2.12: MIT OR Apache-2.0; from local cargo registry Cargo.toml.
 - dom_query 0.27.0: MIT; from local cargo registry Cargo.toml.
 - dpi 0.1.2: Apache-2.0 AND MIT; from local cargo registry Cargo.toml.
+- drag 2.1.1: Apache-2.0 OR MIT; from local cargo registry Cargo.toml.
 - dtoa 1.0.11: MIT OR Apache-2.0; from local cargo registry Cargo.toml.
 - dtoa-short 0.3.5: MPL-2.0; from local cargo registry Cargo.toml.
 - dtor 0.3.0: Apache-2.0 OR MIT; from local cargo registry Cargo.toml.
@@ -137,8 +140,17 @@ PMTCONCON Studio is MIT licensed. Built-in optimization must not bundle or link 
 - foldhash 0.2.0: Zlib; from local cargo registry Cargo.toml.
 - fontdue 0.9.3: MIT OR Apache-2.0 OR Zlib; from local cargo registry Cargo.toml.
 - form_urlencoded 1.2.2: MIT OR Apache-2.0; from local cargo registry Cargo.toml.
+- futures-channel 0.3.32: MIT OR Apache-2.0; from local cargo registry Cargo.toml.
+- futures-core 0.3.32: MIT OR Apache-2.0; from local cargo registry Cargo.toml.
+- futures-io 0.3.32: MIT OR Apache-2.0; from local cargo registry Cargo.toml.
+- futures-macro 0.3.32: MIT OR Apache-2.0; from local cargo registry Cargo.toml.
+- futures-sink 0.3.32: MIT OR Apache-2.0; from local cargo registry Cargo.toml.
+- futures-task 0.3.32: MIT OR Apache-2.0; from local cargo registry Cargo.toml.
+- futures-util 0.3.32: MIT OR Apache-2.0; from local cargo registry Cargo.toml.
 - generic-array 0.14.7: MIT; from local cargo registry Cargo.toml.
+- getrandom 0.2.17: MIT OR Apache-2.0; from local cargo registry Cargo.toml.
 - getrandom 0.3.4: MIT OR Apache-2.0; from local cargo registry Cargo.toml.
+- getrandom 0.4.2: MIT OR Apache-2.0; from local cargo registry Cargo.toml.
 - gif 0.14.2: MIT OR Apache-2.0; from local cargo registry Cargo.toml.
 - glob 0.3.3: MIT OR Apache-2.0; from local cargo registry Cargo.toml.
 - half 2.7.1: MIT OR Apache-2.0; from local cargo registry Cargo.toml.
@@ -150,7 +162,13 @@ PMTCONCON Studio is MIT licensed. Built-in optimization must not bundle or link 
 - hex 0.4.3: MIT OR Apache-2.0; from local cargo registry Cargo.toml.
 - html5ever 0.38.0: MIT OR Apache-2.0; from local cargo registry Cargo.toml.
 - http 1.4.0: MIT OR Apache-2.0; from local cargo registry Cargo.toml.
+- httparse 1.10.1: MIT OR Apache-2.0; from local cargo registry Cargo.toml.
+- http-body 1.0.1: MIT; from local cargo registry Cargo.toml.
+- http-body-util 0.1.3: MIT; from local cargo registry Cargo.toml.
 - http-range 0.1.5: MIT; from local cargo registry Cargo.toml.
+- hyper 1.9.0: MIT; from local cargo registry Cargo.toml.
+- hyper-rustls 0.27.9: Apache-2.0 OR ISC OR MIT; from local cargo registry Cargo.toml.
+- hyper-util 0.1.20: MIT; from local cargo registry Cargo.toml.
 - ico 0.5.0: MIT; from local cargo registry Cargo.toml.
 - icu_collections 2.2.0: Unicode-3.0; from local cargo registry Cargo.toml.
 - icu_locale_core 2.2.0: Unicode-3.0; from local cargo registry Cargo.toml.
@@ -168,6 +186,7 @@ PMTCONCON Studio is MIT licensed. Built-in optimization must not bundle or link 
 - indexmap 1.9.3: Apache-2.0 OR MIT; from local cargo registry Cargo.toml.
 - indexmap 2.14.0: Apache-2.0 OR MIT; from local cargo registry Cargo.toml.
 - infer 0.19.0: MIT; from local cargo registry Cargo.toml.
+- ipnet 2.12.0: MIT OR Apache-2.0; from local cargo registry Cargo.toml.
 - itertools 0.14.0: MIT OR Apache-2.0; from local cargo registry Cargo.toml.
 - itoa 1.0.18: MIT OR Apache-2.0; from local cargo registry Cargo.toml.
 - jobserver 0.1.34: MIT OR Apache-2.0; from local cargo registry Cargo.toml.
@@ -181,6 +200,7 @@ PMTCONCON Studio is MIT licensed. Built-in optimization must not bundle or link 
 - lock_api 0.4.14: MIT OR Apache-2.0; from local cargo registry Cargo.toml.
 - log 0.4.29: MIT OR Apache-2.0; from local cargo registry Cargo.toml.
 - loop9 0.1.5: MIT; from local cargo registry Cargo.toml.
+- lru-slab 0.1.2: MIT OR Apache-2.0 OR Zlib; from local cargo registry Cargo.toml.
 - markup5ever 0.38.0: MIT OR Apache-2.0; from local cargo registry Cargo.toml.
 - maybe-rayon 0.1.1: MIT; from local cargo registry Cargo.toml.
 - memchr 2.8.0: Unlicense OR MIT; from local cargo registry Cargo.toml.
@@ -199,15 +219,6 @@ PMTCONCON Studio is MIT licensed. Built-in optimization must not bundle or link 
 - num-integer 0.1.46: MIT OR Apache-2.0; from local cargo registry Cargo.toml.
 - num-rational 0.4.2: MIT OR Apache-2.0; from local cargo registry Cargo.toml.
 - num-traits 0.2.19: MIT OR Apache-2.0; from local cargo registry Cargo.toml.
-- objc2 0.6.4: MIT; from local cargo registry Cargo.toml.
-- objc2-core-foundation 0.3.2: Zlib OR Apache-2.0 OR MIT; from local cargo registry Cargo.toml.
-- objc2-core-graphics 0.3.2: Zlib OR Apache-2.0 OR MIT; from local cargo registry Cargo.toml.
-- objc2-encode 4.1.0: MIT; from local cargo registry Cargo.toml.
-- objc2-exception-helper 0.1.1: Zlib OR Apache-2.0 OR MIT; from local cargo registry Cargo.toml.
-- objc2-foundation 0.3.2: MIT; from local cargo registry Cargo.toml.
-- objc2-io-surface 0.3.2: Zlib OR Apache-2.0 OR MIT; from local cargo registry Cargo.toml.
-- objc2-quartz-core 0.3.2: Zlib OR Apache-2.0 OR MIT; from local cargo registry Cargo.toml.
-- objc2-web-kit 0.3.2: Zlib OR Apache-2.0 OR MIT; from local cargo registry Cargo.toml.
 - once_cell 1.21.4: MIT OR Apache-2.0; from local cargo registry Cargo.toml.
 - open 5.3.4: MIT; from local cargo registry Cargo.toml.
 - option-ext 0.2.0: MPL-2.0; from local cargo registry Cargo.toml.
@@ -223,7 +234,7 @@ PMTCONCON Studio is MIT licensed. Built-in optimization must not bundle or link 
 - phf_shared 0.13.1: MIT; from local cargo registry Cargo.toml.
 - pin-project-lite 0.2.17: Apache-2.0 OR MIT; from local cargo registry Cargo.toml.
 - plist 1.9.0: MIT; from local cargo registry Cargo.toml.
-- pmtconcon-studio 0.2.0: MIT; from workspace Cargo.toml.
+- pmtconcon-studio 0.3.0-alpha.5: MIT; from workspace Cargo.toml.
 - png 0.17.16: MIT OR Apache-2.0; from local cargo registry Cargo.toml.
 - png 0.18.1: MIT OR Apache-2.0; from local cargo registry Cargo.toml.
 - potential_utf 0.1.5: Unicode-3.0; from local cargo registry Cargo.toml.
@@ -236,7 +247,13 @@ PMTCONCON Studio is MIT licensed. Built-in optimization must not bundle or link 
 - qoi 0.4.1: MIT/Apache-2.0; from local cargo registry Cargo.toml.
 - quick-error 2.0.1: MIT/Apache-2.0; from local cargo registry Cargo.toml.
 - quick-xml 0.39.4: MIT; from local cargo registry Cargo.toml.
+- quinn 0.11.11: MIT OR Apache-2.0; from local cargo registry Cargo.toml.
+- quinn-proto 0.11.16: MIT OR Apache-2.0; from local cargo registry Cargo.toml.
+- quinn-udp 0.5.15: MIT OR Apache-2.0; from local cargo registry Cargo.toml.
 - quote 1.0.45: MIT OR Apache-2.0; from local cargo registry Cargo.toml.
+- rand 0.10.2: MIT OR Apache-2.0; from local cargo registry Cargo.toml.
+- rand_core 0.10.1: MIT OR Apache-2.0; from local cargo registry Cargo.toml.
+- rand_pcg 0.10.2: MIT OR Apache-2.0; from local cargo registry Cargo.toml.
 - rav1e 0.8.1: BSD-2-Clause; from local cargo registry Cargo.toml.
 - ravif 0.13.0: BSD-3-Clause; from local cargo registry Cargo.toml.
 - raw-window-handle 0.6.2: MIT OR Apache-2.0 OR Zlib; from local cargo registry Cargo.toml.
@@ -244,16 +261,21 @@ PMTCONCON Studio is MIT licensed. Built-in optimization must not bundle or link 
 - rayon-core 1.13.0: MIT OR Apache-2.0; from local cargo registry Cargo.toml.
 - ref-cast 1.0.25: MIT OR Apache-2.0; from local cargo registry Cargo.toml.
 - ref-cast-impl 1.0.25: MIT OR Apache-2.0; from local cargo registry Cargo.toml.
-- r-efi 5.3.0: MIT OR Apache-2.0 OR LGPL-2.1-or-later; from local cargo registry Cargo.toml.
 - regex 1.12.3: MIT OR Apache-2.0; from local cargo registry Cargo.toml.
 - regex-automata 0.4.14: MIT OR Apache-2.0; from local cargo registry Cargo.toml.
 - regex-syntax 0.8.10: MIT OR Apache-2.0; from local cargo registry Cargo.toml.
+- reqwest 0.12.28: MIT OR Apache-2.0; from local cargo registry Cargo.toml.
 - rfd 0.15.4: MIT; from local cargo registry Cargo.toml.
 - rgb 0.8.53: MIT; from local cargo registry Cargo.toml.
+- ring 0.17.14: Apache-2.0 AND ISC; from local cargo registry Cargo.toml.
 - rusqlite 0.39.0: MIT; from local cargo registry Cargo.toml.
 - rustc_version 0.4.1: MIT OR Apache-2.0; from local cargo registry Cargo.toml.
 - rustc-hash 2.1.2: Apache-2.0 OR MIT; from local cargo registry Cargo.toml.
+- rustls 0.23.42: Apache-2.0 OR ISC OR MIT; from local cargo registry Cargo.toml.
+- rustls-pki-types 1.15.1: MIT OR Apache-2.0; from local cargo registry Cargo.toml.
+- rustls-webpki 0.103.13: ISC; from local cargo registry Cargo.toml.
 - rustversion 1.0.22: MIT OR Apache-2.0; from local cargo registry Cargo.toml.
+- ryu 1.0.23: Apache-2.0 OR BSL-1.0; from local cargo registry Cargo.toml.
 - same-file 1.0.6: Unlicense/MIT; from local cargo registry Cargo.toml.
 - schemars 0.8.22: MIT; from local cargo registry Cargo.toml.
 - schemars 0.9.0: MIT; from local cargo registry Cargo.toml.
@@ -269,6 +291,7 @@ PMTCONCON Studio is MIT licensed. Built-in optimization must not bundle or link 
 - serde_json 1.0.149: MIT OR Apache-2.0; from local cargo registry Cargo.toml.
 - serde_repr 0.1.20: MIT OR Apache-2.0; from local cargo registry Cargo.toml.
 - serde_spanned 1.1.1: MIT OR Apache-2.0; from local cargo registry Cargo.toml.
+- serde_urlencoded 0.7.1: MIT/Apache-2.0; from local cargo registry Cargo.toml.
 - serde_with 3.19.0: MIT OR Apache-2.0; from local cargo registry Cargo.toml.
 - serde_with_macros 3.19.0: MIT OR Apache-2.0; from local cargo registry Cargo.toml.
 - serde-untagged 0.1.9: MIT OR Apache-2.0; from local cargo registry Cargo.toml.
@@ -280,13 +303,17 @@ PMTCONCON Studio is MIT licensed. Built-in optimization must not bundle or link 
 - simd_helpers 0.1.0: MIT; from local cargo registry Cargo.toml.
 - simd-adler32 0.3.9: MIT; from local cargo registry Cargo.toml.
 - siphasher 1.0.3: MIT/Apache-2.0; from local cargo registry Cargo.toml.
+- slab 0.4.12: MIT; from local cargo registry Cargo.toml.
 - smallvec 1.15.1: MIT OR Apache-2.0; from local cargo registry Cargo.toml.
+- socket2 0.6.3: MIT OR Apache-2.0; from local cargo registry Cargo.toml.
 - softbuffer 0.4.8: MIT OR Apache-2.0; from local cargo registry Cargo.toml.
 - stable_deref_trait 1.2.1: MIT OR Apache-2.0; from local cargo registry Cargo.toml.
 - string_cache 0.9.0: MIT OR Apache-2.0; from local cargo registry Cargo.toml.
 - string_cache_codegen 0.6.1: MIT OR Apache-2.0; from local cargo registry Cargo.toml.
 - strsim 0.11.1: MIT; from local cargo registry Cargo.toml.
+- subtle 2.6.1: BSD-3-Clause; from local cargo registry Cargo.toml.
 - syn 2.0.117: MIT OR Apache-2.0; from local cargo registry Cargo.toml.
+- sync_wrapper 1.0.2: Apache-2.0; from local cargo registry Cargo.toml.
 - synstructure 0.13.2: MIT; from local cargo registry Cargo.toml.
 - tao 0.35.2: Apache-2.0; from local cargo registry Cargo.toml.
 - tauri 2.11.1: Apache-2.0 OR MIT; from local cargo registry Cargo.toml.
@@ -295,6 +322,7 @@ PMTCONCON Studio is MIT licensed. Built-in optimization must not bundle or link 
 - tauri-macros 2.6.1: Apache-2.0 OR MIT; from local cargo registry Cargo.toml.
 - tauri-plugin 2.6.1: Apache-2.0 OR MIT; from local cargo registry Cargo.toml.
 - tauri-plugin-opener 2.5.4: Apache-2.0 OR MIT; from local cargo registry Cargo.toml.
+- tauri-plugin-single-instance 2.4.3: Apache-2.0 OR MIT; from local cargo registry Cargo.toml.
 - tauri-runtime 2.11.1: Apache-2.0 OR MIT; from local cargo registry Cargo.toml.
 - tauri-runtime-wry 2.11.1: Apache-2.0 OR MIT; from local cargo registry Cargo.toml.
 - tauri-utils 2.9.1: Apache-2.0 OR MIT; from local cargo registry Cargo.toml.
@@ -309,17 +337,25 @@ PMTCONCON Studio is MIT licensed. Built-in optimization must not bundle or link 
 - time-core 0.1.8: MIT OR Apache-2.0; from local cargo registry Cargo.toml.
 - time-macros 0.2.27: MIT OR Apache-2.0; from local cargo registry Cargo.toml.
 - tinystr 0.8.3: Unicode-3.0; from local cargo registry Cargo.toml.
+- tinyvec 1.12.0: Zlib OR Apache-2.0 OR MIT; from local cargo registry Cargo.toml.
+- tinyvec_macros 0.1.1: MIT OR Apache-2.0 OR Zlib; from local cargo registry Cargo.toml.
 - tokio 1.52.3: MIT; from local cargo registry Cargo.toml.
+- tokio-rustls 0.26.4: MIT OR Apache-2.0; from local cargo registry Cargo.toml.
 - toml 0.9.12+spec-1.1.0: MIT OR Apache-2.0; from local cargo registry Cargo.toml.
 - toml 1.1.2+spec-1.1.0: MIT OR Apache-2.0; from local cargo registry Cargo.toml.
 - toml_datetime 0.7.5+spec-1.1.0: MIT OR Apache-2.0; from local cargo registry Cargo.toml.
 - toml_datetime 1.1.1+spec-1.1.0: MIT OR Apache-2.0; from local cargo registry Cargo.toml.
 - toml_parser 1.1.2+spec-1.1.0: MIT OR Apache-2.0; from local cargo registry Cargo.toml.
 - toml_writer 1.1.1+spec-1.1.0: MIT OR Apache-2.0; from local cargo registry Cargo.toml.
+- tower 0.5.3: MIT; from local cargo registry Cargo.toml.
+- tower-http 0.6.10: MIT; from local cargo registry Cargo.toml.
+- tower-layer 0.3.3: MIT; from local cargo registry Cargo.toml.
+- tower-service 0.3.3: MIT; from local cargo registry Cargo.toml.
 - tracing 0.1.44: MIT; from local cargo registry Cargo.toml.
 - tracing-attributes 0.1.31: MIT; from local cargo registry Cargo.toml.
 - tracing-core 0.1.36: MIT; from local cargo registry Cargo.toml.
 - tray-icon 0.23.1: MIT OR Apache-2.0; from local cargo registry Cargo.toml.
+- try-lock 0.2.5: MIT; from local cargo registry Cargo.toml.
 - ttf-parser 0.21.1: MIT OR Apache-2.0; from local cargo registry Cargo.toml.
 - typeid 1.0.3: MIT OR Apache-2.0; from local cargo registry Cargo.toml.
 - typenum 1.20.0: MIT OR Apache-2.0; from local cargo registry Cargo.toml.
@@ -330,6 +366,7 @@ PMTCONCON Studio is MIT licensed. Built-in optimization must not bundle or link 
 - unicode-segmentation 1.13.2: MIT OR Apache-2.0; from local cargo registry Cargo.toml.
 - unic-ucd-ident 0.9.0: MIT/Apache-2.0; from local cargo registry Cargo.toml.
 - unic-ucd-version 0.9.0: MIT/Apache-2.0; from local cargo registry Cargo.toml.
+- untrusted 0.9.0: ISC; from local cargo registry Cargo.toml.
 - url 2.5.8: MIT OR Apache-2.0; from local cargo registry Cargo.toml.
 - urlpattern 0.3.0: MIT; from local cargo registry Cargo.toml.
 - utf-8 0.7.6: MIT OR Apache-2.0; from local cargo registry Cargo.toml.
@@ -340,39 +377,45 @@ PMTCONCON Studio is MIT licensed. Built-in optimization must not bundle or link 
 - vswhom 0.1.0: MIT; from local cargo registry Cargo.toml.
 - vswhom-sys 0.1.3: MIT; from local cargo registry Cargo.toml.
 - walkdir 2.5.0: Unlicense/MIT; from local cargo registry Cargo.toml.
-- wasi 0.11.1+wasi-snapshot-preview1: Apache-2.0 WITH LLVM-exception OR Apache-2.0 OR MIT; from local cargo registry Cargo.toml.
+- want 0.3.1: MIT; from local cargo registry Cargo.toml.
 - wasm-bindgen 0.2.121: MIT OR Apache-2.0; from local cargo registry Cargo.toml.
 - wasm-bindgen-macro 0.2.121: MIT OR Apache-2.0; from local cargo registry Cargo.toml.
 - wasm-bindgen-macro-support 0.2.121: MIT OR Apache-2.0; from local cargo registry Cargo.toml.
 - wasm-bindgen-shared 0.2.121: MIT OR Apache-2.0; from local cargo registry Cargo.toml.
 - web_atoms 0.2.4: MIT OR Apache-2.0; from local cargo registry Cargo.toml.
+- webpki-roots 1.0.9: CDLA-Permissive-2.0; from local cargo registry Cargo.toml.
 - webview2-com 0.38.2: MIT; from local cargo registry Cargo.toml.
 - webview2-com-macros 0.8.1: MIT; from local cargo registry Cargo.toml.
 - webview2-com-sys 0.38.2: MIT; from local cargo registry Cargo.toml.
 - weezl 0.1.12: MIT OR Apache-2.0; from local cargo registry Cargo.toml.
 - winapi-util 0.1.11: Unlicense OR MIT; from local cargo registry Cargo.toml.
+- windows 0.52.0: MIT OR Apache-2.0; from local cargo registry Cargo.toml.
 - windows 0.61.3: MIT OR Apache-2.0; from local cargo registry Cargo.toml.
-- windows_aarch64_gnullvm 0.52.6: MIT OR Apache-2.0; from local cargo registry Cargo.toml.
-- windows_aarch64_msvc 0.52.6: MIT OR Apache-2.0; from local cargo registry Cargo.toml.
-- windows_i686_gnu 0.52.6: MIT OR Apache-2.0; from local cargo registry Cargo.toml.
-- windows_i686_gnullvm 0.52.6: MIT OR Apache-2.0; from local cargo registry Cargo.toml.
-- windows_i686_msvc 0.52.6: MIT OR Apache-2.0; from local cargo registry Cargo.toml.
-- windows_x86_64_gnu 0.52.6: MIT OR Apache-2.0; from local cargo registry Cargo.toml.
-- windows_x86_64_gnullvm 0.52.6: MIT OR Apache-2.0; from local cargo registry Cargo.toml.
 - windows_x86_64_msvc 0.52.6: MIT OR Apache-2.0; from local cargo registry Cargo.toml.
+- windows_x86_64_msvc 0.53.1: MIT OR Apache-2.0; from local cargo registry Cargo.toml.
 - windows-collections 0.2.0: MIT OR Apache-2.0; from local cargo registry Cargo.toml.
+- windows-core 0.52.0: MIT OR Apache-2.0; from local cargo registry Cargo.toml.
+- windows-core 0.58.0: MIT OR Apache-2.0; from local cargo registry Cargo.toml.
 - windows-core 0.61.2: MIT OR Apache-2.0; from local cargo registry Cargo.toml.
 - windows-future 0.2.1: MIT OR Apache-2.0; from local cargo registry Cargo.toml.
+- windows-implement 0.52.0: MIT OR Apache-2.0; from local cargo registry Cargo.toml.
+- windows-implement 0.58.0: MIT OR Apache-2.0; from local cargo registry Cargo.toml.
 - windows-implement 0.60.2: MIT OR Apache-2.0; from local cargo registry Cargo.toml.
+- windows-interface 0.52.0: MIT OR Apache-2.0; from local cargo registry Cargo.toml.
+- windows-interface 0.58.0: MIT OR Apache-2.0; from local cargo registry Cargo.toml.
 - windows-interface 0.59.3: MIT OR Apache-2.0; from local cargo registry Cargo.toml.
 - windows-link 0.1.3: MIT OR Apache-2.0; from local cargo registry Cargo.toml.
 - windows-link 0.2.1: MIT OR Apache-2.0; from local cargo registry Cargo.toml.
 - windows-numerics 0.2.0: MIT OR Apache-2.0; from local cargo registry Cargo.toml.
+- windows-result 0.2.0: MIT OR Apache-2.0; from local cargo registry Cargo.toml.
 - windows-result 0.3.4: MIT OR Apache-2.0; from local cargo registry Cargo.toml.
+- windows-strings 0.1.0: MIT OR Apache-2.0; from local cargo registry Cargo.toml.
 - windows-strings 0.4.2: MIT OR Apache-2.0; from local cargo registry Cargo.toml.
 - windows-sys 0.59.0: MIT OR Apache-2.0; from local cargo registry Cargo.toml.
+- windows-sys 0.60.2: MIT OR Apache-2.0; from local cargo registry Cargo.toml.
 - windows-sys 0.61.2: MIT OR Apache-2.0; from local cargo registry Cargo.toml.
 - windows-targets 0.52.6: MIT OR Apache-2.0; from local cargo registry Cargo.toml.
+- windows-targets 0.53.5: MIT OR Apache-2.0; from local cargo registry Cargo.toml.
 - windows-threading 0.1.0: MIT OR Apache-2.0; from local cargo registry Cargo.toml.
 - windows-version 0.1.7: MIT OR Apache-2.0; from local cargo registry Cargo.toml.
 - window-vibrancy 0.6.0: Apache-2.0 OR MIT; from local cargo registry Cargo.toml.
@@ -388,6 +431,7 @@ PMTCONCON Studio is MIT licensed. Built-in optimization must not bundle or link 
 - zerocopy-derive 0.8.48: BSD-2-Clause OR Apache-2.0 OR MIT; from local cargo registry Cargo.toml.
 - zerofrom 0.1.7: Unicode-3.0; from local cargo registry Cargo.toml.
 - zerofrom-derive 0.1.7: Unicode-3.0; from local cargo registry Cargo.toml.
+- zeroize 1.9.0: Apache-2.0 OR MIT; from local cargo registry Cargo.toml.
 - zerotrie 0.2.4: Unicode-3.0; from local cargo registry Cargo.toml.
 - zerovec 0.11.6: Unicode-3.0; from local cargo registry Cargo.toml.
 - zerovec-derive 0.11.3: Unicode-3.0; from local cargo registry Cargo.toml.
@@ -398,10 +442,9 @@ PMTCONCON Studio is MIT licensed. Built-in optimization must not bundle or link 
 
 ## Manual Review Resolutions
 
-- @fontsource-variable/geist 5.2.8 (npm): Reviewed 2026-05-11: OFL-1.1 is acceptable for PMTCONCON Studio only when the bundled font notice is preserved. The installed package ships LICENSE and README notice files with the upstream notice "Copyright 2024 The Geist Project Authors (https://github.com/vercel/geist-font.git)".
 - brotli 8.0.2 (Rust): Reviewed 2026-05-11: "BSD-3-Clause AND MIT" means both permissive license notices apply. Both licenses are allowed by PMTCONCON Studio policy, and there is no copyleft, source-available, or external optimizer binary dependency.
 - dpi 0.1.2 (Rust): Reviewed 2026-05-11: "Apache-2.0 AND MIT" is acceptable. The current dependency tree enables dpi default/std features, where upstream documents Apache-2.0-only compiled code; if no_std is ever enabled, the MIT libm notice must also be preserved.
-- r-efi 5.3.0 (Rust): Reviewed 2026-05-11: "MIT OR Apache-2.0 OR LGPL-2.1-or-later" includes permissive alternatives. PMTCONCON Studio uses the permissive MIT/Apache-2.0 license path and does not rely on the LGPL alternative.
+- ring 0.17.14 (Rust): Reviewed 2026-07-28: "Apache-2.0 AND ISC" requires preserving both permissive notices. Both licenses are allowed by PMTCONCON Studio policy; the crate package includes LICENSE, LICENSE-BoringSSL, LICENSE-other-bits, and the referenced polyfill/third-party license files.
 - unicode-ident 1.0.24 (Rust): Reviewed 2026-05-11: "(MIT OR Apache-2.0) AND Unicode-3.0" is acceptable because the crate code is MIT/Apache-2.0 and the generated Unicode database data is covered by Unicode-3.0; all required license files are present in the crate package.
 
 ## Image, GIF, and Resize License Coverage
@@ -419,7 +462,7 @@ The built-in GIF and image resize/rescale pipeline uses the Rust crates below. T
 
 ## Review Notes
 
-- No generated review notes.
+- @fontsource-variable/geist 5.3.0 (npm): OFL-1.1 font license; acceptable for bundled fonts only after preserving font notices.
 
 ## Skipped Tooling
 

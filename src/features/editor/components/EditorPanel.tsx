@@ -16,6 +16,7 @@ import {
   CircleDot,
   FlipHorizontal2,
   FlipVertical2,
+  LoaderCircle,
   type LucideIcon,
   MoveDown,
   MoveDownLeft,
@@ -44,6 +45,7 @@ import {
   getIconEditorState,
   pickTextOverlayFont,
   previewIconEffects,
+  repairAiToOriginal,
   updateIconEffects,
   updateIconTextOverlay,
 } from "@/features/editor/api";
@@ -56,10 +58,12 @@ import {
 import {
   effectPreviewRequestKey,
   hasUnsavedEditorChanges,
+  isAiSourceRepairRequired,
   isEditorStateResponseCurrent,
   isRevisionConflict,
   isTextOverlayDraftDirty,
 } from "@/features/editor/editor-state-guards";
+import { AiReviewSection } from "@/features/editor/components/AiReviewSection";
 import { CropCanvas } from "@/features/editor/components/CropCanvas";
 import { EditorOutputPreview } from "@/features/editor/components/EditorOutputPreview";
 import {
@@ -99,6 +103,7 @@ import type {
   PresetPosition,
   TextOverlaySettings,
 } from "@/features/editor/types";
+import type { IconRevealAction } from "@/features/icons/icon-reveal";
 import { filePathToAssetUrl } from "@/lib/asset-url";
 import { getCommandErrorMessage } from "@/lib/tauri";
 import { useModalFocus } from "@/lib/use-modal-focus";
@@ -128,7 +133,17 @@ interface EditorPanelProps {
   iconId: string;
   onDirtyChange?: (dirty: boolean) => void;
   onClose: () => void;
-  onIconUpdated: (icon: IconSummary) => void;
+  onIconUpdated: (
+    icon: IconSummary,
+    options?: { silent?: boolean },
+  ) => void;
+  onRevealIcon: (
+    iconId: string,
+    action: IconRevealAction,
+  ) => boolean | Promise<boolean>;
+  onAiModalOpenChange?: (open: boolean) => void;
+  onBusyChange?: (busy: boolean) => void;
+  suppressBackgroundLiveRegions?: boolean;
 }
 
 interface EditorDraft {
@@ -191,12 +206,22 @@ export function EditorPanel({
   iconId,
   onClose,
   onIconUpdated,
+  onRevealIcon,
   onDirtyChange,
+  onAiModalOpenChange,
+  onBusyChange,
+  suppressBackgroundLiveRegions = false,
 }: EditorPanelProps) {
   const [editorState, setEditorState] = useState<IconEditorState | null>(null);
   const [draft, setDraft] = useState<EditorDraft | null>(null);
   const [isLoading, setIsLoading] = useState(true);
   const [isApplying, setIsApplying] = useState(false);
+  const [isAiMutationBusy, setIsAiMutationBusy] = useState(false);
+  const [isAiDialogOpen, setIsAiDialogOpen] = useState(false);
+  const suppressLiveRegions =
+    isAiDialogOpen || suppressBackgroundLiveRegions;
+  const [isAiRepairing, setIsAiRepairing] = useState(false);
+  const [canRepairAiSource, setCanRepairAiSource] = useState(false);
   const [statusMessage, setStatusMessage] = useState<string | null>(null);
   const [errorMessage, setErrorMessage] = useState<string | null>(null);
   const [isAdvancedOpen, setIsAdvancedOpen] = useState(false);
@@ -217,6 +242,7 @@ export function EditorPanel({
     const requestId = loadRequestIdRef.current + 1;
     loadRequestIdRef.current = requestId;
     setIsLoading(true);
+    setCanRepairAiSource(false);
     setErrorMessage(null);
     setStatusMessage(null);
 
@@ -227,10 +253,12 @@ export function EditorPanel({
       }
       setEditorState(state);
       setDraft(draftFromState(state, collection));
+      setCanRepairAiSource(false);
     } catch (error) {
       if (loadRequestIdRef.current !== requestId) {
         return;
       }
+      setCanRepairAiSource(isAiSourceRepairRequired(error));
       setErrorMessage(getCommandErrorMessage(error));
       setEditorState(null);
       setDraft(null);
@@ -242,11 +270,65 @@ export function EditorPanel({
   }, [collection, iconId]);
 
   useEffect(() => {
+    setIsAiRepairing(false);
+    setIsAiMutationBusy(false);
+    setCanRepairAiSource(false);
     void loadEditorState();
     return () => {
       loadRequestIdRef.current += 1;
     };
   }, [loadEditorState]);
+
+  const repairToOriginalSource = async () => {
+    if (!canRepairAiSource || isAiMutationBusy) {
+      return;
+    }
+
+    const requestId = loadRequestIdRef.current + 1;
+    loadRequestIdRef.current = requestId;
+    const requestedIconId = iconId;
+    const isCurrentRepair = () =>
+      loadRequestIdRef.current === requestId &&
+      isEditorStateResponseCurrent(activeIconIdRef.current, requestedIconId);
+
+    setIsAiRepairing(true);
+    setIsAiMutationBusy(true);
+    setStatusMessage(null);
+    try {
+      await repairAiToOriginal(collection.id, requestedIconId);
+      if (!isCurrentRepair()) {
+        return;
+      }
+
+      const nextState = await getIconEditorState(collection.id, requestedIconId);
+      if (
+        !isCurrentRepair() ||
+        !isEditorStateResponseCurrent(requestedIconId, nextState.icon.id)
+      ) {
+        return;
+      }
+
+      setEditorState(nextState);
+      setDraft(draftFromState(nextState, collection));
+      setCanRepairAiSource(false);
+      setErrorMessage(null);
+      setStatusMessage(
+        "손상된 AI 소스 연결을 해제하고 보존된 원본 소스로 복구했습니다.",
+      );
+      onIconUpdated(nextState.icon);
+    } catch (error) {
+      if (isCurrentRepair()) {
+        setErrorMessage(
+          `원본 소스로 복구하지 못했습니다: ${getCommandErrorMessage(error)}`,
+        );
+      }
+    } finally {
+      if (isCurrentRepair()) {
+        setIsAiRepairing(false);
+        setIsAiMutationBusy(false);
+      }
+    }
+  };
 
   useEffect(() => {
     window.localStorage.setItem(EDITOR_PANEL_WIDTH_STORAGE_KEY, String(panelWidth));
@@ -295,6 +377,7 @@ export function EditorPanel({
     hasUnsavedDraft,
     isAdvancedDirty,
   );
+  const isEditorBusy = isApplying || isAiMutationBusy;
 
   useEffect(() => {
     onDirtyChange?.(hasUnsavedChanges);
@@ -307,7 +390,27 @@ export function EditorPanel({
     [onDirtyChange],
   );
 
+  useEffect(() => {
+    onBusyChange?.(isEditorBusy);
+    return () => {
+      if (isEditorBusy) {
+        onBusyChange?.(false);
+      }
+    };
+  }, [isEditorBusy, onBusyChange]);
+
+  const handleAiModalOpenChange = useCallback(
+    (open: boolean) => {
+      setIsAiDialogOpen(open);
+      onAiModalOpenChange?.(open);
+    },
+    [onAiModalOpenChange],
+  );
+
   const requestPanelClose = useCallback(() => {
+    if (isAiMutationBusy) {
+      return;
+    }
     if (
       hasUnsavedChanges &&
       !window.confirm("저장하지 않은 편집 변경을 버리고 패널을 닫을까요?")
@@ -315,10 +418,13 @@ export function EditorPanel({
       return;
     }
     onClose();
-  }, [hasUnsavedChanges, onClose]);
+  }, [hasUnsavedChanges, isAiMutationBusy, onClose]);
 
 
   const updateShape = (shape: IconShape) => {
+    if (isAiMutationBusy) {
+      return;
+    }
     setDraft((current) => {
       if (!current || !sourceDimensions) {
         return current;
@@ -354,6 +460,9 @@ export function EditorPanel({
   };
 
   const updateCropMode = (cropMode: CropMode) => {
+    if (isAiMutationBusy) {
+      return;
+    }
     setDraft((current) => {
       if (!current || !sourceDimensions) {
         return current;
@@ -391,6 +500,9 @@ export function EditorPanel({
   };
 
   const updateCellSize = (field: "cellWidth" | "cellHeight", value: number) => {
+    if (isAiMutationBusy) {
+      return;
+    }
     if (!Number.isFinite(value) || value < 1) {
       return;
     }
@@ -432,6 +544,9 @@ export function EditorPanel({
   };
 
   const applyPreset = (presetPosition: PresetPosition) => {
+    if (isAiMutationBusy) {
+      return;
+    }
     setDraft((current) => {
       if (!current || !sourceDimensions) {
         return current;
@@ -453,6 +568,9 @@ export function EditorPanel({
   };
 
   const handleCropChange = (crop: CropRect) => {
+    if (isAiMutationBusy) {
+      return;
+    }
     setDraft((current) =>
       current
         ? {
@@ -465,6 +583,9 @@ export function EditorPanel({
   };
 
   const applyFlip = (axis: "horizontal" | "vertical") => {
+    if (isAiMutationBusy) {
+      return;
+    }
     setDraft((current) => (current ? flipIconDraft(current, axis) : current));
     setStatusMessage(
       axis === "horizontal"
@@ -475,6 +596,9 @@ export function EditorPanel({
   };
 
   const applyQuarterTurn = (direction: "left" | "right") => {
+    if (isAiMutationBusy) {
+      return;
+    }
     setDraft((current) => (current ? rotateIconDraft(current, direction) : current));
     setStatusMessage(
       direction === "left"
@@ -485,6 +609,9 @@ export function EditorPanel({
   };
 
   const useCollectionDefaultSize = () => {
+    if (isAiMutationBusy) {
+      return;
+    }
     setDraft((current) => {
       if (!current || !sourceDimensions) {
         return current;
@@ -522,6 +649,9 @@ export function EditorPanel({
   };
 
   const resetCropToDefault = () => {
+    if (isAiMutationBusy) {
+      return;
+    }
     if (!sourceDimensions) {
       return;
     }
@@ -558,6 +688,9 @@ export function EditorPanel({
   };
 
   const revertSavedSettings = () => {
+    if (isAiMutationBusy) {
+      return;
+    }
     if (!editorState) {
       return;
     }
@@ -574,7 +707,7 @@ export function EditorPanel({
   };
 
   const handleApply = async () => {
-    if (!draft) {
+    if (!draft || isAiMutationBusy) {
       return;
     }
 
@@ -614,10 +747,36 @@ export function EditorPanel({
     }
   };
 
+  const handleAiEditorStateCommitted = async (
+    nextState: IconEditorState,
+    nextStatusMessage: string | null,
+  ) => {
+    if (
+      !isEditorStateResponseCurrent(activeIconIdRef.current, nextState.icon.id)
+    ) {
+      return;
+    }
+
+    loadRequestIdRef.current += 1;
+    setEditorState(nextState);
+    setDraft(draftFromState(nextState, collection));
+    setCanRepairAiSource(false);
+    setErrorMessage(null);
+    if (nextStatusMessage !== null) {
+      setStatusMessage(nextStatusMessage);
+    }
+    onIconUpdated(nextState.icon, { silent: true });
+  };
+
+  const handleAiCreatedIconCommitted = async (createdIcon: IconSummary) => {
+    onIconUpdated(createdIcon, { silent: true });
+  };
+
   const sourceCropGeometry = draft ? sourceViewportGeometry(draft) : null;
 
   return (
     <aside
+      aria-busy={isAiMutationBusy}
       className="relative flex h-full shrink-0 flex-col border-l border-border bg-surface"
       data-testid="editor-panel"
       style={{ width: panelWidth }}
@@ -642,6 +801,10 @@ export function EditorPanel({
         <button
           aria-label="편집 패널 닫기"
           className="inline-flex size-9 items-center justify-center rounded-md border border-border bg-white hover:bg-menu-hover focus-visible:outline focus-visible:outline-2 focus-visible:outline-focus"
+          disabled={isAiMutationBusy}
+          title={
+            isAiMutationBusy ? "AI 소스 작업이 끝난 뒤 닫을 수 있습니다." : undefined
+          }
           type="button"
           onClick={requestPanelClose}
         >
@@ -655,9 +818,19 @@ export function EditorPanel({
         ) : null}
 
         {!isLoading && errorMessage && !editorState ? (
-          <p className="text-sm text-danger" role="alert">
-            {errorMessage}
-          </p>
+          canRepairAiSource ? (
+            <AiSourceRepairNotice
+              errorMessage={errorMessage}
+              isRepairing={isAiRepairing}
+              onRepair={() => {
+                void repairToOriginalSource();
+              }}
+            />
+          ) : (
+            <p className="text-sm text-danger" role="alert">
+              {errorMessage}
+            </p>
+          )
         ) : null}
 
         {!isLoading && editorState && draft && sourceDimensions ? (
@@ -665,16 +838,22 @@ export function EditorPanel({
             <section className="flex flex-col gap-3">
               <div>
                 <div className="flex items-center justify-between gap-2">
-                  <h3 className="text-sm font-semibold tracking-normal">원본 이미지</h3>
+                  <h3 className="text-sm font-semibold tracking-normal">
+                    {editorState.visualSource.activeVersionId
+                      ? "현재 편집 소스 (AI)"
+                      : "원본 이미지"}
+                  </h3>
                   <button
                     aria-label="고급 편집 열기"
                     className="inline-flex h-8 items-center gap-1 rounded-md border border-border bg-white px-2 text-xs font-medium hover:bg-menu-hover focus-visible:outline focus-visible:outline-2 focus-visible:outline-focus disabled:cursor-not-allowed disabled:opacity-50"
                     data-testid="editor-advanced-open"
-                    disabled={hasUnsavedDraft}
+                    disabled={hasUnsavedDraft || isAiMutationBusy}
                     title={
-                      hasUnsavedDraft
-                        ? "크롭·변형 변경을 먼저 적용하거나 되돌리세요."
-                        : "고급 편집"
+                      isAiMutationBusy
+                        ? "AI 소스 작업이 끝난 뒤 고급 편집을 열 수 있습니다."
+                        : hasUnsavedDraft
+                          ? "크롭·변형 변경을 먼저 적용하거나 되돌리세요."
+                          : "고급 편집"
                     }
                     type="button"
                     onClick={() => setIsAdvancedOpen(true)}
@@ -689,6 +868,7 @@ export function EditorPanel({
                 </p>
               </div>
               <CropCanvas
+                disabled={isAiMutationBusy}
                 cellHeight={sourceCropGeometry?.cellHeight ?? draft.cellHeight}
                 cellWidth={sourceCropGeometry?.cellWidth ?? draft.cellWidth}
                 crop={draft.crop}
@@ -726,6 +906,24 @@ export function EditorPanel({
               />
             </EditorOutputPreview>
 
+            <AiReviewSection
+              collection={collection}
+              hasUnsavedChanges={hasUnsavedChanges}
+              icon={editorState.icon}
+              visualSource={editorState.visualSource}
+              onBusyChange={setIsAiMutationBusy}
+              onCreatedIconCommitted={handleAiCreatedIconCommitted}
+              onEditorStateCommitted={handleAiEditorStateCommitted}
+              onModalOpenChange={handleAiModalOpenChange}
+              onRevealIcon={onRevealIcon}
+            />
+
+            {isAiMutationBusy && !suppressLiveRegions ? (
+              <p className="text-xs text-muted" role="status">
+                AI 소스를 처리하는 동안 다른 편집 기능을 잠갔습니다.
+              </p>
+            ) : null}
+
             <section className="flex flex-col gap-3 border-t border-border pt-4">
               <h3 className="text-sm font-semibold tracking-normal">모양</h3>
               <div className="grid grid-cols-3 gap-2">
@@ -733,6 +931,7 @@ export function EditorPanel({
                   <button
                     className={segmentedButtonClass(draft.shape === option.value)}
                     data-testid={`editor-shape-${option.value}`}
+                    disabled={isAiMutationBusy}
                     key={option.value}
                     type="button"
                     onClick={() => updateShape(option.value)}
@@ -748,6 +947,7 @@ export function EditorPanel({
                 <h3 className="text-sm font-semibold tracking-normal">셀 크기</h3>
                 <button
                   className="rounded-md border border-border bg-white px-2.5 py-1.5 text-xs font-medium hover:bg-menu-hover focus-visible:outline focus-visible:outline-2 focus-visible:outline-focus"
+                  disabled={isAiMutationBusy}
                   type="button"
                   onClick={useCollectionDefaultSize}
                 >
@@ -756,11 +956,13 @@ export function EditorPanel({
               </div>
               <div className="grid grid-cols-2 gap-3">
                 <DraftNumberInput
+                  disabled={isAiMutationBusy}
                   label="너비"
                   value={draft.cellWidth}
                   onChange={(value) => updateCellSize("cellWidth", value)}
                 />
                 <DraftNumberInput
+                  disabled={isAiMutationBusy}
                   label="높이"
                   value={draft.cellHeight}
                   onChange={(value) => updateCellSize("cellHeight", value)}
@@ -775,6 +977,7 @@ export function EditorPanel({
                   <button
                     className={segmentedButtonClass(draft.cropMode === option.value)}
                     data-testid={`editor-crop-mode-${option.value}`}
+                    disabled={isAiMutationBusy}
                     key={option.value}
                     type="button"
                     onClick={() => updateCropMode(option.value)}
@@ -797,7 +1000,7 @@ export function EditorPanel({
                         draft.cropMode === "fixed" &&
                         "border-focus bg-selected",
                     )}
-                    disabled={draft.cropMode !== "fixed"}
+                    disabled={draft.cropMode !== "fixed" || isAiMutationBusy}
                     data-testid={`editor-preset-${value}`}
                     key={value}
                     title={label}
@@ -827,7 +1030,7 @@ export function EditorPanel({
                 <button
                   className={transformButtonClass()}
                   data-testid="editor-flip-horizontal"
-                  disabled={isApplying}
+                  disabled={isApplying || isAiMutationBusy}
                   type="button"
                   onClick={() => applyFlip("horizontal")}
                 >
@@ -837,7 +1040,7 @@ export function EditorPanel({
                 <button
                   className={transformButtonClass()}
                   data-testid="editor-flip-vertical"
-                  disabled={isApplying}
+                  disabled={isApplying || isAiMutationBusy}
                   type="button"
                   onClick={() => applyFlip("vertical")}
                 >
@@ -847,7 +1050,7 @@ export function EditorPanel({
                 <button
                   className={transformButtonClass()}
                   data-testid="editor-rotate-left"
-                  disabled={isApplying}
+                  disabled={isApplying || isAiMutationBusy}
                   type="button"
                   onClick={() => applyQuarterTurn("left")}
                 >
@@ -857,7 +1060,7 @@ export function EditorPanel({
                 <button
                   className={transformButtonClass()}
                   data-testid="editor-rotate-right"
-                  disabled={isApplying}
+                  disabled={isApplying || isAiMutationBusy}
                   type="button"
                   onClick={() => applyQuarterTurn("right")}
                 >
@@ -881,6 +1084,7 @@ export function EditorPanel({
                 <select
                   className="rounded-md border border-border bg-white px-3 py-2 text-sm focus-visible:outline focus-visible:outline-2 focus-visible:outline-focus"
                   data-testid="editor-gif-loop-mode"
+                  disabled={isAiMutationBusy}
                   value={draft.gifLoopMode}
                   onChange={(event) => {
                     const gifLoopMode = event.currentTarget.value as GifLoopMode;
@@ -906,6 +1110,7 @@ export function EditorPanel({
                     <input
                       className="rounded-md border border-border bg-white px-3 py-2 text-sm text-foreground focus-visible:outline focus-visible:outline-2 focus-visible:outline-focus"
                       data-testid="editor-gif-loop-count"
+                      disabled={isAiMutationBusy}
                       min={1}
                       type="number"
                       value={draft.gifLoopCount}
@@ -929,12 +1134,12 @@ export function EditorPanel({
               </section>
             ) : null}
 
-            {statusMessage ? (
+            {statusMessage && !suppressLiveRegions ? (
               <p className="text-sm text-muted" role="status">
                 {statusMessage}
               </p>
             ) : null}
-            {errorMessage ? (
+            {errorMessage && !suppressLiveRegions ? (
               <p className="text-sm text-danger" role="alert">
                 {errorMessage}
               </p>
@@ -947,7 +1152,7 @@ export function EditorPanel({
         <button
           className="inline-flex items-center gap-2 whitespace-nowrap rounded-md border border-border bg-white px-3 py-2 text-sm font-medium hover:bg-menu-hover focus-visible:outline focus-visible:outline-2 focus-visible:outline-focus disabled:cursor-not-allowed disabled:text-muted"
           data-testid="editor-reset"
-          disabled={!draft || !sourceDimensions || isApplying}
+          disabled={!draft || !sourceDimensions || isApplying || isAiMutationBusy}
           title="크롭 위치와 크기만 기본값으로 되돌립니다. 다른 편집값은 유지됩니다."
           type="button"
           onClick={resetCropToDefault}
@@ -959,7 +1164,7 @@ export function EditorPanel({
           <button
             className="inline-flex items-center gap-2 whitespace-nowrap rounded-md border border-border bg-white px-3 py-2 text-sm font-medium hover:bg-menu-hover focus-visible:outline focus-visible:outline-2 focus-visible:outline-focus disabled:cursor-not-allowed disabled:text-muted"
             data-testid="editor-revert"
-            disabled={!editorState || isApplying}
+            disabled={!editorState || isApplying || isAiMutationBusy}
             title="저장된 편집값을 다시 불러오며 아직 적용하지 않은 변경만 버립니다."
             type="button"
             onClick={revertSavedSettings}
@@ -970,14 +1175,14 @@ export function EditorPanel({
           <button
             className="inline-flex items-center gap-2 whitespace-nowrap rounded-md bg-accent px-3 py-2 text-sm font-semibold text-accent-foreground hover:bg-accent-strong focus-visible:outline focus-visible:outline-2 focus-visible:outline-focus disabled:cursor-not-allowed disabled:opacity-60"
             data-testid="editor-apply"
-            disabled={!draft || isApplying}
+            disabled={!draft || isApplying || isAiMutationBusy}
             type="button"
             onClick={() => {
               void handleApply();
             }}
           >
             <Save aria-hidden="true" />
-            {isApplying ? "적용 중" : "적용"}
+            {isApplying ? "크롭·변형 적용 중" : "크롭·변형 적용"}
           </button>
         </div>
       </footer>
@@ -1009,6 +1214,45 @@ export function EditorPanel({
         />
       ) : null}
     </aside>
+  );
+}
+
+export function AiSourceRepairNotice({
+  errorMessage,
+  isRepairing,
+  onRepair,
+}: {
+  errorMessage: string;
+  isRepairing: boolean;
+  onRepair: () => void;
+}) {
+  return (
+    <div className="flex flex-col gap-3 rounded-md border border-danger/30 bg-danger/5 p-3">
+      <div>
+        <p className="text-sm text-danger" role="alert">
+          {errorMessage}
+        </p>
+        <p className="mt-1 text-xs leading-5 text-muted">
+          손상된 AI 소스 연결을 해제하고 보존된 원본 소스로 편집을 다시 열 수
+          있습니다.
+        </p>
+      </div>
+      <button
+        aria-busy={isRepairing}
+        className="inline-flex w-fit items-center gap-2 rounded-md border border-border bg-white px-3 py-2 text-sm font-semibold hover:bg-menu-hover focus-visible:outline focus-visible:outline-2 focus-visible:outline-focus disabled:cursor-wait disabled:opacity-60"
+        data-testid="editor-ai-repair-original"
+        disabled={isRepairing}
+        type="button"
+        onClick={onRepair}
+      >
+        {isRepairing ? (
+          <LoaderCircle aria-hidden="true" className="size-4 animate-spin" />
+        ) : (
+          <RefreshCcw aria-hidden="true" className="size-4" />
+        )}
+        {isRepairing ? "원본 소스로 복구 중" : "원본 소스로 복구"}
+      </button>
+    </div>
   );
 }
 
@@ -2642,10 +2886,12 @@ function clampPanelWidth(width: number) {
 function DraftNumberInput({
   label,
   value,
+  disabled = false,
   onChange,
 }: {
   label: string;
   value: number;
+  disabled?: boolean;
   onChange: (value: number) => void;
 }) {
   const [draft, setDraft] = useState(String(value));
@@ -2659,6 +2905,7 @@ function DraftNumberInput({
       {label}
       <input
         className="select-text rounded-md border border-border bg-white px-3 py-2 text-sm text-foreground focus-visible:outline focus-visible:outline-2 focus-visible:outline-focus"
+        disabled={disabled}
         inputMode="numeric"
         min={1}
         type="number"

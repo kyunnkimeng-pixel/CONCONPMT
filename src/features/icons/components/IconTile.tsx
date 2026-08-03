@@ -15,6 +15,7 @@ interface IconTileProps {
   previewWidth: number;
   previewHeight: number;
   showDetails: boolean;
+  suppressBackgroundLiveRegions?: boolean;
   duplicatePieceIds: Set<string>;
   editRequest: { pieceId: string; requestKey: number } | null;
   validateAltDraft: (pieceId: string, value: string) => string | null;
@@ -39,6 +40,7 @@ export function IconTile({
   previewWidth,
   previewHeight,
   showDetails,
+  suppressBackgroundLiveRegions = false,
   duplicatePieceIds,
   editRequest,
   validateAltDraft,
@@ -80,6 +82,7 @@ export function IconTile({
         icon.iconKind === "placeholder" && "border-dashed",
         isDragging && "opacity-70 shadow-lg",
       )}
+      data-icon-id={icon.id}
       data-testid="icon-tile"
       role="option"
       style={style}
@@ -156,6 +159,7 @@ export function IconTile({
                   <AltInlineEditor
                     ariaLabel={`${icon.displayName} ${pieceLabel(piece)} alt 수정`}
                     compact
+                    suppressLiveRegion={suppressBackgroundLiveRegions}
                     editRequestKey={
                       editRequest?.pieceId === piece.id
                         ? editRequest.requestKey

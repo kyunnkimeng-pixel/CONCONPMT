@@ -1,3 +1,5 @@
+pub mod ai_normalization;
+pub mod ai_transparency;
 pub mod effects;
 pub mod export_render;
 pub mod geometry;

@@ -434,6 +434,7 @@
           <a href="#organize">정리 작업</a>
           <a href="#edit">편집</a>
           <a href="#sheets">작업 시트</a>
+          <a href="#ai-workspace">AI 후보·그리드</a>
           <a href="#context-presets">메뉴와 프리셋</a>
           <a href="#preview">미리보기</a>
           <a href="#export">내보내기</a>
@@ -460,6 +461,7 @@
               <span class="tag">작업 시트</span>
               <span class="tag">GIF 프레임 시트</span>
               <span class="tag">모션 효과</span>
+              <span class="tag">AI 후보 비교·복귀</span>
               <span class="tag">내보내기 검증</span>
             </div>
             <div class="hero-actions">
@@ -493,7 +495,8 @@
             <a href="#gif-sheets">10. GIF 프레임 작업 시트</a>
             <a href="#context-presets">11. 우클릭 메뉴, 메모, 프리셋</a>
             <a href="#auto-detect">12. 자동 감지 실험 기능</a>
-            <a href="#release">13. 릴리스 준비와 파일 보존</a>
+            <a href="#ai-workspace">13. AI 후보·그리드·웹 전달</a>
+            <a href="#release">14. 릴리스 준비와 파일 보존</a>
           </div>
         </section>
 
@@ -501,7 +504,7 @@
           <h2>1. 화면 구성과 탐색</h2>
           <p>
             PMTCONCON Studio는 파일 탐색기처럼 모음을 열고, 아이콘을 격자로 보고, 선택한 항목을 편집하는 구조입니다.
-            상단에는 탐색, 썸네일만, 사용 미리보기, 내보내기, 정렬, 설정, 빈 디시콘, 대표 이미지, 폴더 추가, 이미지 추가가 배치됩니다.
+            상단에는 탐색, 썸네일만, 사용 미리보기, 내보내기, AI 아이콘 만들기, 시트 도구, 정렬, 설정, 빈 디시콘, 대표 이미지, 폴더 추가, 이미지 추가가 배치됩니다.
           </p>
           <figure class="shot">
             <img
@@ -930,6 +933,24 @@
             </figcaption>
           </figure>
 
+          <div class="callout">
+            <strong>웹 AI에는 어떤 파일을 올리나요?</strong>
+            <p>
+              <code>frames_sheet_001.png</code>와 이후 <code>frames_sheet_*.png</code> clean page만
+              한 장씩 올립니다. <code>frames_guide_*.png</code>는 셀 번호·시간을 보는 참고 파일이라
+              올리지 않으며, <code>frames_manifest.json</code>은 timing·순서·반복을 복원하는 앱 전용
+              파일입니다. 같은 내보내기 화면에서 결과를 가져오면 manifest를 다시 선택하지 않아도 되고,
+              앱 재시작이나 별도 교체 화면에서는 수동 manifest 선택을 복구 방법으로 사용합니다.
+            </p>
+            <p>
+              각 clean page의 <strong>이 파일 끌기</strong> 또는 Explorer 선택을 사용하세요. JPG/JPEG나
+              정적 WebP 결과도 exact canvas가 맞으면 불투명 중간 결과로 검토할 수 있지만,
+              <strong>배경 포함으로 계속</strong>을 직접 선택해야 합니다. 그려진 checkerboard는 실제
+              투명이 아니며 앱이 자동 제거하지 않습니다. 생성 AI는 원본 그림체와 frame 간 일관성을
+              보장하지 않으므로 완성 GIF의 깜빡임과 style drift를 꼭 확인하세요.
+            </p>
+          </div>
+
           <div class="table-wrap">
             <table>
               <thead>
@@ -958,7 +979,7 @@
                 <tr>
                   <td>GIF 프레임 시트 교체하기</td>
                   <td>수정된 frame sheet로 새 GIF variant 생성</td>
-                  <td>UI는 교체라고 표시하지만 원본 GIF는 덮어쓰지 않습니다.</td>
+                  <td>manifest의 페이지 파일명·프레임별 시간·once/infinite/finite 반복을 복원하고 원본 GIF는 덮어쓰지 않습니다.</td>
                 </tr>
               </tbody>
             </table>
@@ -1031,10 +1052,105 @@
           </figure>
         </section>
 
-        <section id="release" class="section">
-          <h2>13. 릴리스 준비와 파일 보존</h2>
+        <section id="ai-workspace" class="section">
+          <h2>13. AI 후보·그리드·웹 전달</h2>
           <p>
-            PMTCONCON Studio는 MIT License로 배포되며, 외부 업로드나 로그인 자동화 없이 로컬 파일과 앱 라이브러리에서 작업합니다.
+            편집 패널의 <strong>AI로 수정</strong>은 정적 아이콘 한 개를 비파괴 후보로 가져오는
+            작업공간입니다. 모음 도구의 <strong>AI 아이콘 만들기</strong>는 원본 없이 한 개 또는 최대
+            16개를 만듭니다. 이때 현재 모음 아이콘과 외부 PNG/JPG/GIF를 최대 16개까지
+            참고 board로 함께 준비할 수 있습니다. 정적 단일 아이콘 2–16개를 선택해 우클릭한
+            <strong>선택 N개 AI로 수정</strong>은 한 장의 clean grid로 일괄 편집합니다.
+          </p>
+
+          <div class="grid-3">
+            <div class="panel">
+              <strong>1. 대상과 구조 준비</strong>
+              <p>선택 순서·셀 수·캔버스·투명 배경 규칙을 고정합니다. 일괄 그리드 편집에서 GIF·이중콘·빈 디시콘·비정사각형 셀은 제외되지만, GIF는 편집기의 별도 프레임 시트 AI 흐름을 사용할 수 있습니다.</p>
+            </div>
+            <div class="panel">
+              <strong>2. 웹에 전달</strong>
+              <p>프롬프트를 복사하고 공식 웹을 엽니다. Windows 마우스에서는 입력 파일을 직접 끌고, 키보드·비Windows·호환성 문제에는 탐색기 선택을 사용합니다.</p>
+            </div>
+            <div class="panel">
+              <strong>3. 전체 검토와 저장</strong>
+              <p>내려받은 PNG/JPG를 놓고 전체 시트와 셀 매핑을 확인합니다. 같은 비율의 큰 결과는 경고 후 목표 크기로 로컬 정규화하며, 구조·비율 오류에는 추가할 수정 프롬프트가 표시됩니다.</p>
+            </div>
+          </div>
+
+          <div class="callout">
+            <strong>투명 배경은 권장, 배경 포함 결과는 명시적으로 검토</strong>
+            <p>
+              <strong>AI 아이콘 만들기</strong>는 투명 PNG 또는 WebP를 권장하지만 처음부터 투명을
+              보편적으로 강제하지 않습니다. JPG/JPEG, 정적 WebP 또는 완전 불투명 PNG는
+              <strong>배경 포함으로 계속</strong>을 직접 선택한 경우에만 후보로 진행합니다.
+              <strong>투명 필수</strong>를 고른 요청은 의미 있는 alpha를 계속 검사합니다. 이미지에
+              직접 그린 회색·흰색 checkerboard, 알파 한 픽셀이나 얇은 투명 테두리는 실제 투명으로
+              표시하지 않고 경고합니다. 앱이 checker를 자동 제거해 외곽선을 손상시키지는 않습니다.
+              결과 파일 저장 뒤 셀 분석만 실패했다면 파일을 다시 올리지 말고
+              <strong>결과 다시 분석</strong>을 누르세요.
+            </p>
+          </div>
+          <div class="callout">
+            <strong>전부 또는 없음</strong>
+            <p>
+              선택 아이콘 편집은 모든 셀을 함께 비활성 후보로 저장하며 하나라도 stale/손상되면 전부
+              취소됩니다. 원본 없는 생성은 승인한 셀의 source, icon, piece, crop, AI provenance,
+              순서와 첫 대표 이미지를 한 transaction으로 만들거나 아무것도 만들지 않습니다.
+              어떤 결과도 원본이나 현재 활성 이미지를 자동 교체하지 않습니다.
+            </p>
+          </div>
+
+          <div class="callout">
+            <strong>참고 이미지·GIF와 최근 AI 전달</strong>
+            <p>
+              외부 참고 파일은 합계 16MB, 전체 참고 원본은 1.28억 픽셀로 제한하고 비정사각형 비율을 보존합니다. GIF 참고는 첫 프레임을 사용하며,
+              GIF AI는 clean PNG page만 웹에서 수정하고 앱이 유지한 manifest로 timing·loop를 보존한 별도 버전으로 가져옵니다. 준비한 reference board는
+              사이드바 <strong>최근 AI 전달</strong>에서 다시 끌 수 있습니다. 최근 30건, 만료/닫힘/정리 대기, 결과 수신 여부와
+              단일·그리드 입력/결과를 합친 256MiB 임시 전달 공간을 확인합니다. 앱 시작 시와 앱을 켜 둔 동안 15분마다 만료 정리를
+              다시 시도하며 기록과 원본은 남깁니다.
+            </p>
+          </div>
+
+          <div class="callout">
+            <strong>NovelAI에서는 어떤 방식을 고르나요?</strong>
+            <p>
+              NovelAI는 자연어도 지원하지만 PMTCONCON Studio는 짧은 영문 소문자 태그를 Prompt에,
+              제외 태그를 Undesired Content에 따로 붙이는 흐름을 안내합니다. 1단계 Prompt가 복사된 뒤에만
+              2단계 Undesired Content 버튼이 열리고 요청을 바꾸면 다시 잠깁니다. 기존 단일 아이콘·grid·GIF
+              frame sheet의 배치를 지키려면 <strong>Image2Image</strong>, 그림체·색감은
+              <strong>Vibe Transfer</strong>, V4.5에서 캐릭터 또는 스타일 일관성을 참고하려면
+              <strong>Precise Reference</strong>를 고릅니다. Vibe와 Precise는 동시에 사용하지 않습니다.
+            </p>
+            <p>
+              이미지 생성 화면의 메뉴에서 <strong>Account Settings → Image Settings 탭 → Image Generation → Image Format for Generated Images</strong>를 PNG로 바꿉니다.
+              Download Image로 받은 정적 WebP도 alpha를 보존한 PNG로 변환하지만 animated WebP는 첫 프레임으로 바꾸지 않고 오류로 알립니다.
+              투명 배경이 필요한 작업만 <strong>Director Tools → Remove BG</strong>를 적용하고 alpha가 남은 PNG인지 확인합니다. 배경 포함 작업에는 강제하지 않습니다.
+            </p>
+            <p>
+              NovelAI 웹에서 200×200이 192×192처럼 가까운 지원 크기로 바뀌어도 단일 아이콘은 같은
+              정사각 비율과 사용자가 선택한 배경 정책이 유지되면 앱이 후보로 보존하고 목표 크기로 맞춥니다. grid와 GIF는 파일별 정확한 캔버스가
+              필요합니다. 여러 clean PNG는 한 장씩 같은 Prompt·Strength·Noise·sampler 설정으로 Image2Image 처리하되, 해상도는 앱이 표시한 페이지별 실제 캔버스로 바꾸고 결과는 앱이 유지한 manifest 페이지 슬롯에 직접 연결하세요.
+              NovelAI가 파일명을 바꾸어도 괜찮고 Chrome의 (1) 접미사는 모호하지 않을 때만 자동 인식합니다. manifest 4MB, 최대 500페이지,
+              결과 한 장과 전체 전달 각각 64MB 한도는 읽기 전에 검사합니다. 마지막 부분 페이지는 더 작을 수 있으므로 앱이 표시한 파일명별 크기를 유지하고 GIF 내보내기에서 <strong>NovelAI 웹 호환 GIF / 200x200 / 4x4</strong> 프리셋을
+              적용하세요. 참조 기능은 구독 중에도 Anlas가 들 수 있으므로 생성 버튼의 비용 표시를 확인합니다.
+            </p>
+          </div>
+          <div class="callout">
+            <strong>자동화 경계</strong>
+            <p>
+              앱의 직접 끌기는 검증된 로컬 파일을 운영체제 드래그로 전달하는 기능입니다. 로그인,
+              DOM, cookie, 웹 생성 완료, 자동 다운로드나 결과 품질 판정은 제어하지 않습니다.
+              NovelAI/Gemini API는 세션 키와 별도 비용 동의를 요구하는 제한된 유료 pilot이며 자동
+              재시도하지 않습니다. Gemini 이미지 API에는 무료 등급이 없으므로 비용을 원치 않으면 API 요청을 중단하고 AI Studio 웹에서 현재 계정·모델의 과금 표시를 확인하세요.
+              provider 기반 animated GIF 직접 호출은 포함하지 않지만 수동 프레임 시트 웹 왕복은 지원합니다.
+            </p>
+          </div>
+        </section>
+
+        <section id="release" class="section">
+          <h2>14. 릴리스 준비와 파일 보존</h2>
+          <p>
+            PMTCONCON Studio는 MIT License로 배포되며 로그인·DOM 자동화 없이 로컬 파일과 앱 라이브러리에서 작업합니다. Windows의 검증 파일 끌기나 Explorer 선택으로 업로드 파일을 전달할 수 있지만 웹 생성 실행과 결과 다운로드는 사용자가 직접 수행합니다.
             원본 이미지와 원본 GIF는 보존되고, crop, sheet reimport, GIF frame reimport, 용량 최적화 결과는 별도 생성 파일이나 variant로 저장됩니다.
           </p>
 

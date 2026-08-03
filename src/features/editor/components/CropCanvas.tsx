@@ -25,6 +25,7 @@ interface CropCanvasProps {
   shape: IconShape;
   cellWidth: number;
   cellHeight: number;
+  disabled?: boolean;
   textOverlay?: TextOverlaySettings | null;
   onCropChange: (crop: CropRect) => void;
 }
@@ -46,6 +47,7 @@ export function CropCanvas({
   shape,
   cellWidth,
   cellHeight,
+  disabled = false,
   textOverlay,
   onCropChange,
 }: CropCanvasProps) {
@@ -94,7 +96,10 @@ export function CropCanvas({
   };
 
   return (
-    <div className="overflow-auto rounded-md border border-border bg-preview p-3">
+    <div
+      aria-disabled={disabled}
+      className={`overflow-auto rounded-md border border-border bg-preview p-3 ${disabled ? "cursor-wait opacity-70" : ""}`}
+    >
       <div
         className="relative bg-white"
         data-testid="crop-canvas"
@@ -133,7 +138,7 @@ export function CropCanvas({
             />
             <Rect
               dash={[6, 4]}
-              draggable
+              draggable={!disabled}
               fill="rgba(37, 99, 235, 0.08)"
               height={cropStage.height}
               stroke="#2563eb"
@@ -141,8 +146,8 @@ export function CropCanvas({
               width={cropStage.width}
               x={cropStage.x}
               y={cropStage.y}
-              onDragEnd={updateCropPosition}
-              onDragMove={updateCropPosition}
+              onDragEnd={disabled ? undefined : updateCropPosition}
+              onDragMove={disabled ? undefined : updateCropPosition}
             />
             {shape === "horizontal_double" ? (
               <Line
@@ -173,7 +178,7 @@ export function CropCanvas({
             {cropMode === "free"
               ? handles.map((handle) => (
                   <Circle
-                    draggable
+                    draggable={!disabled}
                     fill="#ffffff"
                     key={handle.id}
                     radius={HANDLE_RADIUS}
@@ -181,11 +186,11 @@ export function CropCanvas({
                     strokeWidth={2}
                     x={handle.x}
                     y={handle.y}
-                    onDragStart={(event) => {
+                    onDragStart={disabled ? undefined : (event) => {
                       event.cancelBubble = true;
                     }}
-                    onDragEnd={updateCropSize(handle.id)}
-                    onDragMove={updateCropSize(handle.id)}
+                    onDragEnd={disabled ? undefined : updateCropSize(handle.id)}
+                    onDragMove={disabled ? undefined : updateCropSize(handle.id)}
                   />
                 ))
               : null}

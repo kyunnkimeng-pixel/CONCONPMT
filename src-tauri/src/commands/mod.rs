@@ -1,3 +1,6 @@
+pub mod ai;
+pub mod ai_grid;
+pub mod ai_handoff;
 pub mod collections;
 pub mod editor;
 pub mod export;
