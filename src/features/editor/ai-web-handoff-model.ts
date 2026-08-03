@@ -4,7 +4,7 @@ import type {
 } from "@/features/editor/types";
 
 export const AI_WEB_HANDOFF_RESULT_ACCEPT =
-  ".jpg,.jpeg,.png,image/jpeg,image/png";
+  ".jpg,.jpeg,.png,.webp,image/jpeg,image/png,image/webp";
 export const AI_WEB_HANDOFF_RESULT_MAX_BYTES = 16 * 1024 * 1024;
 
 export interface AiWebHandoffIssueGuidance {
@@ -91,14 +91,14 @@ function describeKnownAiWebHandoffIssue(
       return {
         problem: issue.message || "지원하지 않는 결과 파일 형식입니다.",
         impact: "결과 이미지를 안전하게 읽고 후보로 보관할 수 없습니다.",
-        fix: "웹에서 결과를 JPG 또는 PNG 파일로 내려받아 다시 놓아 주세요.",
+        fix: "웹에서 Download Image로 받은 PNG, JPG 또는 WebP 파일을 다시 놓아 주세요.",
         correctionPrompt: null,
       };
     case "decode_failed":
       return {
         problem: issue.message || "결과 이미지 파일을 읽을 수 없습니다.",
         impact: "손상되었거나 이미지가 아닌 파일은 후보로 보관할 수 없습니다.",
-        fix: "웹에서 결과를 다시 내려받거나 다른 JPG·PNG 파일을 선택해 주세요.",
+        fix: "웹에서 결과를 다시 내려받거나 다른 PNG·JPG·WebP 파일을 선택해 주세요.",
         correctionPrompt: null,
       };
     case "file_too_large":
@@ -106,7 +106,7 @@ function describeKnownAiWebHandoffIssue(
         problem: issue.message || "결과 이미지가 허용 용량을 초과했습니다.",
         impact:
           "앱의 안전한 이미지 처리 한도를 넘어 결과를 가져오지 않았습니다.",
-        fix: "웹에서 더 작은 해상도나 JPG·PNG 결과로 다시 저장해 주세요.",
+        fix: "웹에서 더 작은 해상도로 다시 생성한 뒤 PNG·JPG·WebP 결과를 저장해 주세요.",
         correctionPrompt: null,
       };
     case "canvas_size_mismatch": {
@@ -193,7 +193,7 @@ function describeKnownAiWebHandoffIssue(
       return {
         problem: issue.message || "가져올 결과 이미지가 없습니다.",
         impact: "검사하거나 후보로 보관할 파일이 없습니다.",
-        fix: "웹에서 JPG·PNG 결과를 내려받아 결과 영역에 놓아 주세요.",
+        fix: "웹에서 Download Image로 PNG·JPG·WebP 결과를 내려받아 결과 영역에 놓아 주세요.",
         correctionPrompt: null,
       };
     default:
@@ -244,23 +244,16 @@ export function selectAiWebHandoffResultFile(
     return {
       file: null,
       error:
-        "웹페이지의 미리보기 주소가 아니라 내려받은 JPG·PNG 파일을 놓아 주세요.",
+        "웹페이지의 미리보기 주소가 아니라 Download Image로 내려받은 PNG·JPG·WebP 파일을 놓아 주세요.",
     };
   }
   if (items.length !== 1) {
     return {
       file: null,
-      error: "현재 전달 결과는 JPG 또는 PNG 파일 한 장만 가져올 수 있습니다.",
+      error: "현재 전달 결과는 내려받은 이미지 파일 한 장만 가져올 수 있습니다.",
     };
   }
   const file = items[0]!;
-  const extension = file.name.split(".").pop()?.toLowerCase() ?? "";
-  if (!["jpg", "jpeg", "png"].includes(extension)) {
-    return {
-      file: null,
-      error: `${file.name}: JPG 또는 PNG 결과 파일만 가져올 수 있습니다.`,
-    };
-  }
   if (file.size > AI_WEB_HANDOFF_RESULT_MAX_BYTES) {
     return {
       file: null,

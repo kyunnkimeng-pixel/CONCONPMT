@@ -844,6 +844,15 @@ sprite 후보를 측정된 `provider_usage`/`estimated_provider_units`, 기준�
 nullable `estimated_cost`와 nullable `provider_reported_cost` 및 일관성 fixture로
 검증한다.
 
+수동 GIF 웹 왕복은 clean `frames_sheet_*.png`만 provider에 전달한다. guide는 사람
+확인용이며 manifest는 앱 전용이다. 같은 export/reimport session은 manifest와 page
+mapping을 자동 재사용하고, restart·별도 reimport·검증 실패 때만 사용자가 manifest를
+고르는 복구 경로를 제공한다. 결과 PNG를 권장하지만 exact page canvas를 만족하는
+JPG/JPEG/static WebP는 `배경 포함으로 계속`을 명시적으로 고른 경우에만 내부 PNG
+중간 결과가 된다. painted checker는 경고하고 자동 제거하지 않는다. 원본 GIF와
+timing/order/loop는 보존하며 provider의 그림체·캐릭터·시간적 일관성을 보장하지 않고
+사람의 최종 animation 검토를 요구한다.
+
 ## 14. 공식 참고 자료
 
 - [NovelAI Image Generation API](https://image.novelai.net/docs/index.html)

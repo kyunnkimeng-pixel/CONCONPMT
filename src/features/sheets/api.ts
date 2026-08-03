@@ -13,6 +13,7 @@ import type {
   FrameSheetGifRequest,
   GifFrameSheetExportAnalysis,
   GifFrameSheetExportResult,
+  GifFrameSheetPageDragResult,
   GifFrameSheetReimportResult,
   GifFrameSheetReimportValidation,
   GifFrameSheetSettings,
@@ -30,6 +31,11 @@ import type {
   SheetGridPresetTarget,
   SheetGridSettings,
 } from "@/features/sheets/types";
+import type { GifFrameTransparencyMode } from "@/features/sheets/gif-frame-reimport-model";
+
+export type GifFrameManifestSource =
+  | { kind: "retained_path"; path: string }
+  | { kind: "manual_file"; file: File };
 
 export async function analyzeSheetGrid(file: File, gridSettings: SheetGridSettings) {
   return invokeCommand<SheetGridAnalysis>("analyze_sheet_grid", {
@@ -181,41 +187,74 @@ export function exportGifFrameSheet(iconId: string, settings: GifFrameSheetSetti
   });
 }
 
-export async function validateGifFrameSheetReimport(
-  manifestFile: File,
-  editedFrameSheetFiles: File[],
+function normalizeGifFrameManifestSource(
+  source: GifFrameManifestSource | File,
+): GifFrameManifestSource {
+  return source instanceof File ? { kind: "manual_file", file: source } : source;
+}
+
+function gifFrameResultBackgroundPolicy(mode: GifFrameTransparencyMode) {
+  return mode === "allow_opaque" ? "allowOpaque" : "preserveTransparency";
+}
+
+async function gifFrameManifestRequestFields(
+  sourceInput: GifFrameManifestSource | File,
 ) {
-  const [manifestPayload, ...editedFrameSheetPayloads] = await filesToImportPayloads([
-    manifestFile,
-    ...editedFrameSheetFiles,
+  const source = normalizeGifFrameManifestSource(sourceInput);
+  if (source.kind === "retained_path") {
+    return { manifestPath: source.path, manifestFile: null };
+  }
+  return {
+    manifestPath: "",
+    manifestFile: await fileToImportPayload(source.file),
+  };
+}
+
+export async function validateGifFrameSheetReimport(
+  manifestSource: GifFrameManifestSource | File,
+  editedFrameSheetFiles: File[],
+  editedFrameSheetPageIndexes: number[] = editedFrameSheetFiles.map(
+    (_, pageIndex) => pageIndex,
+  ),
+  transparencyMode: GifFrameTransparencyMode = "preserve_alpha",
+) {
+  const [manifestFields, editedFrameSheetPayloads] = await Promise.all([
+    gifFrameManifestRequestFields(manifestSource),
+    filesToImportPayloads(editedFrameSheetFiles),
   ]);
   return invokeCommand<GifFrameSheetReimportValidation>("validate_gif_frame_sheet_reimport", {
     request: {
-      manifestPath: "",
-      manifestFile: manifestPayload,
+      ...manifestFields,
       editedFrameSheetFiles: editedFrameSheetPayloads,
       editedFrameSheetPaths: [],
+      editedFrameSheetPageIndexes,
+      resultBackgroundPolicy: gifFrameResultBackgroundPolicy(transparencyMode),
     },
   });
 }
 
 export async function reimportGifFrameSheet(
   targetIconId: string,
-  manifestFile: File,
+  manifestSource: GifFrameManifestSource | File,
   editedFrameSheetFiles: File[],
   setActiveVariant: boolean,
   targetProfileId: string | null,
+  editedFrameSheetPageIndexes: number[] = editedFrameSheetFiles.map(
+    (_, pageIndex) => pageIndex,
+  ),
+  transparencyMode: GifFrameTransparencyMode = "preserve_alpha",
 ) {
-  const [manifestPayload, ...editedFrameSheetPayloads] = await filesToImportPayloads([
-    manifestFile,
-    ...editedFrameSheetFiles,
+  const [manifestFields, editedFrameSheetPayloads] = await Promise.all([
+    gifFrameManifestRequestFields(manifestSource),
+    filesToImportPayloads(editedFrameSheetFiles),
   ]);
   return invokeCommand<GifFrameSheetReimportResult>("reimport_gif_frame_sheet", {
     request: {
-      manifestPath: "",
-      manifestFile: manifestPayload,
+      ...manifestFields,
       editedFrameSheetFiles: editedFrameSheetPayloads,
       editedFrameSheetPaths: [],
+      editedFrameSheetPageIndexes,
+      resultBackgroundPolicy: gifFrameResultBackgroundPolicy(transparencyMode),
       targetIconId,
       createVariant: true,
       setActiveVariant,
@@ -224,6 +263,25 @@ export async function reimportGifFrameSheet(
   });
 }
 
+export function startGifFrameSheetPageDrag(
+  manifestPath: string,
+  pageIndex: number,
+) {
+  return invokeCommand<GifFrameSheetPageDragResult>(
+    "start_gif_frame_sheet_page_drag",
+    { manifestPath, pageIndex },
+  );
+}
+
+export function revealGifFrameSheetPage(
+  manifestPath: string,
+  pageIndex: number,
+) {
+  return invokeCommand<void>("reveal_gif_frame_sheet_page", {
+    manifestPath,
+    pageIndex,
+  });
+}
 export function listSheetGridPresets(collectionId: string | null) {
   return invokeCommand<SheetGridPreset[]>("list_sheet_grid_presets", {
     collectionId,

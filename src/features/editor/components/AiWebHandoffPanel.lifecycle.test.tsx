@@ -121,6 +121,14 @@ function testId<T extends HTMLElement>(container: HTMLElement, value: string) {
   return element;
 }
 
+function buttonWithText(container: HTMLElement, text: string) {
+  const button = [...container.querySelectorAll<HTMLButtonElement>("button")].find(
+    (candidate) => candidate.textContent?.includes(text),
+  );
+  if (!button) throw new Error(`Missing button containing text=${text}`);
+  return button;
+}
+
 function setControlValue(
   element: HTMLTextAreaElement | HTMLSelectElement,
   value: string,
@@ -205,8 +213,34 @@ describe("AiWebHandoffPanel lifecycle", () => {
     await flushEffects();
   }
 
+  async function prepareNovelAiHandoff(panelProps: AiWebHandoffPanelProps) {
+    await renderPanel(panelProps);
+    await act(async () => {
+      setControlValue(
+        testId<HTMLSelectElement>(container, "ai-web-handoff-service"),
+        "novelai_web",
+      );
+      setControlValue(
+        testId<HTMLTextAreaElement>(container, "ai-web-handoff-request"),
+        "brighter smile",
+      );
+    });
+    await act(async () => {
+      testId<HTMLButtonElement>(container, "ai-web-handoff-prepare").click();
+      await Promise.resolve();
+    });
+    await flushEffects();
+    expect(
+      testId<HTMLElement>(container, "novelai-copy-state-single_edit")
+        .textContent,
+    ).toContain("1/2 완료");
+  }
+
   it("restores the latest live handoff and its service", async () => {
-    const restored = session({ serviceSurface: "novelai_web" });
+    const restored = session({
+      serviceSurface: "novelai_web",
+      finalPrompt: "single image, square canvas, icon, brighter smile",
+    });
     const onRestoreLatest = vi.fn().mockResolvedValue(restored);
 
     await renderPanel(props({ onRestoreLatest }));
@@ -218,6 +252,223 @@ describe("AiWebHandoffPanel lifecycle", () => {
     expect(
       testId<HTMLSelectElement>(container, "ai-web-handoff-service").value,
     ).toBe("novelai_web");
+    expect(
+      container.querySelector('[data-testid="novelai-web-guide-single_edit"]'),
+    ).not.toBeNull();
+    expect(container.textContent).toContain("Image2Image");
+    expect(container.textContent).toContain("192×192");
+    expect(container.textContent).toContain("NovelAI Prompt (태그)");
+    expect(container.textContent).toContain("1/2 Prompt");
+    expect(
+      testId<HTMLButtonElement>(
+        container,
+        "novelai-copy-undesired-single_edit",
+      ).disabled,
+    ).toBe(true);
+  });
+
+  it("unlocks Undesired Content only after the NovelAI Prompt copy succeeds", async () => {
+    const prepared = session({
+      serviceSurface: "novelai_web",
+      finalPrompt: "single image, square canvas, icon, brighter smile",
+    });
+    await renderPanel(
+      props({
+        onPrepare: vi.fn().mockResolvedValue(prepared),
+        onOpenSite: vi.fn().mockResolvedValue(undefined),
+      }),
+    );
+
+    await act(async () => {
+      setControlValue(
+        testId<HTMLSelectElement>(container, "ai-web-handoff-service"),
+        "novelai_web",
+      );
+      setControlValue(
+        testId<HTMLTextAreaElement>(container, "ai-web-handoff-request"),
+        "brighter smile",
+      );
+    });
+    expect(
+      testId<HTMLButtonElement>(
+        container,
+        "novelai-copy-undesired-single_edit",
+      ).disabled,
+    ).toBe(true);
+
+    await act(async () => {
+      testId<HTMLButtonElement>(container, "ai-web-handoff-prepare").click();
+      await Promise.resolve();
+    });
+    await flushEffects();
+
+    expect(
+      testId<HTMLElement>(container, "novelai-copy-state-single_edit")
+        .textContent,
+    ).toContain("1/2 완료");
+    expect(
+      testId<HTMLButtonElement>(
+        container,
+        "novelai-copy-undesired-single_edit",
+      ).disabled,
+    ).toBe(false);
+  });
+
+  it("keeps stale prepared prompt recopy disabled and NovelAI Undesired Content locked after the draft changes", async () => {
+    const restored = session({
+      serviceSurface: "gemini_web",
+      finalPrompt: "GEMINI STRUCTURE\n사용자 편집 요청:\n웃게",
+    });
+
+    await renderPanel(
+      props({ onRestoreLatest: vi.fn().mockResolvedValue(restored) }),
+    );
+
+    await act(async () => {
+      setControlValue(
+        testId<HTMLSelectElement>(container, "ai-web-handoff-service"),
+        "novelai_web",
+      );
+      setControlValue(
+        testId<HTMLTextAreaElement>(container, "ai-web-handoff-request"),
+        "brighter smile",
+      );
+    });
+
+    expect(buttonWithText(container, "프롬프트 다시 복사").disabled).toBe(
+      true,
+    );
+    expect(
+      testId<HTMLElement>(container, "novelai-copy-state-single_edit")
+        .textContent,
+    ).toContain("현재 1/2");
+    expect(
+      testId<HTMLButtonElement>(
+        container,
+        "novelai-copy-undesired-single_edit",
+      ).disabled,
+    ).toBe(true);
+    expect(navigator.clipboard.writeText).not.toHaveBeenCalled();
+  });
+
+  it("ignores a delayed prompt copy completion after the current draft changes", async () => {
+    const prepared = session({
+      serviceSurface: "novelai_web",
+      finalPrompt: "single image, square canvas, icon, brighter smile",
+    });
+    let resolveDelayedCopy: (() => void) | undefined;
+    const delayedCopy = new Promise<void>((resolve) => {
+      resolveDelayedCopy = resolve;
+    });
+    vi.mocked(navigator.clipboard.writeText)
+      .mockResolvedValueOnce(undefined)
+      .mockImplementationOnce(() => delayedCopy);
+
+    await renderPanel(
+      props({
+        onPrepare: vi.fn().mockResolvedValue(prepared),
+        onOpenSite: vi.fn().mockResolvedValue(undefined),
+      }),
+    );
+
+    await act(async () => {
+      setControlValue(
+        testId<HTMLSelectElement>(container, "ai-web-handoff-service"),
+        "novelai_web",
+      );
+      setControlValue(
+        testId<HTMLTextAreaElement>(container, "ai-web-handoff-request"),
+        "brighter smile",
+      );
+      testId<HTMLButtonElement>(container, "ai-web-handoff-prepare").click();
+      await Promise.resolve();
+    });
+    await flushEffects();
+
+    expect(
+      testId<HTMLElement>(container, "novelai-copy-state-single_edit")
+        .textContent,
+    ).toContain("1/2 완료");
+
+    await act(async () => {
+      buttonWithText(container, "프롬프트 다시 복사").click();
+      await Promise.resolve();
+    });
+    expect(navigator.clipboard.writeText).toHaveBeenCalledTimes(2);
+
+    await act(async () => {
+      setControlValue(
+        testId<HTMLTextAreaElement>(container, "ai-web-handoff-request"),
+        "sad expression",
+      );
+    });
+    await act(async () => {
+      resolveDelayedCopy?.();
+      await delayedCopy;
+    });
+    await flushEffects();
+
+    expect(
+      testId<HTMLElement>(container, "novelai-copy-state-single_edit")
+        .textContent,
+    ).toContain("현재 1/2");
+    expect(
+      testId<HTMLButtonElement>(
+        container,
+        "novelai-copy-undesired-single_edit",
+      ).disabled,
+    ).toBe(true);
+  });
+
+  it("keeps the prepared card and does not open the site when prompt copy fails", async () => {
+    const onOpenSite = vi.fn().mockResolvedValue(undefined);
+    const onAnnouncement = vi.fn();
+    const execCommandDescriptor = Object.getOwnPropertyDescriptor(
+      document,
+      "execCommand",
+    );
+    Object.defineProperty(document, "execCommand", {
+      configurable: true,
+      value: vi.fn(() => false),
+    });
+    vi.mocked(navigator.clipboard.writeText).mockRejectedValueOnce(
+      new Error("clipboard denied"),
+    );
+
+    try {
+      await renderPanel(props({ onOpenSite, onAnnouncement }));
+      await act(async () => {
+        setControlValue(
+          testId<HTMLTextAreaElement>(container, "ai-web-handoff-request"),
+          "더 밝게",
+        );
+      });
+      await act(async () => {
+        testId<HTMLButtonElement>(container, "ai-web-handoff-prepare").click();
+        await Promise.resolve();
+      });
+      await flushEffects();
+
+      expect(onOpenSite).not.toHaveBeenCalled();
+      expect(
+        testId<HTMLElement>(container, "ai-web-handoff-copy-status")
+          .textContent,
+      ).toContain("직접 복사 필요");
+      expect(onAnnouncement).toHaveBeenCalledWith(
+        expect.stringContaining("자동 복사에 실패"),
+        "error",
+      );
+      expect(onAnnouncement).not.toHaveBeenCalledWith(
+        expect.stringContaining("공식 웹사이트를 열었습니다"),
+        "status",
+      );
+    } finally {
+      if (execCommandDescriptor) {
+        Object.defineProperty(document, "execCommand", execCommandDescriptor);
+      } else {
+        Reflect.deleteProperty(document, "execCommand");
+      }
+    }
   });
 
   it("leaves no active card when there is no latest handoff", async () => {
@@ -249,16 +500,41 @@ describe("AiWebHandoffPanel lifecycle", () => {
     ).toBeNull();
   });
 
-  it("marks a restored package as mismatched when the current draft is unknown", async () => {
+  it("resumes an untouched restored NovelAI copy flow and locks it after an edit", async () => {
+    const restored = session({
+      serviceSurface: "novelai_web",
+      finalPrompt: "single image, square canvas, icon, brighter smile",
+    });
     await renderPanel(
-      props({ onRestoreLatest: vi.fn().mockResolvedValue(session()) }),
+      props({ onRestoreLatest: vi.fn().mockResolvedValue(restored) }),
     );
 
     expect(
       container.querySelector(
         '[data-testid="ai-web-handoff-draft-changed"]',
       ),
-    ).not.toBeNull();
+    ).toBeNull();
+    const recopy = buttonWithText(container, "프롬프트 다시 복사");
+    expect(recopy.disabled).toBe(false);
+
+    await act(async () => {
+      recopy.click();
+      await Promise.resolve();
+    });
+    await flushEffects();
+    expect(navigator.clipboard.writeText).toHaveBeenCalledWith(
+      restored.finalPrompt,
+    );
+    expect(
+      testId<HTMLElement>(container, "novelai-copy-state-single_edit")
+        .textContent,
+    ).toContain("1/2 완료");
+    expect(
+      testId<HTMLButtonElement>(
+        container,
+        "novelai-copy-undesired-single_edit",
+      ).disabled,
+    ).toBe(false);
 
     await act(async () => {
       setControlValue(
@@ -272,6 +548,13 @@ describe("AiWebHandoffPanel lifecycle", () => {
         '[data-testid="ai-web-handoff-draft-changed"]',
       ),
     ).not.toBeNull();
+    expect(buttonWithText(container, "프롬프트 다시 복사").disabled).toBe(true);
+    expect(
+      testId<HTMLButtonElement>(
+        container,
+        "novelai-copy-undesired-single_edit",
+      ).disabled,
+    ).toBe(true);
   });
 
   it("replaces the active card when prepare supersedes the previous package", async () => {
@@ -313,6 +596,118 @@ describe("AiWebHandoffPanel lifecycle", () => {
         '[data-testid="ai-web-handoff-draft-changed"]',
       ),
     ).toBeNull();
+  });
+
+  it("resets the NovelAI prompt sequence after deleting a copied handoff", async () => {
+    const prepared = session({
+      serviceSurface: "novelai_web",
+      finalPrompt: "single image, square canvas, icon, brighter smile",
+    });
+    const onDeleteSession = vi.fn().mockResolvedValue({
+      sessionClosed: true,
+      payloadDeleted: true,
+      cleanupDeferred: false,
+    });
+    await prepareNovelAiHandoff(
+      props({
+        onPrepare: vi.fn().mockResolvedValue(prepared),
+        onDeleteSession,
+      }),
+    );
+
+    await act(async () => {
+      testId<HTMLButtonElement>(container, "ai-web-handoff-delete").click();
+      await Promise.resolve();
+    });
+    await flushEffects();
+
+    expect(onDeleteSession).toHaveBeenCalledWith("ai_request_test");
+    expect(
+      testId<HTMLElement>(container, "novelai-copy-state-single_edit")
+        .textContent,
+    ).toContain("현재 1/2");
+    expect(
+      testId<HTMLButtonElement>(
+        container,
+        "novelai-copy-undesired-single_edit",
+      ).disabled,
+    ).toBe(true);
+  });
+
+  it("resets the NovelAI prompt sequence after an accepted result closes the handoff", async () => {
+    const prepared = session({
+      serviceSurface: "novelai_web",
+      finalPrompt: "single image, square canvas, icon, brighter smile",
+    });
+    const onCommitResult = vi.fn().mockResolvedValue(acceptedInspection());
+    await prepareNovelAiHandoff(
+      props({
+        onPrepare: vi.fn().mockResolvedValue(prepared),
+        onCommitResult,
+      }),
+    );
+    const file = new File([new Uint8Array([137, 80, 78, 71])], "result.png", {
+      type: "image/png",
+    });
+
+    await act(async () => {
+      dropFiles(
+        testId<HTMLDivElement>(container, "ai-web-handoff-result-drop"),
+        [file],
+      );
+      await Promise.resolve();
+    });
+    await flushEffects();
+
+    expect(onCommitResult).toHaveBeenCalledWith("ai_request_test", file);
+    expect(
+      testId<HTMLElement>(container, "novelai-copy-state-single_edit")
+        .textContent,
+    ).toContain("현재 1/2");
+    expect(
+      testId<HTMLButtonElement>(
+        container,
+        "novelai-copy-undesired-single_edit",
+      ).disabled,
+    ).toBe(true);
+  });
+
+  it("resets the NovelAI prompt sequence when delete reports a closed session", async () => {
+    const prepared = session({
+      serviceSurface: "novelai_web",
+      finalPrompt: "single image, square canvas, icon, brighter smile",
+    });
+    const terminalError = new CommandError(
+      "ai_handoff_closed",
+      "이 웹 전달은 이미 닫혔습니다.",
+    );
+    const onDeleteSession = vi.fn().mockRejectedValue(terminalError);
+    await prepareNovelAiHandoff(
+      props({
+        onPrepare: vi.fn().mockResolvedValue(prepared),
+        onDeleteSession,
+      }),
+    );
+
+    await act(async () => {
+      testId<HTMLButtonElement>(container, "ai-web-handoff-delete").click();
+      await Promise.resolve();
+    });
+    await flushEffects();
+
+    expect(
+      container.querySelector('[data-testid="ai-web-handoff-ready"]'),
+    ).toBeNull();
+    expect(
+      testId<HTMLElement>(container, "novelai-copy-state-single_edit")
+        .textContent,
+    ).toContain("현재 1/2");
+    expect(
+      testId<HTMLButtonElement>(
+        container,
+        "novelai-copy-undesired-single_edit",
+      ).disabled,
+    ).toBe(true);
   });
 
   it("closes the card and announces typed deferred payload cleanup", async () => {
@@ -478,5 +873,45 @@ describe("AiWebHandoffPanel lifecycle", () => {
         "#ai-web-handoff-correction-prompt",
       )?.value,
     ).toContain("Keep the canvas exactly 200×200px.");
+  });
+  it("clears the previously inspected filename after a later multi-file selection is rejected", async () => {
+    const onCommitResult = vi.fn().mockResolvedValue(blockingInspection());
+    await renderPanel(
+      props({
+        onRestoreLatest: vi.fn().mockResolvedValue(session()),
+        onCommitResult,
+      }),
+    );
+    const first = new File([new Uint8Array([137, 80, 78, 71])], "result.png", {
+      type: "image/png",
+    });
+    const second = new File([new Uint8Array([137, 80, 78, 71])], "other.png", {
+      type: "image/png",
+    });
+
+    await act(async () => {
+      dropFiles(
+        testId<HTMLDivElement>(container, "ai-web-handoff-result-drop"),
+        [first],
+      );
+      await Promise.resolve();
+    });
+    await flushEffects();
+
+    expect(container.textContent).toContain("검사한 파일: result.png");
+    expect(onCommitResult).toHaveBeenCalledOnce();
+
+    await act(async () => {
+      dropFiles(
+        testId<HTMLDivElement>(container, "ai-web-handoff-result-drop"),
+        [first, second],
+      );
+    });
+
+    expect(container.textContent).not.toContain("검사한 파일: result.png");
+    expect(container.querySelector('[role="alert"]')?.textContent).toContain(
+      "이미지 파일 한 장만",
+    );
+    expect(onCommitResult).toHaveBeenCalledOnce();
   });
 });

@@ -7,6 +7,7 @@ import type {
   RefObject,
 } from "react";
 import {
+  AlertTriangle,
   CheckCircle2,
   Copy,
   ExternalLink,
@@ -18,6 +19,11 @@ import {
   X,
 } from "lucide-react";
 
+import {
+  NovelAiWebGuide,
+  type NovelAiPromptCopyOutcome,
+} from "@/features/ai-web/components/NovelAiWebGuide";
+import { needsNovelAiEnglishInputHint } from "@/features/ai-web/novelai-web-model";
 import {
   analyzeAiGridOutput,
   attachAiGridOutput,
@@ -32,14 +38,20 @@ import {
   revealAiGridInput,
   startAiGridInputDrag,
 } from "@/features/ai-grid/api";
-import { buildAiGridCorrectionPrompt } from "@/features/ai-grid/ai-grid-correction";
+import {
+  buildAiGridCorrectionPrompt,
+  buildAiGridMissingAlphaCorrectionPrompt,
+} from "@/features/ai-grid/ai-grid-correction";
 import {
   aiGridStepForStatus,
   buildAiGridPrompt,
   defaultResultMapping,
   reviewDecisions,
+  selectAiGridResultFile,
   sheetSettingsFromLayout,
   validateReviewDecisions,
+  type AiGridResultBackgroundPolicy,
+  type AiGridWebService,
 } from "@/features/ai-grid/ai-grid-workspace-model";
 import type {
   AiGridWorkspace,
@@ -56,12 +68,10 @@ import type {
   SheetGridAnalysis,
   SheetGridSettings,
 } from "@/features/sheets/types";
-import { getCommandErrorMessage } from "@/lib/tauri";
+import { CommandError, getCommandErrorMessage } from "@/lib/tauri";
 import { useModalFocus } from "@/lib/use-modal-focus";
 
 export type AiGridWorkspaceMode = "edit" | "generate";
-type AiGridWebService = "gemini_web" | "novelai_web";
-
 interface FinalizedDraft {
   displayName: string;
   altText: string;
@@ -84,6 +94,7 @@ export function AiGridWorkspaceDialog({
 }) {
   const dialogRef = useRef<HTMLDivElement>(null);
   const promptRef = useRef<HTMLTextAreaElement>(null);
+  const promptCopyGenerationRef = useRef(0);
   useModalFocus(dialogRef, onClose);
 
   const selectedIcons = useMemo(() => {
@@ -118,6 +129,12 @@ export function AiGridWorkspaceDialog({
   const [referenceIconIds, setReferenceIconIds] = useState<string[]>([]);
   const [referenceFiles, setReferenceFiles] = useState<File[]>([]);
   const [service, setService] = useState<AiGridWebService>("gemini_web");
+  const [resultBackgroundPolicy, setResultBackgroundPolicy] =
+    useState<AiGridResultBackgroundPolicy>("preserve_transparency");
+  const [pendingOpaqueResultFile, setPendingOpaqueResultFile] =
+    useState<File | null>(null);
+  const [backgroundReviewConfirmed, setBackgroundReviewConfirmed] =
+    useState(false);
   const [analysis, setAnalysis] = useState<SheetGridAnalysis | null>(null);
   const [reviewSettings, setReviewSettings] =
     useState<SheetGridSettings | null>(null);
@@ -136,6 +153,10 @@ export function AiGridWorkspaceDialog({
     useState(false);
   const [message, setMessage] = useState<string | null>(null);
   const [errorMessage, setErrorMessage] = useState<string | null>(null);
+  const [isMissingAlphaResult, setIsMissingAlphaResult] = useState(false);
+  const [promptCopyOutcome, setPromptCopyOutcome] =
+    useState<NovelAiPromptCopyOutcome>("idle");
+  const [promptCopyRevision, setPromptCopyRevision] = useState(0);
 
   const initializeFinalizedDrafts = useCallback(
     (nextWorkspace: AiGridWorkspace) => {
@@ -159,16 +180,17 @@ export function AiGridWorkspaceDialog({
   const loadReview = useCallback(async (nextWorkspace: AiGridWorkspace) => {
     if (!nextWorkspace.outputArtifact) return;
     const settings = sheetSettingsFromLayout(nextWorkspace.layout);
+    setReviewSettings(settings);
+    setAnalysis(null);
+    setIncludedItemIndexes(
+      new Set(nextWorkspace.items.map((item) => item.itemIndex)),
+    );
     const nextAnalysis = await analyzeAiGridOutput(
       nextWorkspace.requestId,
       settings,
     );
-    setReviewSettings(settings);
     setAnalysis(nextAnalysis);
     setMapping(defaultResultMapping(nextWorkspace, nextAnalysis.cells));
-    setIncludedItemIndexes(
-      new Set(nextWorkspace.items.map((item) => item.itemIndex)),
-    );
   }, []);
 
   useEffect(() => {
@@ -182,6 +204,13 @@ export function AiGridWorkspaceDialog({
         setTargetCount(existing.itemCount);
         setUserPrompt("");
         setService("gemini_web");
+        setResultBackgroundPolicy(
+          existing.outputArtifact && !existing.outputArtifact.hasAlpha
+            ? "allow_opaque"
+            : "preserve_transparency",
+        );
+        setPendingOpaqueResultFile(null);
+        setBackgroundReviewConfirmed(false);
         setIsRestoredWorkspace(true);
         setRestoredDeliveryConfirmed(false);
         setTargetNames(
@@ -216,7 +245,7 @@ export function AiGridWorkspaceDialog({
       : "generate"
     : mode;
   const finalPrompt = workspace
-    ? buildAiGridPrompt(workspace, userPrompt)
+    ? buildAiGridPrompt(workspace, userPrompt, service, resultBackgroundPolicy)
     : "";
   const hasBlankTargetName =
     effectiveMode === "generate" &&
@@ -272,13 +301,25 @@ export function AiGridWorkspaceDialog({
     ].includes(workspace.status);
   const correctionPrompt =
     workspace && analysis
-      ? buildAiGridCorrectionPrompt(workspace, analysis)
+      ? buildAiGridCorrectionPrompt(
+          workspace,
+          analysis,
+          resultBackgroundPolicy,
+        )
       : null;
+  const missingAlphaCorrectionPrompt =
+    buildAiGridMissingAlphaCorrectionPrompt();
   const generationItems =
     workspace?.items.filter(
       (item) =>
         item.outputCandidateId && item.reviewStatus !== "excluded",
     ) ?? [];
+  const needsGenerationBackgroundConfirmation = Boolean(
+    workspace &&
+      workspace.requestScope !== "grid_edit" &&
+      (workspace.outputArtifact || workspace.candidateCount > 0) &&
+      !backgroundReviewConfirmed,
+  );
 
   const updateTargetCount = (count: number) => {
     const bounded = Math.min(16, Math.max(1, Math.round(count)));
@@ -301,6 +342,7 @@ export function AiGridWorkspaceDialog({
     setIsWorking(true);
     setMessage(null);
     setErrorMessage(null);
+    setIsMissingAlphaResult(false);
     try {
       const prepared =
         effectiveMode === "edit"
@@ -339,6 +381,22 @@ export function AiGridWorkspaceDialog({
     }
   };
 
+  const resetPromptCopySequence = () => {
+    promptCopyGenerationRef.current += 1;
+    setPromptCopyOutcome("idle");
+    setPromptCopyRevision((revision) => revision + 1);
+  };
+
+  const publishPromptCopy = (
+    outcome: NovelAiPromptCopyOutcome,
+    copyGeneration: number,
+  ) => {
+    if (copyGeneration !== promptCopyGenerationRef.current) return false;
+    setPromptCopyOutcome(outcome);
+    setPromptCopyRevision((revision) => revision + 1);
+    return true;
+  };
+
   const copyPrompt = async () => {
     if (!finalPrompt) return false;
     if (needsRestoredDeliveryConfirmation) {
@@ -347,20 +405,31 @@ export function AiGridWorkspaceDialog({
       );
       return false;
     }
+    setMessage(null);
+    setErrorMessage(null);
+    const copyGeneration = ++promptCopyGenerationRef.current;
     try {
       await navigator.clipboard.writeText(finalPrompt);
-      setMessage("그리드 구조가 포함된 프롬프트를 복사했습니다.");
+      if (!publishPromptCopy("copied", copyGeneration)) return false;
+      setMessage(
+        service === "novelai_web"
+          ? "NovelAI Prompt용 태그와 짧은 구조 문장을 복사했습니다."
+          : "그리드 구조가 포함된 프롬프트를 복사했습니다.",
+      );
       return true;
     } catch {
+      if (copyGeneration !== promptCopyGenerationRef.current) return false;
       const textarea = promptRef.current;
       if (textarea) {
         textarea.focus();
         textarea.select();
         if (document.execCommand("copy")) {
+          if (!publishPromptCopy("copied", copyGeneration)) return false;
           setMessage("프롬프트를 선택 영역에서 복사했습니다.");
           return true;
         }
       }
+      if (!publishPromptCopy("failed", copyGeneration)) return false;
       setErrorMessage(
         "프롬프트 자동 복사에 실패했습니다. 아래 내용을 직접 복사해 주세요.",
       );
@@ -376,6 +445,18 @@ export function AiGridWorkspaceDialog({
     } catch {
       setErrorMessage(
         "교정 프롬프트 자동 복사에 실패했습니다. 아래 내용을 직접 선택해 복사해 주세요.",
+      );
+    }
+  };
+
+  const copyMissingAlphaCorrectionPrompt = async () => {
+    try {
+      await navigator.clipboard.writeText(missingAlphaCorrectionPrompt);
+      setMessage("실제 투명 PNG를 다시 요청할 수정 프롬프트를 복사했습니다.");
+      setErrorMessage(null);
+    } catch {
+      setErrorMessage(
+        "투명 배경 수정 프롬프트를 자동 복사하지 못했습니다. 아래 내용을 직접 선택해 복사해 주세요.",
       );
     }
   };
@@ -411,6 +492,31 @@ export function AiGridWorkspaceDialog({
     }
   };
 
+  const openSelectedWebSite = async () => {
+    if (!workspace || isWorking) return;
+    setIsWorking(true);
+    setMessage(null);
+    setErrorMessage(null);
+    try {
+      if (workspace.status === "prepared") {
+        const awaiting = await markAiGridWorkspaceAwaitingResult(
+          workspace.requestId,
+        );
+        setWorkspace(awaiting);
+      }
+      await openAiOfficialResource(
+        service === "gemini_web" ? "gemini_ai_studio" : "novelai_app",
+      );
+      setMessage(
+        "공식 웹사이트만 열었습니다. 아래 프롬프트를 직접 복사하고, NovelAI라면 Undesired Content도 별도로 복사하세요.",
+      );
+    } catch (error) {
+      setErrorMessage(getCommandErrorMessage(error));
+    } finally {
+      setIsWorking(false);
+    }
+  };
+
   const runInputAction = async (action: "drag" | "reveal") => {
     if (!workspace || isWorking) return;
     setIsWorking(true);
@@ -431,37 +537,80 @@ export function AiGridWorkspaceDialog({
     }
   };
 
-  const acceptResultFile = async (file: File | null) => {
+  const acceptResultFile = async (file: File | null, allowOpaqueOverride?: boolean) => {
     if (!workspace || !file || isWorking) return;
     setIsWorking(true);
     setMessage(null);
     setErrorMessage(null);
+    setIsMissingAlphaResult(false);
+    setPendingOpaqueResultFile(null);
     try {
-      const attached = await attachAiGridOutput(
-        workspace.requestId,
-        file,
-      );
+      let attached: AiGridWorkspace;
+      try {
+        attached = await attachAiGridOutput(
+          workspace.requestId,
+          file,
+          allowOpaqueOverride ?? resultBackgroundPolicy === "allow_opaque",
+        );
+      } catch (error) {
+        if (
+          error instanceof CommandError &&
+          error.code === "ai_grid_output_alpha_required"
+        ) {
+          setIsMissingAlphaResult(true);
+          setPendingOpaqueResultFile(file);
+          setErrorMessage(null);
+        } else {
+          setErrorMessage(getCommandErrorMessage(error));
+        }
+        return;
+      }
+      setPendingOpaqueResultFile(null);
       setWorkspace(attached);
-      await loadReview(attached);
+      setBackgroundReviewConfirmed(false);
       setStep(4);
-      setMessage(
-        "결과 시트를 보관하고 셀 검토를 준비했습니다. 아직 후보나 새 아이콘은 만들지 않았습니다.",
-      );
-    } catch (error) {
-      setErrorMessage(getCommandErrorMessage(error));
+      try {
+        await loadReview(attached);
+        setMessage(
+          "결과 시트를 보관하고 셀 검토를 준비했습니다. 아직 후보나 새 아이콘은 만들지 않았습니다.",
+        );
+      } catch (error) {
+        setErrorMessage(getCommandErrorMessage(error));
+      }
     } finally {
       setIsWorking(false);
     }
   };
 
+  const acceptResultFiles = (files: Iterable<File> | ArrayLike<File>) => {
+    if (!workspace || isWorking) return;
+    const selected = selectAiGridResultFile(files, workspace.requestScope);
+    setMessage(null);
+    setErrorMessage(selected.error);
+    if (!selected.file) return;
+    void acceptResultFile(selected.file);
+  };
+
+  const continueWithOpaqueBackground = () => {
+    const file = pendingOpaqueResultFile;
+    if (!file || isWorking) return;
+    setResultBackgroundPolicy("allow_opaque");
+    resetPromptCopySequence();
+    void acceptResultFile(file, true);
+  };
+
   const refreshAnalysis = async () => {
-    if (!workspace || !reviewSettings || isWorking) return;
+    if (!workspace || isWorking) return;
+    const settings =
+      reviewSettings ?? sheetSettingsFromLayout(workspace.layout);
+    setReviewSettings(settings);
     setIsWorking(true);
+    setMessage(null);
     setErrorMessage(null);
     try {
       const nextAnalysis = await analyzeAiGridOutput(
         workspace.requestId,
-        reviewSettings,
+        settings,
       );
       setAnalysis(nextAnalysis);
       setMapping(defaultResultMapping(workspace, nextAnalysis.cells));
@@ -473,6 +622,12 @@ export function AiGridWorkspaceDialog({
   };
 
   const saveReview = async () => {
+    if (needsGenerationBackgroundConfirmation) {
+      setErrorMessage(
+        "후보를 저장하기 전에 배경 상태와 가짜 체커무늬 여부를 직접 확인해 주세요.",
+      );
+      return;
+    }
     if (!workspace || reviewError || isWorking) return;
     setIsWorking(true);
     setMessage(null);
@@ -503,6 +658,12 @@ export function AiGridWorkspaceDialog({
 
   const createGeneratedIcons = async () => {
     if (!workspace || isWorking) return;
+    if (needsGenerationBackgroundConfirmation) {
+      setErrorMessage(
+        "새 아이콘을 만들기 전에 후보 배경 상태와 가짜 체커무늬 여부를 다시 확인해 주세요.",
+      );
+      return;
+    }
     const finalizedItems: FinalizeGeneratedIconInput[] =
       generationItems.map((item) => ({
         itemIndex: item.itemIndex,
@@ -550,6 +711,10 @@ export function AiGridWorkspaceDialog({
     setReferenceIconIds([]);
     setReferenceFiles([]);
     setService("gemini_web");
+    setResultBackgroundPolicy("preserve_transparency");
+    setPendingOpaqueResultFile(null);
+    setBackgroundReviewConfirmed(false);
+    resetPromptCopySequence();
     setAnalysis(null);
     setReviewSettings(null);
     setMapping(new Map());
@@ -557,6 +722,7 @@ export function AiGridWorkspaceDialog({
     setFinalizedDrafts({});
     setIsRestoredWorkspace(false);
     setRestoredDeliveryConfirmed(false);
+    setIsMissingAlphaResult(false);
     setErrorMessage(null);
     setMessage("기존 요청을 취소했습니다. 새 작업을 준비할 수 있습니다.");
   };
@@ -629,7 +795,7 @@ export function AiGridWorkspaceDialog({
   const handleResultDrop = (event: DragEvent<HTMLDivElement>) => {
     event.preventDefault();
     setIsDraggingResult(false);
-    void acceptResultFile(event.dataTransfer.files[0] ?? null);
+    acceptResultFiles(event.dataTransfer.files);
   };
 
   if (isLoading) {
@@ -900,12 +1066,14 @@ export function AiGridWorkspaceDialog({
               원하는 수정·생성 내용
               <textarea
                 className="min-h-24 rounded-md border border-border bg-white px-3 py-2 text-sm"
+                disabled={isWorking}
                 maxLength={2000}
                 placeholder="예: 같은 캐릭터를 픽셀 아트로, 표정은 각 셀마다 다르게"
                 value={userPrompt}
-                onChange={(event) =>
-                  setUserPrompt(event.currentTarget.value)
-                }
+                onChange={(event) => {
+                  setUserPrompt(event.currentTarget.value);
+                  resetPromptCopySequence();
+                }}
               />
               <span className="text-xs font-normal text-muted">
                 그리드 구조·투명 배경·셀 순서는 기본 프롬프트에 자동으로
@@ -1015,7 +1183,9 @@ export function AiGridWorkspaceDialog({
                   </div>
                 )}
                 <label className="grid gap-1 text-sm font-medium">
-                  자동 구성 프롬프트
+                  {service === "novelai_web"
+                    ? "NovelAI Prompt (태그 + 짧은 구조 문장)"
+                    : "자동 구성 프롬프트"}
                   <textarea
                     ref={promptRef}
                     className="min-h-48 rounded-md border border-border bg-white p-3 text-xs leading-5"
@@ -1030,12 +1200,14 @@ export function AiGridWorkspaceDialog({
                     복원 후 요청 내용 다시 입력
                     <textarea
                       className="min-h-24 rounded-md border border-warning/50 bg-white px-3 py-2 text-sm text-foreground"
+                      disabled={isWorking}
                       maxLength={2000}
                       placeholder="원래 웹에 전달할 수정·생성 요청을 다시 입력하세요."
                       value={userPrompt}
                       onChange={(event) => {
                         setUserPrompt(event.currentTarget.value);
                         setRestoredDeliveryConfirmed(false);
+                        resetPromptCopySequence();
                       }}
                     />
                   </label>
@@ -1044,12 +1216,17 @@ export function AiGridWorkspaceDialog({
                   웹 서비스{isRestoredWorkspace ? " (다시 확인)" : ""}
                   <select
                     className="rounded-md border border-border bg-white px-3 py-2 text-sm text-foreground"
+                    data-testid="ai-grid-web-service"
+                    disabled={isWorking}
                     value={service}
                     onChange={(event) => {
                       setService(
                         event.currentTarget.value as AiGridWebService,
                       );
                       setRestoredDeliveryConfirmed(false);
+                      setMessage(null);
+                      setErrorMessage(null);
+                      resetPromptCopySequence();
                     }}
                   >
                     <option value="gemini_web">Gemini 웹</option>
@@ -1061,7 +1238,7 @@ export function AiGridWorkspaceDialog({
                     <input
                       checked={restoredDeliveryConfirmed}
                       className="mt-0.5"
-                      disabled={!userPrompt.trim()}
+                      disabled={isWorking || !userPrompt.trim()}
                       type="checkbox"
                       onChange={(event) =>
                         setRestoredDeliveryConfirmed(event.currentTarget.checked)
@@ -1082,16 +1259,26 @@ export function AiGridWorkspaceDialog({
                   onClick={() => void beginWebDelivery()}
                 >
                   <ExternalLink aria-hidden="true" />
-                  프롬프트 복사 + 웹 열기
+                  {service === "novelai_web" ? "1. Prompt 복사 + NovelAI 열기" : "프롬프트 복사 + 웹 열기"}
                 </button>
                 <button
                   className="inline-flex items-center justify-center gap-2 rounded-md border border-border bg-white px-3 py-2 text-sm font-medium hover:bg-menu-hover disabled:opacity-50"
-                  disabled={needsRestoredDeliveryConfirmation}
+                  disabled={isWorking || needsRestoredDeliveryConfirmation}
                   type="button"
                   onClick={() => void copyPrompt()}
                 >
                   <Copy aria-hidden="true" />
-                  프롬프트 다시 복사
+                  {service === "novelai_web" ? "1. Prompt 다시 복사" : "프롬프트 다시 복사"}
+                </button>
+                <button
+                  className="inline-flex items-center justify-center gap-2 rounded-md border border-border bg-white px-3 py-2 text-sm font-medium hover:bg-menu-hover disabled:opacity-50"
+                  data-testid="ai-grid-open-site-only"
+                  disabled={isWorking || needsRestoredDeliveryConfirmation}
+                  type="button"
+                  onClick={() => void openSelectedWebSite()}
+                >
+                  <ExternalLink aria-hidden="true" />
+                  웹사이트만 열기
                 </button>
                 {workspace.inputArtifact &&
                 workspace.status === "awaiting_result" ? (
@@ -1102,6 +1289,137 @@ export function AiGridWorkspaceDialog({
                 ) : null}
               </aside>
             </div>
+            {service === "novelai_web" ? (
+              <div className="grid gap-3">
+                {needsNovelAiEnglishInputHint(userPrompt) ? (
+                  <p
+                    className="rounded-md border border-warning/40 bg-warning/10 px-3 py-2 text-xs leading-5 text-warning"
+                    data-testid="ai-grid-novelai-language-hint"
+                  >
+                    NovelAI는 영문 소문자 태그를 쉼표로 나눈 입력을 권장합니다.
+                    한국어 요청은 임의 번역하지 않으므로 짧은 영문 태그로 바꾸면
+                    결과를 더 일관되게 제어할 수 있습니다.
+                  </p>
+                ) : null}
+                <NovelAiWebGuide
+                  disabled={isWorking || needsRestoredDeliveryConfirmation}
+                  expectedCanvas={`${workspace.layout.canvasWidth}×${workspace.layout.canvasHeight}px`}
+                  promptCopyOutcome={promptCopyOutcome}
+                  promptCopyRevision={promptCopyRevision}
+                  hasReference={
+                    workspace.requestScope === "grid_generate" &&
+                    Boolean(workspace.inputArtifact)
+                  }
+                  backgroundPolicy={resultBackgroundPolicy}
+                  task={
+                    workspace.requestScope === "grid_edit"
+                      ? "grid_edit"
+                      : "grid_generate"
+                  }
+                />
+              </div>
+            ) : null}
+            {workspace.requestScope !== "grid_edit" ? (
+              <fieldset
+                className="grid gap-2 rounded-md border border-border bg-canvas p-3"
+                data-testid="ai-grid-result-background-policy"
+              >
+                <legend className="px-1 text-sm font-semibold">결과 배경 처리</legend>
+                <label className="flex items-start gap-2 rounded-md border border-border bg-white p-3 text-xs leading-5">
+                  <input
+                    checked={resultBackgroundPolicy === "preserve_transparency"}
+                    className="mt-1"
+                    disabled={isWorking}
+                    name="ai-grid-result-background-policy"
+                    type="radio"
+                    onChange={() => {
+                      setResultBackgroundPolicy("preserve_transparency");
+                      setBackgroundReviewConfirmed(false);
+                      resetPromptCopySequence();
+                    }}
+                  />
+                  <span>
+                    <strong className="block text-foreground">투명 배경 유지</strong>
+                    실제 alpha가 있는 PNG/WebP만 사용합니다. 체커무늬나 불투명 JPG는
+                    다시 생성하도록 안내합니다.
+                  </span>
+                </label>
+                <label className="flex items-start gap-2 rounded-md border border-warning/40 bg-warning/5 p-3 text-xs leading-5">
+                  <input
+                    checked={resultBackgroundPolicy === "allow_opaque"}
+                    className="mt-1"
+                    disabled={isWorking}
+                    name="ai-grid-result-background-policy"
+                    type="radio"
+                    onChange={() => {
+                      setResultBackgroundPolicy("allow_opaque");
+                      setBackgroundReviewConfirmed(false);
+                      resetPromptCopySequence();
+                    }}
+                  />
+                  <span>
+                    <strong className="block text-foreground">배경 포함 결과 허용</strong>
+                    JPG·불투명 PNG/WebP도 가져옵니다. 단색·체커무늬를 포함한 배경은
+                    이모티콘에 그대로 남으며 자동 제거하지 않습니다.
+                  </span>
+                </label>
+              </fieldset>
+            ) : null}
+            {isMissingAlphaResult ? (
+              <section
+                className="grid gap-3 rounded-md border border-danger/35 bg-danger/5 p-4"
+                data-testid="ai-grid-missing-alpha-result"
+                role="alert"
+              >
+                <div className="flex items-start gap-2">
+                  <AlertTriangle
+                    aria-hidden="true"
+                    className="mt-0.5 size-4 shrink-0 text-danger"
+                  />
+                  <div>
+                    <h4 className="text-sm font-semibold text-danger">
+                      결과에 실제 투명 배경이 없습니다
+                    </h4>
+                    <p className="mt-1 text-xs leading-5 text-muted">
+                      단색이나 체커무늬처럼 이미지에 그려진 배경은 이모티콘에
+                      그대로 남습니다. 실제 투명 결과를 다시 요청하거나, 같은
+                      파일을 배경 포함 상태로 가져와 나중에 직접 정리할 수 있습니다.
+                    </p>
+                  </div>
+                </div>
+                <label className="grid gap-1 text-xs font-semibold">
+                  웹 AI에 추가할 투명 배경 수정 프롬프트
+                  <textarea
+                    className="min-h-32 rounded-md border border-border bg-white p-3 font-mono text-[11px] leading-5 text-foreground"
+                    data-testid="ai-grid-missing-alpha-prompt"
+                    readOnly
+                    value={missingAlphaCorrectionPrompt}
+                  />
+                </label>
+                <div className="flex flex-wrap gap-2">
+                  {pendingOpaqueResultFile ? (
+                    <button
+                      className="inline-flex min-h-9 items-center gap-2 rounded-md bg-accent px-3 py-2 text-xs font-semibold text-accent-foreground hover:bg-accent-strong disabled:opacity-50"
+                      data-testid="ai-grid-continue-opaque"
+                      disabled={isWorking}
+                      type="button"
+                      onClick={continueWithOpaqueBackground}
+                    >
+                      배경 포함으로 이 파일 가져오기
+                    </button>
+                  ) : null}
+                  <button
+                    className="inline-flex min-h-9 items-center gap-2 rounded-md border border-border bg-white px-3 py-2 text-xs font-semibold hover:bg-menu-hover"
+                    data-testid="ai-grid-copy-missing-alpha-prompt"
+                    type="button"
+                    onClick={() => void copyMissingAlphaCorrectionPrompt()}
+                  >
+                    <Copy aria-hidden="true" />
+                    투명 배경 수정 프롬프트 복사
+                  </button>
+                </div>
+              </section>
+            ) : null}
             <div
               className={
                 isDraggingResult
@@ -1127,27 +1445,68 @@ export function AiGridWorkspaceDialog({
             >
               <Upload aria-hidden="true" className="mx-auto" />
               <p className="mt-2 text-sm font-semibold">
-                웹에서 받은 정적 PNG/JPG 결과 한 장을 놓으세요.
+                {workspace.requestScope === "grid_edit"
+                  ? "Download Image로 받은 정적 PNG·JPG·WebP 한 장을 놓으세요."
+                  : resultBackgroundPolicy === "allow_opaque"
+                    ? "Download Image로 받은 PNG·JPG·WebP 한 장을 놓으세요."
+                    : "Download Image로 받은 투명 PNG·WebP 한 장을 놓으세요."}
               </p>
               <p className="mt-1 text-xs text-muted">
-                최대 16MB · 2048×2048 · GIF 불가. 잘못된 파일은
-                artifact나 후보를 남기지 않습니다.
+                {workspace.requestScope === "grid_edit"
+                  ? "최대 16MB · 2048×2048 · GIF 불가. WebP는 PNG로 안전하게 변환합니다."
+                  : resultBackgroundPolicy === "allow_opaque"
+                    ? "최대 16MB · 2048×2048 · GIF 불가. 불투명 배경은 그대로 유지됩니다."
+                    : "최대 16MB · 2048×2048 · GIF 불가. 불투명 결과는 가져오기 전에 확인합니다."}{" "}
+                잘못된 파일은 artifact나 후보를 남기지 않습니다.
               </p>
               <label className="mt-3 inline-flex cursor-pointer items-center gap-2 rounded-md border border-border bg-white px-3 py-2 text-sm font-medium hover:bg-menu-hover">
                 <ImagePlus aria-hidden="true" />
                 결과 파일 선택
                 <input
-                  accept="image/png,image/jpeg,.png,.jpg,.jpeg"
+                  accept="image/png,image/jpeg,image/webp,.png,.jpg,.jpeg,.webp"
                   className="sr-only"
+                  data-testid="ai-grid-result-file-input"
                   type="file"
                   onChange={(event) => {
-                    const file =
-                      event.currentTarget.files?.[0] ?? null;
+                    acceptResultFiles(event.currentTarget.files ?? []);
                     event.currentTarget.value = "";
-                    void acceptResultFile(file);
                   }}
                 />
               </label>
+            </div>
+          </section>
+        ) : null}
+
+        {step === 4 && workspace && !analysis ? (
+          <section
+            className="grid gap-4"
+            data-testid="ai-grid-step-review"
+          >
+            <div>
+              <h3 className="text-base font-semibold">
+                4. 전체 시트와 셀 매핑 검토
+              </h3>
+              <p className="mt-1 text-sm text-muted">
+                결과 파일은 안전하게 보관됐지만 셀 분석을 완료하지 못했습니다.
+              </p>
+            </div>
+            <div
+              className="flex flex-wrap items-center justify-between gap-3 rounded-md border border-warning/40 bg-warning/5 p-4"
+              role="alert"
+            >
+              <p className="text-sm text-muted">
+                작업은 검토 대기 상태로 유지됩니다. 파일을 다시 올리지 말고
+                분석만 다시 시도하세요.
+              </p>
+              <button
+                className="rounded-md border border-border bg-white px-3 py-2 text-sm font-semibold hover:bg-menu-hover disabled:opacity-50"
+                data-testid="ai-grid-analysis-retry"
+                disabled={isWorking}
+                type="button"
+                onClick={() => void refreshAnalysis()}
+              >
+                {isWorking ? "다시 분석 중" : "결과 다시 분석"}
+              </button>
             </div>
           </section>
         ) : null}
@@ -1166,6 +1525,17 @@ export function AiGridWorkspaceDialog({
                 포함한 셀은 한 번에 모두 저장됩니다.
               </p>
             </div>
+            {workspace.requestScope !== "grid_edit" ? (
+              <GenerationBackgroundReview
+                artifact={workspace.outputArtifact}
+                confirmed={backgroundReviewConfirmed}
+                testId="ai-grid-generation-background-review"
+                onConfirmedChange={(checked) => {
+                  setBackgroundReviewConfirmed(checked);
+                  if (checked) setErrorMessage(null);
+                }}
+              />
+            ) : null}
             <div className="overflow-hidden rounded-md border border-border lg:flex lg:min-h-[500px]">
               <div className="min-w-0 flex-1">
                 <SheetGridOverlay
@@ -1309,7 +1679,11 @@ export function AiGridWorkspaceDialog({
             <div className="flex justify-end">
               <button
                 className="rounded-md bg-accent px-4 py-2 text-sm font-semibold text-accent-foreground hover:bg-accent-strong disabled:opacity-50"
-                disabled={Boolean(reviewError) || isWorking}
+                disabled={
+                  Boolean(reviewError) ||
+                  isWorking ||
+                  needsGenerationBackgroundConfirmation
+                }
                 type="button"
                 onClick={() => void saveReview()}
               >
@@ -1336,6 +1710,19 @@ export function AiGridWorkspaceDialog({
                   : "새 아이콘을 만들 때 icon·piece·crop·AI 계보·순서를 한 transaction으로 저장합니다."}
               </p>
             </div>
+            {workspace.requestScope !== "grid_edit" ? (
+              <GenerationBackgroundReview
+                artifact={workspace.outputArtifact}
+                completed={workspace.status === "completed"}
+                confirmed={backgroundReviewConfirmed}
+                showPreview
+                testId="ai-grid-final-background-review"
+                onConfirmedChange={(checked) => {
+                  setBackgroundReviewConfirmed(checked);
+                  if (checked) setErrorMessage(null);
+                }}
+              />
+            ) : null}
             {workspace.requestScope === "grid_edit" ? (
               <SuccessCard
                 detail="원본 보존 · 현재 활성 소스 변경 없음 · 요청 단위 all-or-none 완료"
@@ -1420,7 +1807,9 @@ export function AiGridWorkspaceDialog({
                   <button
                     className="rounded-md bg-accent px-4 py-2 text-sm font-semibold text-accent-foreground hover:bg-accent-strong disabled:opacity-50"
                     disabled={
-                      isWorking || generationItems.length === 0
+                      isWorking ||
+                      generationItems.length === 0 ||
+                      needsGenerationBackgroundConfirmation
                     }
                     type="button"
                     onClick={() => void createGeneratedIcons()}
@@ -1504,6 +1893,76 @@ function GridInputActions({
         탐색기 선택 방식으로 전환합니다.
       </p>
     </>
+  );
+}
+
+function GenerationBackgroundReview({
+  artifact,
+  completed = false,
+  confirmed,
+  onConfirmedChange,
+  showPreview = false,
+  testId,
+}: {
+  artifact: AiGridWorkspace["outputArtifact"];
+  completed?: boolean;
+  confirmed: boolean;
+  onConfirmedChange: (checked: boolean) => void;
+  showPreview?: boolean;
+  testId: string;
+}) {
+  const serverStatus = artifact
+    ? artifact.hasAlpha
+      ? `서버 검사: ${artifact.extension.toUpperCase()} 결과에서 투명/반투명 픽셀을 감지했습니다.`
+      : `서버 검사: ${artifact.extension.toUpperCase()} 결과는 불투명합니다. 배경을 포함한 상태로 저장됩니다.`
+    : "저장된 후보에 배경 검사 메타데이터가 없어 자동 판정할 수 없습니다.";
+
+  return (
+    <section
+      className="grid gap-2 rounded-md border border-warning/40 bg-warning/5 p-3 text-xs leading-5"
+      data-testid={testId}
+      role="status"
+    >
+      <p className="font-semibold text-foreground">후보 배경 검사</p>
+      <p className="text-muted">{serverStatus}</p>
+      {showPreview && artifact ? (
+        <a
+          className="grid gap-2 rounded border border-border bg-white p-2 hover:bg-menu-hover"
+          data-testid={`${testId}-preview-link`}
+          href={artifact.previewUrl}
+          rel="noreferrer"
+          target="_blank"
+        >
+          <img
+            alt={`${artifact.originalFilename} AI 결과 전체 미리보기`}
+            className="max-h-96 w-full object-contain [image-rendering:auto]"
+            data-testid={`${testId}-preview`}
+            src={artifact.previewUrl}
+          />
+          <span className="text-center text-[11px] text-muted">
+            전체 결과를 크게 확인하세요. 이미지를 누르면 원본 크기로 엽니다.
+          </span>
+        </a>
+      ) : null}
+      <p className="font-medium text-warning">
+        자동 검사가 alpha 유무를 확인해도 체커무늬가 실제 픽셀로 그려진 가짜
+        투명 배경인지는 판별할 수 없습니다. 각 후보를 확대해 직접 확인하세요.
+      </p>
+      {!completed ? (
+        <label className="flex items-start gap-2 rounded border border-warning/30 bg-white p-2 text-foreground">
+          <input
+            checked={confirmed}
+            className="mt-1"
+            data-testid={`${testId}-confirm`}
+            type="checkbox"
+            onChange={(event) => onConfirmedChange(event.currentTarget.checked)}
+          />
+          <span>
+            후보를 확대해 체커무늬가 실제 픽셀로 칠해지지 않았는지 확인했습니다.
+          </span>
+        </label>
+      ) : null}
+    </section>
   );
 }
 

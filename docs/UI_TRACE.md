@@ -2,7 +2,7 @@
 
 Stage: `06_UI_REFERENCE_IMAGES`
 Date: 2026-05-09
-Latest implementation trace update: 2026-07-29 (F153-F155 provider repair, references, and GIF web AI)
+Latest implementation trace update: 2026-08-02 (F157 fake-transparency guard)
 Mode: visual reference generation only, no product source implementation.
 
 Generated UI images are subordinate to the written specification. Use
@@ -124,4 +124,6 @@ omitted visual element must not remove a required feature.
 | F152 | `GifFrameSheetDialog.tsx` and native GIF manifest/reimport pipeline | R2-R3 | Export/reimport uses manifest page filenames, restores exact frame timing and loop metadata, bounds output, previews rebuilt variant and preserves the original. |
 | F153 | native `ai_provider_runtime/provider.rs` and `AiProviderPanel.tsx` | R3 | Gemini 2.5/3.1 use model-specific Interactions payloads; the last inline JPEG is selected, while safe 400 handling distinguishes invalid keys, paid-tier/free-tier preconditions and request fields without exposing raw responses or keys. |
 | F154 | `AiGridWorkspaceDialog.tsx`, `AiHandoffHistoryDialog.tsx`, migration `020`, `ai_grid.rs`, `sheet/composer.rs`, and `AiWebHandoffPanel.tsx` | R2-R3 | Source-free generation builds a managed reference board from 1–16 selected icons/external files with 16MiB/128M-pixel guards, GIF poster disclosure, non-square contain, output-template separation and recent-handoff reuse. Proportional web results remain raw candidates and show a local-normalization warning rather than a false hard failure. |
-| F155 | `AiProviderPanel.tsx` and `GifFrameSheetDialog.tsx` | R3 | GIF AI entry reuses the manifest frame-sheet roundtrip, copies a geometry/timing/alpha prompt, opens only allowlisted official sites, and returns to reimport; direct GIF provider calls remain disabled. |
+| F155 | `AiProviderPanel.tsx` and `GifFrameSheetDialog.tsx` | R3 | GIF AI entry reuses the manifest frame-sheet roundtrip, copies a geometry/timing/alpha prompt, opens only allowlisted official sites, and returns to explicit manifest page slots that accept browser-renamed PNGs without relying on picker order; direct GIF provider calls remain disabled. |
+| F156 | `NovelAiWebGuide.tsx`, provider-specific prompt models, single/grid/GIF web panels and built-in sheet preset | R2-R3 | NovelAI shows a Prompt-success-gated, revision-synchronized Prompt → Undesired Content sequence; current Add a Base Img selection plus direct-base/standalone-reference variants; 200→192 single normalization; arbitrary download-name handling; PNG/JPG/static-WebP detection and alpha-preserving PNG conversion with animated-WebP rejection; one-page-at-a-time GIF Image2Image, bounded explicit page slots and exact canvas warnings, without automating login or provider DOM. |
+| F157 | AiGridWorkspaceDialog.tsx, AI prompt models, ai_grid.rs, and AiProviderPanel.tsx | R2-R3 | Source-free single/grid import requires meaningful per-canvas/per-cell real alpha and transparent gap/unused areas, rejecting opaque, one-alpha and thin-border fake transparency before persistence. Generation accepts PNG/WebP rather than JPG, keeps missing-alpha correction at step 3, and keeps stored analysis failures at step 4 with retry. Provider prompts prohibit painted checkerboards; transparent sources cannot enter the current JPEG-only Gemini direct API path. |

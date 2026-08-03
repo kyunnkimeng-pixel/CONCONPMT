@@ -85,6 +85,10 @@ const MIGRATIONS: &[(&str, &str)] = &[
         "020_ai_reference_result_normalization",
         include_str!("../../migrations/020_ai_reference_result_normalization.sql"),
     ),
+    (
+        "021_novelai_gif_sheet_preset",
+        include_str!("../../migrations/021_novelai_gif_sheet_preset.sql"),
+    ),
 ];
 
 pub fn run(connection: &mut Connection) -> AppResult<()> {

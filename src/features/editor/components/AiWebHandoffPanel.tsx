@@ -10,8 +10,11 @@ import {
   ShieldCheck,
   Trash2,
 } from "lucide-react";
-import { useEffect, useMemo, useRef, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import type { DragEvent, KeyboardEvent, MouseEvent, RefObject } from "react";
+
+import { NovelAiWebGuide } from "@/features/ai-web/components/NovelAiWebGuide";
+import { needsNovelAiEnglishInputHint } from "@/features/ai-web/novelai-web-model";
 
 import {
   AI_WEB_HANDOFF_RESULT_ACCEPT,
@@ -95,6 +98,8 @@ export function AiWebHandoffPanel({
   const [userPrompt, setUserPrompt] = useState("");
   const [session, setSession] = useState<AiWebHandoffSession | null>(null);
   const [preparedUserPrompt, setPreparedUserPrompt] = useState<string | null>(null);
+  const [restoredSessionUntouched, setRestoredSessionUntouched] =
+    useState(false);
   const [completedResult, setCompletedResult] =
     useState<AiWebHandoffResultInspection | null>(null);
   const [workingAction, setWorkingAction] = useState<WorkingAction | null>(
@@ -102,6 +107,7 @@ export function AiWebHandoffPanel({
   );
   const [isRestoring, setIsRestoring] = useState(true);
   const [promptCopyState, setPromptCopyState] = useState<CopyState>("idle");
+  const [promptCopyRevision, setPromptCopyRevision] = useState(0);
   const [resultFile, setResultFile] = useState<File | null>(null);
   const [resultError, setResultError] = useState<string | null>(null);
   const [commitResult, setCommitResult] =
@@ -113,6 +119,7 @@ export function AiWebHandoffPanel({
   const uploadPromptRef = useRef<HTMLTextAreaElement>(null);
   const correctionPromptRef = useRef<HTMLTextAreaElement>(null);
   const resultInputRef = useRef<HTMLInputElement>(null);
+  const promptCopyGenerationRef = useRef(0);
 
   const correctionPrompt = useMemo(
     () =>
@@ -126,11 +133,22 @@ export function AiWebHandoffPanel({
     [webErrorText],
   );
   const controlsDisabled = disabled || workingAction !== null || isRestoring;
+  const isNovelAi = serviceSurface === "novelai_web";
+  const expectedCanvasLabel = session
+    ? `${session.expectedWidth}×${session.expectedHeight}px`
+    : "현재 아이콘의 목표 크기";
   const prepareBlocked = controlsDisabled || !userPrompt.trim();
   const sessionMatchesDraft =
     session === null ||
     (session.serviceSurface === serviceSurface &&
-      preparedUserPrompt === userPrompt.trim());
+      (preparedUserPrompt === userPrompt.trim() ||
+        (preparedUserPrompt === null && restoredSessionUntouched)));
+
+  const resetPromptCopySequence = useCallback(() => {
+    promptCopyGenerationRef.current += 1;
+    setPromptCopyState("idle");
+    setPromptCopyRevision((revision) => revision + 1);
+  }, []);
 
   useEffect(() => {
     let active = true;
@@ -141,16 +159,18 @@ export function AiWebHandoffPanel({
         if (!restored) {
           setSession(null);
           setPreparedUserPrompt(null);
+          setRestoredSessionUntouched(false);
           setCommitResult(null);
           setResultFile(null);
           setResultError(null);
-          setPromptCopyState("idle");
+          resetPromptCopySequence();
           return;
         }
         setSession(restored);
         setServiceSurface(restored.serviceSurface);
         setPreparedUserPrompt(null);
-        setPromptCopyState("idle");
+        setRestoredSessionUntouched(true);
+        resetPromptCopySequence();
         announcementRef.current(
           "이 아이콘에서 진행 중이던 웹 전달을 다시 불러왔습니다.",
           "status",
@@ -164,10 +184,11 @@ export function AiWebHandoffPanel({
           ) {
             setSession(null);
             setPreparedUserPrompt(null);
+            setRestoredSessionUntouched(false);
             setCommitResult(null);
             setResultFile(null);
             setResultError(null);
-            setPromptCopyState("idle");
+            resetPromptCopySequence();
           }
           announcementRef.current(
             `이전 웹 전달을 확인하지 못했습니다. ${errorMessage(error)}`,
@@ -181,7 +202,7 @@ export function AiWebHandoffPanel({
     return () => {
       active = false;
     };
-  }, [onRestoreLatest]);
+  }, [onRestoreLatest, resetPromptCopySequence]);
 
   const copyText = async (
     value: string,
@@ -218,9 +239,25 @@ export function AiWebHandoffPanel({
     onBusyEnd();
   };
 
-  const copyPreparedPrompt = async (preparedSession = session) => {
+  const copyPreparedPrompt = async (
+    preparedSession = session,
+    allowDraftMismatch = false,
+  ) => {
     if (!preparedSession) return false;
+    if (
+      !allowDraftMismatch &&
+      preparedSession === session &&
+      !sessionMatchesDraft
+    ) {
+      onAnnouncement(
+        "현재 웹 서비스·수정 문구와 이전 전달 패키지가 다릅니다. 현재 내용으로 다시 준비해 주세요.",
+        "error",
+      );
+      return false;
+    }
+    const copyGeneration = ++promptCopyGenerationRef.current;
     const copied = await copyText(preparedSession.finalPrompt, uploadPromptRef);
+    if (copyGeneration !== promptCopyGenerationRef.current) return false;
     setPromptCopyState(
       copied === "clipboard"
         ? "copied"
@@ -228,6 +265,7 @@ export function AiWebHandoffPanel({
           ? "fallback"
           : "failed",
     );
+    setPromptCopyRevision((revision) => revision + 1);
     if (copied === "empty" || copied === "failed") {
       onAnnouncement(
         "프롬프트 자동 복사에 실패했습니다. 아래 프롬프트를 직접 복사해 주세요.",
@@ -250,16 +288,20 @@ export function AiWebHandoffPanel({
     }
     if (!beginAction("prepare")) return;
     const requestedPrompt = userPrompt.trim();
+    setRestoredSessionUntouched(false);
     setResultFile(null);
     setResultError(null);
     setCommitResult(null);
     setCompletedResult(null);
-    setPromptCopyState("idle");
+    resetPromptCopySequence();
     try {
       const prepared = await onPrepare(serviceSurface, requestedPrompt);
       setSession(prepared);
       setPreparedUserPrompt(requestedPrompt);
-      await copyPreparedPrompt(prepared);
+      const copied = await copyPreparedPrompt(prepared, true);
+      if (!copied) {
+        return;
+      }
       try {
         await onOpenSite(prepared.serviceSurface);
         onAnnouncement(
@@ -301,7 +343,9 @@ export function AiWebHandoffPanel({
         const deleted = await onDeleteSession(session.requestId);
         setSession(null);
         setPreparedUserPrompt(null);
+        setRestoredSessionUntouched(false);
         setCommitResult(null);
+        resetPromptCopySequence();
         onAnnouncement(
           deleted.payloadDeleted && !deleted.cleanupDeferred
             ? "이 전달을 닫고 임시 파일을 삭제했습니다."
@@ -316,7 +360,9 @@ export function AiWebHandoffPanel({
       ) {
         setSession(null);
         setPreparedUserPrompt(null);
+        setRestoredSessionUntouched(false);
         setCommitResult(null);
+        resetPromptCopySequence();
       }
       onAnnouncement(errorMessage(error), "error");
     } finally {
@@ -336,6 +382,8 @@ export function AiWebHandoffPanel({
         setCompletedResult(result);
         setSession(null);
         setPreparedUserPrompt(null);
+        setRestoredSessionUntouched(false);
+        resetPromptCopySequence();
         onAnnouncement(
           result.reviewState
             ? "검사를 통과한 결과를 비활성 AI 후보로 보관했습니다. 원본과 현재 적용 이미지는 바뀌지 않았습니다."
@@ -362,7 +410,9 @@ export function AiWebHandoffPanel({
       ) {
         setSession(null);
         setPreparedUserPrompt(null);
+        setRestoredSessionUntouched(false);
         setCommitResult(null);
+        resetPromptCopySequence();
       }
       setResultError(message);
       onAnnouncement(message, "error");
@@ -377,6 +427,7 @@ export function AiWebHandoffPanel({
     setResultError(selected.error);
     setCommitResult(null);
     if (!selected.file) {
+      setResultFile(null);
       if (selected.error) onAnnouncement(selected.error, "error");
       return;
     }
@@ -426,7 +477,9 @@ export function AiWebHandoffPanel({
             value={serviceSurface}
             onChange={(event) => {
               setServiceSurface(event.currentTarget.value as WebServiceSurface);
+              setRestoredSessionUntouched(false);
               setCommitResult(null);
+              resetPromptCopySequence();
             }}
           >
             {WEB_SERVICE_OPTIONS.map((option) => (
@@ -440,21 +493,49 @@ export function AiWebHandoffPanel({
           className="flex flex-col gap-1 text-xs font-semibold"
           htmlFor="ai-web-handoff-request"
         >
-          원하는 수정
+          {isNovelAi ? "원하는 수정 태그 (영어 권장)" : "원하는 수정"}
           <textarea
             className="min-h-24 resize-y rounded-md border border-border bg-white px-3 py-2 text-sm leading-5 focus-visible:outline focus-visible:outline-2 focus-visible:outline-focus"
             data-testid="ai-web-handoff-request"
             disabled={controlsDisabled}
             id="ai-web-handoff-request"
-            placeholder="예: 캐릭터와 구도는 유지하고 표정을 더 밝게 바꿔 주세요."
+            placeholder={
+              isNovelAi
+                ? "예: same character, brighter smile, chibi, clean lineart"
+                : "예: 캐릭터와 구도는 유지하고 표정을 더 밝게 바꿔 주세요."
+            }
             value={userPrompt}
             onChange={(event) => {
               setUserPrompt(event.currentTarget.value);
+              setRestoredSessionUntouched(false);
               setCommitResult(null);
+              resetPromptCopySequence();
             }}
           />
         </label>
       </div>
+
+      {isNovelAi && needsNovelAiEnglishInputHint(userPrompt) ? (
+        <p
+          className="rounded-md border border-warning/40 bg-warning/10 px-3 py-2 text-xs leading-5 text-warning"
+          data-testid="novelai-prompt-language-hint"
+        >
+          NovelAI V4+에는 영문 소문자 태그를 쉼표로 나눠 입력하는 방식을 권장합니다.
+          입력한 한국어는 앱이 임의로 번역하지 않으니, 가능하면 짧은 영문 태그로
+          바꿔 주세요.
+        </p>
+      ) : null}
+
+      {isNovelAi ? (
+        <p
+          className="rounded-md border border-violet-200 bg-violet-50/70 px-3 py-2 text-xs leading-5 text-violet-950"
+          data-testid="novelai-copy-order-hint"
+        >
+          아래 준비 버튼이 <strong>1/2 Prompt</strong>를 복사하고 NovelAI를
+          엽니다. Prompt에 붙여넣은 뒤 이어서 표시되는 안내의{" "}
+          <strong>2/2 Undesired Content</strong>를 복사하세요.
+        </p>
+      ) : null}
 
       {hasUnsavedChanges ? (
         <p className="rounded-md border border-warning/40 bg-warning/10 px-3 py-2 text-xs font-medium leading-5 text-warning">
@@ -489,6 +570,23 @@ export function AiWebHandoffPanel({
         )}
         {workingAction === "prepare" ? "전달 준비 중" : "웹 AI로 바로 준비"}
       </button>
+
+      {isNovelAi ? (
+        <NovelAiWebGuide
+          allowsProportionalNormalization
+          disabled={controlsDisabled}
+          expectedCanvas={expectedCanvasLabel}
+          promptCopyOutcome={
+            promptCopyState === "copied" || promptCopyState === "fallback"
+              ? "copied"
+              : promptCopyState === "failed"
+                ? "failed"
+                : "idle"
+          }
+          promptCopyRevision={promptCopyRevision}
+          task="single_edit"
+        />
+      ) : null}
 
       {session && !sessionMatchesDraft ? (
         <p
@@ -575,8 +673,20 @@ export function AiWebHandoffPanel({
               <ol className="grid gap-1 text-xs leading-5 text-muted">
                 <li>1. 아래 파일을 웹 업로드 영역에 놓기</li>
                 <li>2. 복사된 프롬프트 붙여넣기</li>
-                <li>3. 결과 JPG·PNG 내려받기</li>
-                <li>4. 내려받은 결과를 아래 영역에 놓기</li>
+                {session.serviceSurface === "novelai_web" ? (
+                  <li>
+                    3. 앱으로 돌아와 제외 태그를 복사하고 Undesired Content에
+                    붙여넣기
+                  </li>
+                ) : null}
+                <li>
+                  {session.serviceSurface === "novelai_web" ? "4" : "3"}.
+                  Download Image로 PNG·JPG·WebP 저장
+                </li>
+                <li>
+                  {session.serviceSurface === "novelai_web" ? "5" : "4"}.
+                  내려받은 결과를 아래 영역에 놓기
+                </li>
               </ol>
               <div className="flex flex-wrap gap-2">
                 {session.nativeDragSupported ? (
@@ -624,7 +734,7 @@ export function AiWebHandoffPanel({
           <div className="flex flex-wrap gap-2">
             <button
               className="inline-flex min-h-9 items-center gap-2 rounded-md border border-border bg-white px-3 py-2 text-xs font-medium hover:bg-menu-hover focus-visible:outline focus-visible:outline-2 focus-visible:outline-focus disabled:opacity-50"
-              disabled={controlsDisabled}
+              disabled={controlsDisabled || !sessionMatchesDraft}
               type="button"
               onClick={() => {
                 void copyPreparedPrompt();
@@ -677,7 +787,9 @@ export function AiWebHandoffPanel({
             className="flex flex-col gap-1 text-xs font-semibold"
             htmlFor="ai-web-handoff-final-prompt"
           >
-            준비된 최종 프롬프트
+            {session.serviceSurface === "novelai_web"
+              ? "NovelAI Prompt (태그)"
+              : "준비된 최종 프롬프트"}
             <textarea
               className="min-h-28 resize-y rounded-md border border-border bg-white px-3 py-2 text-xs leading-5"
               id="ai-web-handoff-final-prompt"
@@ -722,10 +834,10 @@ export function AiWebHandoffPanel({
               <p className="text-sm font-semibold">
                 {workingAction === "commit"
                   ? "결과 구조 검사 중"
-                  : "완성된 JPG·PNG를 여기에 놓으세요"}
+                  : "내려받은 PNG·JPG·WebP를 여기에 놓으세요"}
               </p>
               <p className="text-xs leading-5 text-muted">
-                웹페이지 미리보기 주소가 아닌 내려받은 파일 한 장을 사용합니다.
+                웹페이지 미리보기 주소가 아닌 Download Image로 저장한 파일 한 장을 사용합니다. WebP는 내부 PNG로 안전하게 변환합니다.
               </p>
               <input
                 accept={AI_WEB_HANDOFF_RESULT_ACCEPT}

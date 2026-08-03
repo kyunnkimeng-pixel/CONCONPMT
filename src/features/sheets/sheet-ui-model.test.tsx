@@ -262,6 +262,56 @@ describe("sheet-ui-model", () => {
     });
   });
 
+  it("applies the NovelAI GIF preset without shrinking 200px frame cells", () => {
+    const preset = gridPreset({
+      id: "builtin_novelai_gif_200_4x4_1024",
+      name: "NovelAI 웹 호환 GIF / 200x200 / 4x4",
+      kind: "gif_frame_export",
+      cellWidth: 200,
+      cellHeight: 200,
+      columns: 4,
+      gapX: 56,
+      gapY: 56,
+      borderLeft: 28,
+      borderTop: 28,
+      borderRight: 28,
+      borderBottom: 28,
+      maxSheetWidth: 1024,
+      maxSheetHeight: 1024,
+      framesPerPage: 16,
+      isBuiltin: true,
+    });
+
+    const settings = applyPresetToGifFrameSettings(defaultGifFrameSheetSettings(), preset);
+
+    expect(settings).toMatchObject({
+      frameCellWidth: 200,
+      frameCellHeight: 200,
+      columns: 4,
+      framesPerPage: 16,
+      gapX: 56,
+      gapY: 56,
+      borderX: 28,
+      borderY: 28,
+      maxSheetWidth: 1024,
+      maxSheetHeight: 1024,
+    });
+    expect(estimateGifFrameSheetPages(17, settings)).toBe(2);
+
+    const sheetExtent = (count: number, cell: number, gap: number, border: number) =>
+      border * 2 + count * cell + Math.max(0, count - 1) * gap;
+
+    for (let count = 1; count <= 4; count += 1) {
+      const width = sheetExtent(count, settings.frameCellWidth, settings.gapX, settings.borderX);
+      const height = sheetExtent(count, settings.frameCellHeight, settings.gapY, settings.borderY);
+
+      expect(width).toBe(256 * count);
+      expect(height).toBe(256 * count);
+      expect(width % 64).toBe(0);
+      expect(height % 64).toBe(0);
+    }
+  });
+
   it("renders selected-icon sheet export scope", () => {
     const html = renderToString(
       <SheetExportDialog

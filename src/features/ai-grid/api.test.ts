@@ -2,6 +2,7 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 
 const mocks = vi.hoisted(() => ({
   invokeCommand: vi.fn(),
+  fileToImportPayload: vi.fn(),
   filesToImportPayloads: vi.fn(),
 }));
 
@@ -14,7 +15,7 @@ vi.mock("@/lib/asset-url", () => ({
 }));
 
 vi.mock("@/lib/import-file", () => ({
-  fileToImportPayload: vi.fn(),
+  fileToImportPayload: mocks.fileToImportPayload,
   filesToImportPayloads: mocks.filesToImportPayloads,
 }));
 
@@ -23,6 +24,7 @@ vi.mock("@/features/icons/api", () => ({
 }));
 
 import {
+  attachAiGridOutput,
   MAX_AI_REFERENCE_EXTERNAL_BYTES,
   prepareAiGenerationWorkspace,
   prepareAiGridEditWorkspace,
@@ -63,6 +65,7 @@ const workspace = {
 describe("AI grid command API", () => {
   beforeEach(() => {
     mocks.invokeCommand.mockReset();
+    mocks.fileToImportPayload.mockReset();
     mocks.filesToImportPayloads.mockReset();
     mocks.filesToImportPayloads.mockResolvedValue([]);
   });
@@ -168,6 +171,23 @@ describe("AI grid command API", () => {
     expect(mocks.invokeCommand).not.toHaveBeenCalled();
   });
 
+  it("forwards the explicit opaque-background decision with the result bytes", async () => {
+    const file = new File([new Uint8Array([1, 2, 3])], "result.jpg", {
+      type: "image/jpeg",
+    });
+    const payload = { originalFilename: "result.jpg", bytes: [1, 2, 3] };
+    mocks.fileToImportPayload.mockResolvedValue(payload);
+    mocks.invokeCommand.mockResolvedValue(workspace);
+
+    await attachAiGridOutput("request-grid-1", file, true);
+
+    expect(mocks.invokeCommand).toHaveBeenCalledWith("attach_ai_grid_output", {
+      requestId: "request-grid-1",
+      file: payload,
+      manifestJson: null,
+      allowOpaqueBackground: true,
+    });
+  });
   it("starts native drag by request id only and keeps Explorer fallback separate", async () => {
     mocks.invokeCommand
       .mockResolvedValueOnce({

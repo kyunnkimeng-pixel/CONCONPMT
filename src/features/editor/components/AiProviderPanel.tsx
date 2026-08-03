@@ -162,10 +162,15 @@ export function AiProviderPanel({
     () => novelAiDraftErrors(novelAiDraft),
     [novelAiDraft],
   );
-  const geminiErrors = useMemo(
-    () => geminiDraftErrors(geminiDraft),
-    [geminiDraft],
-  );
+  const geminiErrors = useMemo(() => {
+    const errors = geminiDraftErrors(geminiDraft);
+    if (source.hasAlpha === true) {
+      errors.unshift(
+        "현재 Gemini 직접 API는 JPEG 결과만 받아 실제 투명 배경을 보존할 수 없습니다. 투명 PNG가 필요한 이 이미지는 웹으로 전달 흐름을 사용해 주세요.",
+      );
+    }
+    return errors;
+  }, [geminiDraft, source.hasAlpha]);
   const controlsDisabled = disabled || busyAction !== null;
   const directRequestBlockReason = source.isAnimated
     ? "GIF 파일은 공급자 API나 단일 이미지 웹 전달로 직접 보내지 않습니다. 프레임 시트 수동 웹 왕복을 사용해 주세요."
@@ -661,6 +666,22 @@ function NovelAiForm({
         onSave={onSaveCredential}
         onShowSecretChange={onShowSecretChange}
       />
+      <div
+        className="rounded-md border border-violet-300/50 bg-violet-50/60 p-3 text-xs leading-5 text-violet-950"
+        data-testid="ai-novelai-tag-help"
+      >
+        <p>
+          <strong>Prompt</strong>에는 영문 소문자 태그를 <code>, </code>로 나눠
+          입력하고, 빼고 싶은 요소는 아래 <strong>제외 프롬프트</strong>
+          (NovelAI의 Undesired Content)에 넣으세요.
+        </p>
+        <p className="mt-1">
+          이 실험 API 화면은 기존 정적 이미지 1장의 Image2Image만 다룹니다.
+          Vibe Transfer·Precise Reference와 GIF/그리드는 위 수동 웹 전달 흐름에서
+          안내에 따라 선택합니다.
+        </p>
+      </div>
+
       <LabeledTextarea
         disabled={disabled}
         id="ai-novelai-prompt"

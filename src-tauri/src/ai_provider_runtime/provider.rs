@@ -92,6 +92,12 @@ pub(crate) fn start_image_edit(
         &payload.icon_id,
     )?;
     validate_static_source(&current)?;
+    if payload.provider == "gemini" && current.render_source.has_alpha {
+        return Err(AppError::new(
+            "gemini_alpha_output_unsupported",
+            "현재 Gemini API 어댑터는 JPEG 결과를 요청하므로 투명 배경(alpha)을 유지할 수 없습니다. 요청 기록이나 후보를 만들지 않았습니다. Gemini 웹 전달을 사용해 실제 투명 PNG 결과를 가져와 주세요.",
+        ));
+    }
     let state = ai_repository::get_ai_review_state(connection, collection_id, &payload.icon_id)?;
     let input_path = managed_input_path(paths, &current.render_source.path)?;
     let mut input_bytes = Vec::with_capacity(MAX_INPUT_BYTES.min(1024 * 1024));
@@ -2241,6 +2247,38 @@ mod tests {
             options: AiImageEditOptionsPayload::default(),
             consent: consent(),
         }
+    }
+
+    #[test]
+    fn gemini_transparent_source_is_rejected_before_request_is_recorded() {
+        let mut fixture =
+            lifecycle_fixture_with_source("transparent-source.png", png_bytes([10, 20, 30, 0]));
+
+        let error = match start_image_edit(
+            &mut fixture.connection,
+            &fixture.paths,
+            &fixture.collection_id,
+            gemini_payload(&fixture.icon_id),
+        ) {
+            Ok(_) => panic!("transparent Gemini source must be rejected before request creation"),
+            Err(error) => error,
+        };
+
+        assert_eq!(error.code, "gemini_alpha_output_unsupported");
+        assert!(error.message.contains("JPEG"));
+        assert!(error.message.contains("Gemini 웹 전달"));
+        let counts: (i64, i64) = fixture
+            .connection
+            .query_row(
+                "SELECT
+                   (SELECT COUNT(*) FROM ai_requests),
+                   (SELECT COUNT(*) FROM ai_candidates)",
+                [],
+                |row| Ok((row.get(0)?, row.get(1)?)),
+            )
+            .unwrap();
+        assert_eq!(counts, (0, 0));
+        fixture.cleanup();
     }
 
     #[test]

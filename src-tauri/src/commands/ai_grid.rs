@@ -148,15 +148,17 @@ pub fn attach_ai_grid_output(
     request_id: String,
     file: ImportImageFilePayload,
     manifest_json: Option<String>,
+    allow_opaque_background: Option<bool>,
 ) -> AppResult<AiGridWorkspaceDto> {
     let paths = state.paths().clone();
     let mut connection = state.render_connection()?;
-    ai_grid_repository::record_ai_grid_output_artifact(
+    ai_grid_repository::record_ai_grid_output_artifact_with_policy(
         &mut connection,
         &paths,
         &request_id,
         file,
         manifest_json.as_deref().unwrap_or(DEFAULT_OUTPUT_MANIFEST),
+        allow_opaque_background.unwrap_or(false),
     )?;
     ai_grid_repository::get_ai_grid_workspace(&connection, &request_id)
 }

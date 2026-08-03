@@ -1,6 +1,9 @@
 import { describe, expect, it } from "vitest";
 
-import { buildAiGridCorrectionPrompt } from "@/features/ai-grid/ai-grid-correction";
+import {
+  buildAiGridCorrectionPrompt,
+  buildAiGridMissingAlphaCorrectionPrompt,
+} from "@/features/ai-grid/ai-grid-correction";
 import type { AiGridWorkspace } from "@/features/ai-grid/types";
 import type { SheetGridAnalysis } from "@/features/sheets/types";
 
@@ -51,6 +54,17 @@ function analysis(
 }
 
 describe("buildAiGridCorrectionPrompt", () => {
+  it("builds a deterministic missing-alpha repair without suggesting a painted checkerboard", () => {
+    const firstPrompt = buildAiGridMissingAlphaCorrectionPrompt();
+    const secondPrompt = buildAiGridMissingAlphaCorrectionPrompt();
+
+    expect(firstPrompt).toBe(secondPrompt);
+    expect(firstPrompt).toContain("alpha 0");
+    expect(firstPrompt).toContain("checkerboard");
+    expect(firstPrompt).toContain("gray-and-white tiles");
+    expect(firstPrompt).toContain("PNG image with an alpha channel");
+    expect(firstPrompt).toContain("preserve the original sprite-sheet geometry");
+  });
   it("returns no invented prompt when geometry is valid", () => {
     expect(buildAiGridCorrectionPrompt(workspace, analysis())).toBeNull();
   });
@@ -76,5 +90,19 @@ describe("buildAiGridCorrectionPrompt", () => {
     expect(prompt).toContain("2행 × 2열");
     expect(prompt).toContain("정확히 4개");
     expect(prompt).toContain("정적 투명 PNG");
+  });
+
+  it("does not force transparent PNG when opaque generation output is allowed", () => {
+    const malformed = analysis({ sheetWidth: 896 });
+    const prompt = buildAiGridCorrectionPrompt(
+      { ...workspace, requestScope: "grid_generate" },
+      malformed,
+      "allow_opaque",
+    );
+
+    expect(prompt).toContain("PNG·JPG·WebP");
+    expect(prompt).toContain("균일한 단색");
+    expect(prompt).toContain("체커무늬·가짜 투명 패턴");
+    expect(prompt).not.toContain("정적 투명 PNG");
   });
 });

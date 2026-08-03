@@ -22,17 +22,19 @@ PMTCONCON Studio의 웹 AI 전달은 브라우저 확장이나 로그인 세션 
    - 구조 보호 기본 프롬프트와 사용자 요청을 합친다.
    - 최종 프롬프트를 복사한다.
    - 선택한 공식 웹사이트를 연다.
-3. 전달 도우미는 upload PNG 하나만 보여준다.
+3. 정적 전달 도우미는 upload PNG 하나만 보여주고, GIF 전달 도우미는 각
+   `frames_sheet_*.png` clean page를 개별 카드로 보여준다.
    - Windows 마우스 사용자는 `파일 끌기`로 웹 업로드 영역까지 직접 끈다.
    - 키보드·비Windows·호환성 문제에는 `탐색기에서 파일 선택`을 사용한다.
-4. 사용자가 웹에서 저장한 로컬 JPG/PNG를 결과 drop zone에 놓는다.
+4. 사용자가 웹에서 저장한 로컬 PNG/JPG/JPEG/static WebP를 결과 drop zone에 놓는다.
 5. 앱은 즉시 검사한다.
    - 정상 정적 단일 결과는 비활성 AI 후보로 보관하고 기존 후보 검토로 이동한다.
    - 현재 아이콘과 원본은 자동으로 바꾸지 않는다.
    - 구조 오류는 후보를 만들지 않고 수정 프롬프트를 제공한다.
 
 내부 manifest, request ID, 관리 경로와 package 구조는 일반 UI와 파일 선택기에
-노출하지 않는다.
+노출하지 않는다. 단, GIF export session을 더 이상 자동 복원할 수 없는 수동 복구
+흐름에서는 사용자가 보관한 `frames_manifest.json`을 명시적으로 고를 수 있다.
 
 ## 기본 프롬프트 종류
 
@@ -52,6 +54,24 @@ PMTCONCON Studio의 웹 AI 전달은 브라우저 확장이나 로그인 세션 
 `pmtcon-gif-frame-sheet-v2` 로컬 왕복은 manifest 파일명, frame delay와 loop metadata를
 정확히 복원하며 사람이 최종 동작을 검토한다.
 
+### GIF 파일 역할과 manifest 재사용
+
+- 웹에 올림: `frames_sheet_001.png`, `frames_sheet_002.png` 등 clean page만 해당한다.
+- 웹에 올리지 않음: `frames_guide_*.png`는 셀 번호·시간을 보는 사람용 참고 파일이다.
+- 앱 전용: `frames_manifest.json`은 page slot, frame timing/order/loop 복원 자료다.
+- 같은 export dialog/session에서는 앱이 manifest를 유지하므로 사용자는 결과 page만
+  놓는다. 앱 재시작, 별도 교체 진입 또는 관리 기록을 검증할 수 없을 때만 수동
+  manifest picker/drop을 recovery fallback으로 연다.
+- 여러 page는 한 장씩 같은 prompt와 provider settings로 처리한다. 각 clean page에는
+  검증된 native `파일 끌기`와 Explorer fallback을 제공하고 guide/manifest에는 웹 전달
+  drag를 제공하지 않는다.
+- PNG는 권장 형식이다. JPG/JPEG/static WebP 또는 완전 불투명 PNG는 exact canvas
+  검사 뒤 `배경 포함으로 계속`을 고른 경우에만 내부 PNG 중간 결과가 된다. animated
+  WebP는 지원하지 않는 애니메이션 결과로 알린다.
+- painted checker는 실제 alpha가 아니며 경고한다. 앱은 checker를 자동 제거하지 않는다.
+  구조 보존 prompt를 사용해도 provider의 원본 그림체·캐릭터 비율·frame 간 일관성은
+  보장되지 않으므로 재조립 전후 animation을 사람이 검토한다.
+
 ## 오류와 수정 프롬프트
 
 각 진단은 다음 필드를 가진다.
@@ -69,7 +89,8 @@ PMTCONCON Studio의 웹 AI 전달은 브라우저 확장이나 로그인 세션 
 - 캔버스 불일치: 정확한 폭·높이 유지
 - 정적 grid 수/경계 불일치: 셀 추가·삭제·병합·재배열 금지
 - GIF frame 수/geometry 불일치: frame 추가·삭제·복제 금지
-- 투명도 손실: 투명 배경 PNG와 alpha 유지
+- 투명 필수 요청의 alpha 손실: 투명 배경 PNG와 alpha 유지
+- 투명 권장 요청의 불투명 결과: 자동 수정하지 않고 배경 포함 여부를 사용자가 선택
 
 다음 오류에는 프롬프트를 제안하지 않는다.
 
@@ -115,6 +136,12 @@ PMTCONCON Studio의 웹 AI 전달은 브라우저 확장이나 로그인 세션 
 - 결과 drop/picker, typed local validation, 구조 오류 전용 수정 프롬프트
 - 같은 request의 비활성 candidate, 원본/활성 source 무변경
 - 7일/1회 30일 retention, 15분 주기 cleanup, 256MiB quota, 최근 전달 이력
+
+완료(2026-08-02):
+
+- GIF clean page별 drag/Explorer와 guide/manifest 역할 표시
+- same-session manifest 자동 재사용 및 수동 recovery fallback
+- JPG/JPEG/static WebP opaque intermediate와 painted-checker 검토
 
 후속 또는 의도적으로 제외:
 

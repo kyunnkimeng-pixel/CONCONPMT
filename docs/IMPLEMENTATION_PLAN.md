@@ -1,4 +1,94 @@
 # IMPLEMENTATION_PLAN.md — Codex 실행 계획
+## Stage AI_FAKE_TRANSPARENCY_GUARD (historical; superseded 2026-08-02)
+
+1. AI 아이콘 만들기의 원본 없는 단일/그리드 결과는 확장자나 alpha 픽셀
+   한 개가 아니라 실제 decoded alpha=0 배경을 검사한다. 요청 geometry가
+   정확하면 canvas 합계와 각 target cell의 외곽 연결 투명 영역을 5% 이상,
+   border·gap·unused cell을 95% 이상 투명으로 요구한다. geometry mismatch는
+   기존 구조 검토 전에 canvas 외곽 연결 투명 영역 5%를 coarse guard로 사용한다.
+2. 완전 불투명, 가짜 체커보드, alpha 한 픽셀, 1px 투명 테두리, 한 셀만 불투명,
+   unused cell이 불투명한 결과를 artifact/source/candidate/icon 저장 전에
+   원자적으로 거부한다. grid edit의 기존 불투명 JPG 계약은 유지한다.
+3. Gemini 기본 프롬프트에는 실제 alpha 0과 checkerboard·gray/white tile 금지를
+   명시하고 NovelAI Undesired Content에도 제외 태그를 넣는다. 생성 결과 UI는
+   PNG/WebP만 안내하며 JPG drop을 IPC 전에 한국어로 차단한다.
+4. 차단 시 3단계에서 공급자 중립 설명, 실제 투명 PNG 재생성 프롬프트와 복사
+   동작을 제공한다. artifact 저장 뒤 분석만 실패하면 backend 상태에 맞춰
+   4단계에 머물고 결과 다시 분석으로 복구한다.
+5. 투명 원본은 JPEG만 반환하는 현재 Gemini 직접 API로 보내기 전에 차단하고
+   수동 웹 전달을 안내한다. 회색 선·안티앨리어싱을 손상할 수 있는 자동 배경
+   제거는 수행하지 않으며 원본과 현재 활성 아이콘을 변경하지 않는다.
+
+Done when: 불투명 체커 결과와 얇은 alpha 우회는 원본·요청 상태·artifact·후보·
+아이콘을 바꾸지 않고 차단되며, 정상 단일/복수 real-alpha 결과와 기존 grid edit는
+진행된다. 사용자는 같은 단계에서 수정 프롬프트를 복사하고, 저장 후 분석 실패는
+재업로드 없이 복구한다. 투명 원본 Gemini 직접 API는 과금 HTTP 전에 중단된다.
+
+Status: complete. Frontend 60 files/382 tests, Rust 362 all-target tests,
+lint/build/rustfmt/license guards와 targeted AI transparency tests가 통과했다.
+생성 JPG preflight, step-4 analysis retry, single/grid atomicity, one-alpha·1px-border·
+partial-cell·unused-cell·gap0 정상 grid 회귀를 포함하며 최종 프런트/백엔드 리뷰에서
+남은 P0-P2 문제는 없었다.
+## Stage NOVELAI_REAL_UI_HANDOFF_REPAIR (2026-07-29)
+
+1. 실제 NovelAI 이미지 화면의 `Add a Base Img (Optional)` 업로드와
+   `What do you want to do with this image?` 선택 흐름을 기준으로
+   Image2Image·Vibe Transfer·Precise Reference 안내를 다시 쓴다.
+2. `Prompt`와 `Undesired Content`를 별도 복사 단계로 표시하고, 복사 실패를
+   웹 열기 성공 메시지로 덮지 않는다. GIF는 웹을 열었다는 이유만으로
+   다시 가져오기 화면으로 자동 이동하지 않는다.
+3. NovelAI의 PNG/WebP 다운로드를 단일·그리드 결과에서 바이트 형식으로
+   판별하고, WebP는 투명도를 보존한 내부 PNG로 정규화한다. 브라우저가
+   만든 파일명은 사용자 정체성이나 매핑 키로 사용하지 않는다.
+4. GIF 프레임 페이지는 manifest 페이지별 예상 파일명과 사용자가 선택한
+   결과 파일을 명시적으로 대응시킨다. JPG/WebP·누락·중복·잘못된 크기는
+   기존 선택을 조용히 재사용하지 않고 즉시 실행 가능한 한국어 오류를 낸다.
+5. 관련 Rust/React 회귀 테스트, lint, build, license guard와 headed QA를
+   통과시킨 뒤 코드 리뷰를 수행한다.
+
+Done when: 사용자가 실제 NovelAI UI 명칭대로 입력 이미지를 전달하고,
+Prompt와 Undesired Content를 순서대로 붙여 넣으며, NovelAI가 바꾼 파일명과
+PNG/WebP 결과를 단일·그리드에서 바로 가져올 수 있다. GIF 페이지는 파일명이
+바뀌어도 사용자가 페이지별로 대응할 수 있고 잘못된 드롭은 즉시 원인과
+해결 방법을 보여 준다.
+
+Status: complete. 실제 NovelAI 라벨과 레이아웃 변형을 반영하고, Prompt →
+Undesired Content 순차 복사·복원 세션 재개·비동기 stale 보호를 구현했다.
+정적 단일/그리드는 실제 바이트 기준 PNG/JPG/WebP 판별과 alpha 보존 PNG
+정규화를 사용하며 animated WebP는 명시적으로 거부한다. GIF는 manifest 페이지
+슬롯, 임의 다운로드명 수동 연결, PNG-first/manifest-first 선택, 읽기 경합,
+64MB 합산 한도와 500페이지 선형 선택 UI를 지원한다. Frontend 60 files/375 tests,
+Rust 351 tests, lint/build/rustfmt/license guard와 800×760 headed Chromium 흐름 QA가
+통과했고 최종 리뷰에서 남은 P0–P2 문제는 없었다.
+## Stage NOVELAI_WEB_GUIDANCE (2026-07-29)
+
+1. Gemini용 장문 구조 프롬프트와 NovelAI용 입력을 분리한다. NovelAI는 짧은
+   영문 소문자 태그와 `Undesired Content`를 각각 복사할 수 있게 하고, 정확한
+   캔버스·셀 순서 같은 구조 제약은 웹 조작 안내와 검토 규칙으로 분리한다.
+2. 단일 아이콘, 선택 아이콘 그리드, 원본 없는 생성, GIF 프레임 시트마다
+   업로드 후 선택할 방식을 설명한다. 구도·셀·프레임 배치 보존은 Image2Image,
+   그림체·색·질감 참고는 Vibe Transfer, V4.5 캐릭터/스타일 일관성은
+   Precise Reference로 안내하며 서로 대체 가능한 기능처럼 표현하지 않는다.
+3. NovelAI 웹이 200×200을 192×192 등 가까운 지원 크기로 보정할 수 있음을
+   명시한다. 단일 아이콘은 같은 비율 결과를 원본 후보로 보존하고 앱에서
+   200×200으로 정규화하되, 그리드·GIF 프레임 시트는 셀 복원 때문에 정확한
+   페이지별 파일명·실제 캔버스가 필요하다는 경고를 유지하고, 각 clean PNG를 한 장씩 같은 Prompt·Strength·Noise·sampler 설정으로 처리하되 해상도는 표시된 페이지별 실제 캔버스로 바꾸도록 안내한다.
+4. NovelAI 저장 형식은 PNG로 설정하고 투명 결과의 alpha를 확인하는 경로를 안내한다.
+   수행한다. 앱은 비밀값·브라우저 DOM·세션을 다루지 않고 전달 파일, 복사
+   항목, 단계별 설명, 결과 검사만 제공한다.
+5. 공급자별 prompt model, 단일/그리드/GIF UI, Rust의 192×192 비율 보정
+   회귀를 자동 테스트하고 headed browser QA로 좁은 화면과 작업 순서를 확인한다.
+
+Done when: NovelAI를 고른 사용자가 어떤 업로드 방식을 선택하고 무엇을 Prompt와
+Undesired Content에 붙여 넣을지, 200→192 결과를 언제 그대로 가져올 수 있는지,
+그리드/GIF에서 어떤 크기를 보존해야 하는지를 앱 안에서 막힘없이 이해할 수 있다.
+
+Status: complete. NovelAI Prompt/Undesired Content 분리, Image2Image·Vibe Transfer·
+Precise Reference 선택 안내, 단일 200→192 비율 정규화, 정확한 grid/GIF 캔버스
+경고와 200px 셀 내장 프리셋을 구현했다. Frontend 58 files/346 tests, Rust 345
+all-target tests, lint/build/rustfmt/license guards와 1200×760·800×760 headed
+Chromium QA가 통과했다.
+
 ## Stage AI_PROVIDER_REFERENCE_GIF_REPAIR (2026-07-29)
 
 1. Gemini Interactions 요청을 모델별 계약으로 분기한다. 2.5에는 고정 해상도
@@ -1064,3 +1154,63 @@ Verification: frontend lint/build and 54 files·326 tests PASS; Rust formatting 
 flows PASS at 1200×760 and 800×760 with console errors 0; NSIS package and SHA-256
 generated. MSI is not a prerelease artifact because its version format rejects the
 non-numeric `alpha` identifier.
+## Stage GIF_AI_HANDOFF_USABILITY_REPAIR
+
+1. Keep the export-created `pmtcon-gif-frame-sheet-v2` manifest inside the active dialog
+   session and use it automatically during reimport. Manual manifest selection remains only
+   as an explicit recovery path for a result imported after the original session is gone.
+2. Separate the generated artifacts by role: `frames_sheet_*.png` is the only browser upload,
+   `frames_guide_*.png` is human-only and must not be uploaded, and the manifest is app-only.
+   Add page-by-page Windows native drag backed by a verified managed staging copy plus an
+   Explorer fallback; never pass an arbitrary frontend path to native drag.
+3. Accept decoded static JPG/JPEG/WebP browser results as opaque intermediate inputs when the
+   user explicitly allows a background. Preserve the downloaded bytes, convert deterministically
+   to an internal PNG, validate exact page geometry, and warn that the rebuilt GIF will keep the
+   background. Transparent-preservation mode continues to require meaningful PNG alpha.
+4. Make transparency preferred rather than universally mandatory for source-free generation.
+   Opaque results require an explicit `background included` review decision and must never be
+   mistaken for transparency. High-confidence painted checkerboards block strict transparency;
+   explicit background-included mode keeps them with a warning and never removes them automatically.
+5. Strengthen the Gemini edit-only/style-preservation prompt, make representative references
+   discoverable, and keep the limitation visible: generative providers do not guarantee exact
+   frame/style consistency or sprite-sheet geometry.
+6. Cover automatic manifest reuse, recovery fallback, artifact-role labels, page drag, format
+   sniffing/conversion, alpha-policy decisions and exact timing/loop restoration with frontend
+   and Rust tests. Run lint, all tests, production build, Rust formatting and license guards.
+
+Status: completed on 2026-08-02. Verification: frontend 60 files / 394 tests, Rust 371 tests,
+TypeScript lint, production build, Rust format check, dependency guard and license guard passed.
+`cargo-deny` and `cargo-about` remain optional and unavailable; the repository guard scripts report
+that skip explicitly.
+
+## Stage PACKAGE_REFRESH_2026_08_03
+
+1. Keep `package.json`, lockfiles, Cargo metadata and Tauri metadata on the existing local-test
+   version `0.3.0-alpha.4` and build only the NSIS target because MSI rejects the prerelease
+   identifier.
+2. Run the Tauri production build, regenerate the NSIS-only SHA-256 manifest, and replace the
+   stale dotted bundle-root convenience copy with the newly built installer.
+3. Verify both installer copies have identical SHA-256, inspect product/file version and
+   Authenticode state, and update the release-readiness record with current test counts, size,
+   timestamp and hash.
+
+Status: completed on 2026-08-03 for local installation testing. NSIS build and checksum generation
+passed; installer size is 7,127,055 bytes and SHA-256 is
+`bb6bb4e39f642a3b86bb6113243e78b4c0a99117b66160dbe4cca06f0f982d33`.
+The package remains unsigned. Re-publishing a different binary under the already-used alpha.4
+version is not allowed; bump to alpha.5 before a new public GitHub release.
+
+## Stage PUBLIC_RELEASE_0_3_0_ALPHA_5
+
+1. Preserve the already-published alpha.4 tag, release assets and readiness record.
+2. Bump package, lockfile, Cargo and Tauri metadata to `0.3.0-alpha.5`; regenerate licenses.
+3. Run the full frontend/Rust/license gates and build an unsigned NSIS-only installer.
+4. Commit and push the existing `codex/ai-provider-handoff` release branch, update draft PR #5,
+   and create `v0.3.0-alpha.5` as a non-latest GitHub prerelease with installer and checksum.
+5. Verify the remote tag target, asset sizes/digests and downloaded checksum metadata.
+
+Status: implementation and release-candidate verification complete on 2026-08-03.
+Frontend 60 files / 394 tests, Rust 371 tests, lint, production build, Rust format,
+license guards, NSIS packaging and independent SHA-256 verification passed. GitHub tag,
+assets and checksum are published only from the committed release branch and verified as
+the final external action of this stage.

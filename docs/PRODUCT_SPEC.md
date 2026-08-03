@@ -414,8 +414,9 @@ Stage Gate를 통과해야 하며 미래 기능을 동작하지 않는 메뉴로
 - 첫 automated provider pilot은 기존 정적 JPG/PNG 한 장 편집만 다룬다. 직접 API의
   GIF 전체 frame batch, animated output, text-to-image와 inpaint는 별도 opt-in
   실험 Stage Gate로 분리한다. 수동 웹 GIF 편집은 direct provider 호출이 아니라
-  `pmtcon-gif-frame-sheet-v2` clean PNG/manifest 왕복으로 제공하며, 원본 GIF와
-  frame timing/order/loop를 그대로 보존·복원한다.
+  `pmtcon-gif-frame-sheet-v2` clean page 왕복으로 제공한다. manifest는 앱 복원용으로
+  유지하고 웹에 업로드하지 않으며, 원본 GIF와 frame timing/order/loop를 그대로
+  보존·복원한다.
 - 실제 flow가 구현되기 전에는 AI 메뉴나 탭을 노출하지 않는다.
 - 아이콘/collection 복제는 request·candidate·source bytes를 공유하되 새 lineage와
   version/state/preview ownership을 만든다. 모든 과거 lineage를 서로 다른 새 lineage로
@@ -433,8 +434,10 @@ Stage Gate를 통과해야 하며 미래 기능을 동작하지 않는 메뉴로
   영역만 독립적으로 스크롤한다.
 - 공급자 또는 수동 작업이 반환한 임의 크기 JPG/PNG는 raw candidate로 그대로
   보존한다. 단일 수동 웹 결과가 요청 크기와 달라도 목표와 가로세로 비율이 같으면
-  차단하지 않고 로컬 정규화 경고를 표시한다. 비율이 다르거나 필수 alpha가 사라진
-  결과는 계속 차단한다. 적용 전 `전체 보이기(contain + pad)` 또는
+  차단하지 않고 로컬 정규화 경고를 표시한다. 비율이 다르면 계속 차단하고, 요청에서
+  투명을 필수로 고른 경우 alpha 손실도 차단한다. 투명이 권장인 요청의 불투명 결과는
+  자동 적용하지 않고 사용자가 `배경 포함으로 계속`을 명시적으로 선택해야 한다.
+  적용 전 `전체 보이기(contain + pad)` 또는
   `빈틈 없이 채우기(cover + crop)`, 3×3 정렬과 bounded resize filter로 현재
   base-source canvas에 맞춘 별도 불변 source를 만들고 normalization recipe/hash를
   AI version에 저장한다. 기본은 transparent pad를 쓰는 `전체 보이기`다.
@@ -506,11 +509,62 @@ Stage Gate를 통과해야 하며 미래 기능을 동작하지 않는 메뉴로
   contain으로 비율을 보존하고 GIF 참고는 첫 프레임 poster를 사용한다. 참고 board
   배치와 실제 출력 geometry를 프롬프트에서 분리하며, 살아 있는 reference board는
   최근 전달에서 다시 끌기·Explorer 열기·취소할 수 있다. F152/F155의 GIF manifest
-  왕복은 clean PNG/manifest와 구조 보호 프롬프트를 Gemini/NovelAI 웹에 수동 전달하고
-  정확한 frame delay/loop를 복원한다. direct provider animated/GIF batch는 여전히
+  왕복은 clean PNG page와 구조 보호 프롬프트만 Gemini/NovelAI 웹에 수동 전달하고
+  앱이 보관한 manifest로 정확한 frame delay/loop를 복원한다. direct provider animated/GIF batch는 여전히
   별도 Stage Gate다. F139 session-only
   NovelAI 정적 이미지 편집 pilot은 mock·보안·license Stage Gate와 사용자 승인 live
   test 전에는 일반 release 완료 기능으로 표시하지 않는다.
+
+### GIF 웹 전달 UX 계약 (2026-08-02)
+
+- 웹 AI에 올리는 파일은 라벨·격자 없는 `frames_sheet_001.png`와 이후 clean page뿐이다.
+  여러 페이지는 화면에 표시된 실제 캔버스대로 한 장씩 같은 prompt와 provider 설정으로
+  처리한다. `frames_guide_*.png`는 셀 번호·시간을 사람이 확인하는 파일이므로 웹에
+  올리지 않는다. `frames_manifest.json`도 frame timing/order/loop와 page mapping을
+  복원하는 앱 전용 파일이며 웹 입력이 아니다.
+- 내보내기 직후 같은 dialog/session에서 결과를 가져오면 앱이 생성한 manifest와 page
+  slot을 유지해 사용자가 JSON을 다시 선택하지 않는다. 앱 재시작, 별도 `교체하기`
+  진입, 관리 기록 만료·손상처럼 자동 연결을 검증할 수 없는 때에만 수동 manifest
+  선택/drop을 복구 경로로 제공한다. 자동 연결도 icon/source/recipe hash를 다시
+  검증하며 다른 내보내기의 manifest를 추측하지 않는다.
+- 각 clean page는 관리형 파일 검증을 통과한 Windows native drag와 Explorer 선택을
+  제공한다. guide와 manifest에는 웹 전달 drag를 제공하지 않는다. 브라우저 업로드,
+  생성, 다운로드는 사용자가 공식 웹에서 직접 수행한다.
+- 결과는 PNG를 권장하지만 JPG/JPEG와 정적 WebP도 실제 byte signature로 판별해
+  불투명 중간 결과로 검토할 수 있다. exact page canvas와 명시적 page slot mapping은
+  계속 필수다. alpha가 없거나 모든 pixel이 불투명하면 `배경 포함으로 계속`을 명시적으로
+  선택해야 내부 PNG로 정규화하며, 선택 전에는 GIF variant를 만들지 않는다. animated
+  WebP는 첫 frame으로 조용히 평탄화하지 않고 지원하지 않는 애니메이션 결과로 알린다.
+- 이미지에 직접 그린 checkerboard는 투명 alpha가 아니므로 경고한다. 사용자가 배경
+  포함을 선택하면 checker도 pixel로 남는다는 점을 미리 보여 주며, 회색 외곽선과
+  anti-aliasing 손상을 피하기 위해 자동 제거하지 않는다. 투명 배경은 권장값이지
+  모든 생성·편집 결과의 보편적 필수 조건은 아니다.
+- 구조 보존 prompt와 같은 reference/settings는 품질을 돕지만 생성 모델이 원본 그림체,
+  캐릭터 비율 또는 frame 간 일관성을 정확히 보장한다고 표현하지 않는다. 재조립 전후
+  사용자가 전체 animation, 깜빡임과 style drift를 검토해야 한다.
+
+### NovelAI 웹 전달 UX 계약 (2026-07-29)
+
+- NovelAI는 자연어와 태그를 모두 지원하지만 PMTCONCON Studio는 V4+에서 제어하기
+  쉬운 짧은 영문 소문자 태그를 기본 안내한다. Prompt와 Undesired Content는 서로
+  다른 입력란이므로 별도 표시·복사하고, 정확한 시트 구조 안내를 긴 태그처럼 섞지 않는다.
+  Prompt 복사가 성공해야 2단계 Undesired Content 버튼이 열리며, Prompt·공급자·요청을
+  다시 바꾸거나 복사하면 완료 상태를 초기화해 클립보드 내용과 화면 단계가 어긋나지 않는다.
+- 기존 단일 아이콘, 선택 아이콘 grid, GIF clean frame sheet처럼 배치·실루엣·셀
+  순서를 유지하는 편집에는 Image2Image를 우선 안내한다. Strength/Noise의 단일
+  정답값은 강제하지 않고 낮게 시작해 결과를 보며 조절하도록 설명한다.
+- 원본 없는 생성의 참고 board는 출력 틀이 아니다. 그림체·색감·질감은 Vibe Transfer,
+  V4.5의 캐릭터/스타일 일관성은 Precise Reference로 안내한다. 두 기능은 동시에
+  사용하지 않으며, 여러 Character Reference가 서로 다른 캐릭터로 분리된다고 약속하지 않는다.
+- 실제 NovelAI 화면의 `Add a Base Img (Optional)` 업로드를 안내하고, `What do you want to do with this image?` 선택 창이 표시되면 `Image2Image`를 고르며 바로 base image가 붙는 UI에서는 이어서 나타나는 Strength/Noise를 조절하도록 설명한다. Vibe Transfer/Precise Reference가 별도 패널로 보이면 해당 패널의 Add Image를 사용한다. 결과 형식은 `메뉴(☰) > Account Settings > Image Settings 탭 > Image Generation > Image Format for Generated Images > PNG`를 권장한다. 정적 단일·grid 결과는 Download Image로 받은 PNG/JPG/WebP를 바이트 signature로 판별하고 정적 WebP만 alpha 보존 내부 PNG로 정규화한다. animated WebP는 첫 프레임으로 조용히 평탄화하지 않고 지원하지 않는 애니메이션 결과로 차단한다. 브라우저 다운로드명은 identity나 매핑 키로 신뢰하지 않는다. 투명이 필요한 경우에만 `Director Tools > Remove BG`를 선택적으로 적용하고 alpha를 확인하며 배경 포함 작업에는 강제하지 않는다.
+- NovelAI 웹에서 200×200 입력이 192×192처럼 가까운 지원 크기로 바뀔 수 있다.
+  정적 단일 결과는 목표와 같은 비율이면 원본 후보를 보존하고 로컬에서 목표 크기로
+  정규화한다. grid와 GIF frame sheet는 셀 복원을 위해 정확한 캔버스가 필요하므로
+  임의 보정하지 않는다. 다중 페이지 GIF는 각 clean PNG를 한 장씩 같은 Prompt·Strength·Noise·sampler 설정으로 Image2Image 처리하되 해상도는 표시된 페이지별 실제 캔버스로 바꾸고 현재 페이지 하나만 반환하도록 안내한다. 마지막 부분 페이지가 작을 수 있으므로 페이지별 실제 캔버스를 표시하고 exact 검증한다. NovelAI가 다운로드명을 바꾸면 manifest 페이지 슬롯에서 사용자가 결과를 명시적으로 연결하며, Chrome의 `(1)` 접미사와 PNG 확장자 대소문자는 모호하지 않을 때만 자동 연결한다. 다중 페이지에서 마지막 남은 unrelated file을 추측해 자동 배정하지 않는다. JPG/JPEG와 정적 WebP는 exact canvas 검사 뒤 불투명 중간 결과로만 연결하고 사용자의 `배경 포함으로 계속` 확인을 요구한다. renderer는 manifest JSON 4MB, 페이지 500개, 결과 한 장 64MB, manifest+결과 합계 64MB를 IPC 전에 검사한다. GIF에는 200px 셀과 최대 1024px 캔버스를 유지하는 내장
+  `NovelAI 웹 호환 GIF / 200x200 / 4x4` 프리셋을 제공한다.
+- Vibe Transfer/Precise Reference와 Image2Image는 구독 중에도 Anlas가 들 수 있으므로
+  사용자가 NovelAI의 Generate 버튼 비용 표시를 확인하도록 한다. 로그인·업로드 방식
+  선택·생성·다운로드는 계속 공식 웹에서 사람이 직접 수행한다.
 
 ### 컬렉션 AI grid 요구사항 (2026-07-28)
 
@@ -531,6 +585,24 @@ Stage Gate를 통과해야 하며 미래 기능을 동작하지 않는 메뉴로
 - 원본 없는 생성에 투명 placeholder icon이나 가짜 source/lineage를 만들지 않는다.
   승인된 candidate cell이 새 icon의 최초 immutable source가 되고 생성 provenance를
   기록한다.
+- 원본 없는 단일/그리드 생성 결과는 파일 확장자나 alpha 픽셀 한 개가 아니라 decoded
+  pixel의 의미 있는 alpha와 painted checker를 검사한다. 투명 배경은 기본 권장값이며
+  사용자가 `투명 필수`를 고른 경우에만 canvas와 각 target cell 외곽 연결 alpha=0
+  영역 5% 이상, border·gap·unused cell 95% 이상 조건을 blocking gate로 적용한다.
+  그 밖의 불투명 PNG/JPG/JPEG/static WebP는 자동 적용하지 않고 결과 검토에서
+  `배경 포함으로 계속`을 명시적으로 선택한 경우에만 후보/새 아이콘으로 진행한다.
+  가짜 checker, alpha 한 픽셀과 1px 투명 테두리는 실제 투명으로 표시하지 않는다.
+  고신뢰도 painted checker는 `투명 필수`에서 차단하고, `배경 포함`을 명시적으로 고른
+  경우에만 경고 후 유지한다. 배경 포함을 선택하면 그 pixel이 그대로 남음을 보여 주며 회색 외곽선과
+  안티앨리어싱을 손상할 수 있는 checker 자동 제거는 하지 않는다. static WebP는
+  alpha를 보존해 내부 PNG로 정규화하고 animated WebP는 별도 애니메이션 결과로 차단한다.
+- 결과 artifact 저장 뒤 cell 분석이 일시적으로 실패하면 backend의
+  layout_review_pending 상태에 맞춰 4단계를 유지하고 파일 재업로드 없이
+  결과 다시 분석으로 복구한다.
+- 현재 Gemini 직접 API adapter는 JPEG 결과만 받으므로 `투명 필수` 요청은 HTTP와
+  비용 발생 전에 차단하고 실제 alpha를 요구하는 수동 웹 전달로 안내한다. 사용자가
+  배경 포함 결과를 명시적으로 허용한 요청만 기존 비용·consent gate 아래 진행할 수
+  있으며 반환 JPEG를 투명하다고 표시하지 않는다.
 - 요청 한 번의 usage/cost를 N개 후보에 중복 합산하지 않는다. 호출 수가 줄어도
   공급자 과금 절감을 보장하지 않는다.
 - 한 사용자 동작은 HTTP 요청 한 번만 만들며 자동 retry, fallback과 background

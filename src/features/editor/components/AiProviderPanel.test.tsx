@@ -121,6 +121,9 @@ describe("AiProviderPanel provider gates and accessibility", () => {
     expect(html).toContain("기본값을 제공하지 않으며");
     expect(html).toContain("호환성을 보장하지 않습니다.");
     expect(html).toContain("Image Anlas");
+    expect(html).toContain("영문 소문자 태그");
+    expect(html).toContain("Undesired Content");
+    expect(html).toContain("Vibe Transfer·Precise Reference");
     expect(html).toContain("사람이 지금 직접 시작하는 1회 요청");
     expect(openingTag(html, "ai-novelai-execute")).toContain('disabled=""');
     expect(html).toContain("이 이미지 1장 수정");
@@ -141,6 +144,18 @@ describe("AiProviderPanel provider gates and accessibility", () => {
     expect(openingTag(html, "ai-gemini-execute")).toContain('disabled=""');
   });
 
+  it("blocks direct Gemini JPEG output for a source that needs real transparency", () => {
+    const transparentHtml = renderPanel("gemini");
+    const opaqueHtml = renderPanel("gemini", { ...source, hasAlpha: false });
+
+    expect(transparentHtml).toContain("Gemini 직접 API는 JPEG 결과만 받아");
+    expect(transparentHtml).toContain("실제 투명 배경을 보존할 수 없습니다");
+    expect(transparentHtml).toContain("웹으로 전달 흐름을 사용");
+    expect(openingTag(transparentHtml, "ai-gemini-execute")).toContain(
+      'disabled=""',
+    );
+    expect(opaqueHtml).not.toContain("Gemini 직접 API는 JPEG 결과만 받아");
+  });
   it("shows one guided web handoff action without exposing internal manifest controls", () => {
     const html = renderPanel("web");
     const resourceValues = Array.from(

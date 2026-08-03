@@ -1,11 +1,23 @@
+import type { AiGridResultBackgroundPolicy } from "@/features/ai-grid/ai-grid-workspace-model";
 import type {
   AiGridWorkspace,
 } from "@/features/ai-grid/types";
 import type { SheetGridAnalysis } from "@/features/sheets/types";
 
+export function buildAiGridMissingAlphaCorrectionPrompt() {
+  return [
+    "[Transparency correction request]",
+    "- Use real alpha transparency and set every background pixel outside the icons to alpha 0.",
+    "- Keep every gap and unused cell fully transparent.",
+    "- Never draw or rasterize a checkerboard, transparency grid, gray-and-white tiles, matte, or opaque background to imitate transparency.",
+    "- Return exactly one static PNG image with an alpha channel and no prose. For multi-icon work, preserve the original sprite-sheet geometry and cell order.",
+  ].join("\n");
+}
+
 export function buildAiGridCorrectionPrompt(
   workspace: AiGridWorkspace,
   analysis: SheetGridAnalysis,
+  backgroundPolicy: AiGridResultBackgroundPolicy = "preserve_transparency",
 ) {
   const instructions: string[] = [];
   if (
@@ -71,9 +83,13 @@ export function buildAiGridCorrectionPrompt(
   }
 
   if (instructions.length === 0) return null;
+  const outputRule =
+    backgroundPolicy === "allow_opaque"
+      ? "- 정적 PNG·JPG·WebP 스프라이트 한 장만 반환하세요. 배경을 포함한다면 체커무늬·가짜 투명 패턴·질감·그라데이션·그림자 없는 하나의 균일한 단색을 사용하고 설명문은 출력하지 마세요."
+      : "- 정적 투명 PNG 스프라이트 한 장만 반환하고 설명문은 출력하지 마세요.";
   return [
     "[구조 수정 요청]",
     ...instructions.map((instruction) => `- ${instruction}`),
-    "- 정적 투명 PNG 스프라이트 한 장만 반환하고 설명문은 출력하지 마세요.",
+    outputRule,
   ].join("\n");
 }

@@ -4,6 +4,7 @@ use std::path::{Component, Path, PathBuf};
 use std::sync::{Mutex, MutexGuard, OnceLock};
 use std::time::{Duration, SystemTime};
 
+use image::codecs::webp::WebPDecoder;
 use image::{DynamicImage, ImageFormat};
 use rusqlite::{params, Connection, OptionalExtension, TransactionBehavior};
 use serde::{Deserialize, Serialize};
@@ -370,6 +371,7 @@ fn prepare_ai_web_handoff_with_quota(
     }
 
     let final_prompt = build_static_single_prompt(
+        service_surface,
         current.render_source.width,
         current.render_source.height,
         current.render_source.has_alpha,
@@ -1035,10 +1037,7 @@ pub fn commit_ai_web_handoff_result(
             "결과 이미지 형식을 확인할 수 없습니다.",
         )
     })?;
-    let normalized_file = ImportImageFilePayload {
-        original_filename: format!("ai-web-result.{extension}"),
-        bytes: file.bytes,
-    };
+    let normalized_file = normalize_handoff_result_for_storage(file, extension)?;
     let prepared = prepare_source_file_from_bytes(
         &normalized_file,
         SourceFileImportOptions {
@@ -1506,13 +1505,18 @@ fn validate_user_prompt(prompt: &str) -> AppResult<()> {
 }
 
 fn build_static_single_prompt(
+    service_surface: &str,
     width: i64,
     height: i64,
     has_alpha: bool,
     user_prompt: &str,
 ) -> AppResult<String> {
+    if service_surface == "novelai_web" {
+        return build_novelai_static_single_prompt(width, height, has_alpha, user_prompt);
+    }
+
     let alpha_rule = if has_alpha {
-        "Preserve the transparent background and every transparent region."
+        "Preserve the transparent background and every transparent region. Transparency means real pixel alpha with background pixels at alpha=0. Never draw or paint a checkerboard, checkered pattern, or transparency grid."
     } else {
         "Do not add an unintended border, frame, or padding."
     };
@@ -1541,6 +1545,50 @@ fn build_static_single_prompt(
         return Err(AppError::new(
             "ai_handoff_prompt_too_long",
             "기본 지시를 포함한 최종 프롬프트가 4KB를 넘습니다. 사용자 요청을 줄여 주세요.",
+        ));
+    }
+    Ok(prompt)
+}
+
+fn build_novelai_static_single_prompt(
+    width: i64,
+    height: i64,
+    has_alpha: bool,
+    user_prompt: &str,
+) -> AppResult<String> {
+    let canvas_tag = match width.cmp(&height) {
+        std::cmp::Ordering::Equal => "square canvas",
+        std::cmp::Ordering::Greater => "landscape canvas",
+        std::cmp::Ordering::Less => "portrait canvas",
+    };
+    let mut tags = vec![
+        "single image".to_string(),
+        canvas_tag.to_string(),
+        "emoticon".to_string(),
+        "sticker".to_string(),
+        "solo".to_string(),
+        "centered".to_string(),
+    ];
+    if has_alpha {
+        tags.push("transparent background".to_string());
+    }
+
+    let normalized_user_tags = user_prompt
+        .split(|character| matches!(character, ',' | ';' | '\r' | '\n'))
+        .map(|tag| {
+            tag.split_whitespace()
+                .collect::<Vec<_>>()
+                .join(" ")
+                .to_lowercase()
+        })
+        .filter(|tag| !tag.is_empty());
+    tags.extend(normalized_user_tags);
+
+    let prompt = tags.join(", ");
+    if prompt.len() > MAX_FINAL_PROMPT_BYTES {
+        return Err(AppError::new(
+            "ai_handoff_prompt_too_long",
+            "기본 태그를 포함한 NovelAI 프롬프트가 4KB를 넘습니다. 사용자 태그를 줄여 주세요.",
         ));
     }
     Ok(prompt)
@@ -1609,6 +1657,23 @@ fn retention_times(connection: &Connection) -> AppResult<(String, String)> {
             |row| Ok((row.get(0)?, row.get(1)?)),
         )
         .map_err(Into::into)
+}
+
+fn normalize_handoff_result_for_storage(
+    file: ImportImageFilePayload,
+    extension: &str,
+) -> AppResult<ImportImageFilePayload> {
+    if extension == "webp" {
+        let decoded = decode_import_image(&file.bytes, ImageFormat::WebP)?;
+        return Ok(ImportImageFilePayload {
+            original_filename: "ai-web-result.png".to_string(),
+            bytes: encode_png(&decoded)?,
+        });
+    }
+    Ok(ImportImageFilePayload {
+        original_filename: format!("ai-web-result.{extension}"),
+        bytes: file.bytes,
+    })
 }
 
 fn encode_png(image: &DynamicImage) -> AppResult<Vec<u8>> {
@@ -2197,10 +2262,12 @@ fn inspect_result(
                     severity: "blocking".to_string(),
                     message: "이번 전달 세션은 정적 결과만 받을 수 있지만 GIF가 들어왔습니다."
                         .to_string(),
-                    expected: Some("정적 PNG 또는 JPG".to_string()),
+                    expected: Some("정적 PNG, JPG 또는 WebP".to_string()),
                     actual: Some("GIF".to_string()),
                     suggested_prompt: Some("Return exactly one static PNG image.".to_string()),
-                    local_action: Some("정적 PNG/JPG 결과를 내려받아 다시 놓으세요.".to_string()),
+                    local_action: Some(
+                        "정적 PNG/JPG/WebP 결과를 내려받아 다시 놓으세요.".to_string(),
+                    ),
                 },
             );
             return Ok(InspectedResult {
@@ -2211,17 +2278,18 @@ fn inspect_result(
         }
         Ok(ImageFormat::Png) => Some((ImageFormat::Png, "png")),
         Ok(ImageFormat::Jpeg) => Some((ImageFormat::Jpeg, "jpg")),
+        Ok(ImageFormat::WebP) => Some((ImageFormat::WebP, "webp")),
         Ok(_) => {
             push_blocking_issue(
                 &mut dto,
                 AiWebHandoffIssueDto {
                     code: "ai_handoff_result_format".to_string(),
                     severity: "blocking".to_string(),
-                    message: "결과는 PNG 또는 JPG 파일이어야 합니다.".to_string(),
-                    expected: Some("PNG 또는 JPG".to_string()),
+                    message: "결과는 PNG, JPG 또는 WebP 파일이어야 합니다.".to_string(),
+                    expected: Some("PNG, JPG 또는 WebP".to_string()),
                     actual: Some("지원하지 않는 이미지 형식".to_string()),
                     suggested_prompt: Some("Return exactly one PNG image only.".to_string()),
-                    local_action: Some("웹 결과를 PNG/JPG로 다시 내려받으세요.".to_string()),
+                    local_action: Some("웹 결과를 PNG/JPG/WebP로 다시 내려받으세요.".to_string()),
                 },
             );
             return Ok(InspectedResult {
@@ -2237,7 +2305,7 @@ fn inspect_result(
                     code: "ai_handoff_result_corrupt".to_string(),
                     severity: "blocking".to_string(),
                     message: "결과 파일을 이미지로 읽을 수 없습니다.".to_string(),
-                    expected: Some("정상적인 PNG 또는 JPG".to_string()),
+                    expected: Some("정상적인 PNG, JPG 또는 WebP".to_string()),
                     actual: Some("손상되었거나 이미지가 아닌 파일".to_string()),
                     suggested_prompt: None,
                     local_action: Some("웹에서 이미지를 다시 내려받아 놓으세요.".to_string()),
@@ -2251,6 +2319,53 @@ fn inspect_result(
         }
     };
     let (format, extension) = format.expect("format is present after early returns");
+    if format == ImageFormat::WebP {
+        let decoder = match WebPDecoder::new(Cursor::new(file.bytes.as_slice())) {
+            Ok(decoder) => decoder,
+            Err(_) => {
+                push_blocking_issue(
+                    &mut dto,
+                    AiWebHandoffIssueDto {
+                        code: "ai_handoff_result_corrupt".to_string(),
+                        severity: "blocking".to_string(),
+                        message: "WebP 결과 파일의 구조를 읽을 수 없습니다.".to_string(),
+                        expected: Some("정상적인 정적 WebP".to_string()),
+                        actual: Some("손상되었거나 지원하지 않는 WebP".to_string()),
+                        suggested_prompt: None,
+                        local_action: Some(
+                            "웹에서 정적 PNG 또는 WebP 결과를 다시 내려받아 놓으세요.".to_string(),
+                        ),
+                    },
+                );
+                return Ok(InspectedResult {
+                    dto,
+                    sha256,
+                    extension: Some(extension),
+                });
+            }
+        };
+        if decoder.has_animation() {
+            push_blocking_issue(
+                &mut dto,
+                AiWebHandoffIssueDto {
+                    code: "ai_handoff_result_animated".to_string(),
+                    severity: "blocking".to_string(),
+                    message: "애니메이션 WebP는 정적 AI 결과로 가져올 수 없습니다.".to_string(),
+                    expected: Some("정적 PNG, JPG 또는 WebP".to_string()),
+                    actual: Some("애니메이션 WebP".to_string()),
+                    suggested_prompt: Some("Return exactly one static PNG image.".to_string()),
+                    local_action: Some(
+                        "정적 PNG/JPG/WebP 결과를 내려받아 다시 놓으세요.".to_string(),
+                    ),
+                },
+            );
+            return Ok(InspectedResult {
+                dto,
+                sha256,
+                extension: Some(extension),
+            });
+        }
+    }
     let image = match decode_import_image(&file.bytes, format) {
         Ok(image) => image,
         Err(_) => {
@@ -2275,10 +2390,36 @@ fn inspect_result(
             });
         }
     };
+    if extension == "webp" {
+        let normalized_png = encode_png(&image)?;
+        if normalized_png.len() > MAX_AI_HANDOFF_BYTES {
+            push_blocking_issue(
+                &mut dto,
+                AiWebHandoffIssueDto {
+                    code: "ai_handoff_result_too_large".to_string(),
+                    severity: "blocking".to_string(),
+                    message: "WebP 결과를 내부 PNG로 변환하면 16MB를 넘습니다.".to_string(),
+                    expected: Some("내부 PNG 16MB 이하".to_string()),
+                    actual: Some(format!("{} bytes", normalized_png.len())),
+                    suggested_prompt: Some(
+                        "Return one smaller PNG or WebP image without changing the aspect ratio."
+                            .to_string(),
+                    ),
+                    local_action: Some(
+                        "NovelAI에서 더 작은 정사각형 해상도로 다시 생성해 주세요.".to_string(),
+                    ),
+                },
+            );
+            return Ok(InspectedResult {
+                dto,
+                sha256,
+                extension: Some(extension),
+            });
+        }
+    }
     let actual_width = i64::from(image.width());
     let actual_height = i64::from(image.height());
-    let actual_has_alpha =
-        extension == "png" && image.to_rgba8().pixels().any(|pixel| pixel[3] < 255);
+    let actual_has_alpha = image.to_rgba8().pixels().any(|pixel| pixel[3] < 255);
     dto.actual_width = Some(actual_width);
     dto.actual_height = Some(actual_height);
     dto.actual_has_alpha = Some(actual_has_alpha);
@@ -2617,6 +2758,56 @@ mod tests {
         encode_png(&image).unwrap()
     }
 
+    fn webp_bytes(width: u32, height: u32, alpha: u8) -> Vec<u8> {
+        let image = DynamicImage::ImageRgba8(image::RgbaImage::from_pixel(
+            width,
+            height,
+            image::Rgba([10, 20, 30, alpha]),
+        ));
+        let mut cursor = Cursor::new(Vec::new());
+        image.write_to(&mut cursor, ImageFormat::WebP).unwrap();
+        cursor.into_inner()
+    }
+
+    fn animated_webp_bytes(width: u32, height: u32) -> Vec<u8> {
+        fn push_chunk(target: &mut Vec<u8>, fourcc: &[u8; 4], payload: &[u8]) {
+            target.extend_from_slice(fourcc);
+            target.extend_from_slice(&(payload.len() as u32).to_le_bytes());
+            target.extend_from_slice(payload);
+            if payload.len() % 2 != 0 {
+                target.push(0);
+            }
+        }
+
+        fn write_u24(target: &mut Vec<u8>, value: u32) {
+            target.extend_from_slice(&value.to_le_bytes()[..3]);
+        }
+
+        let static_frame = webp_bytes(width, height, 0);
+        let frame_chunk = &static_frame[12..];
+        let mut body = b"WEBP".to_vec();
+        let mut vp8x = vec![0b0001_0010, 0, 0, 0];
+        write_u24(&mut vp8x, width - 1);
+        write_u24(&mut vp8x, height - 1);
+        push_chunk(&mut body, b"VP8X", &vp8x);
+        push_chunk(&mut body, b"ANIM", &[0, 0, 0, 0, 0, 0]);
+        for duration_ms in [80_u32, 120_u32] {
+            let mut frame = Vec::new();
+            write_u24(&mut frame, 0);
+            write_u24(&mut frame, 0);
+            write_u24(&mut frame, width - 1);
+            write_u24(&mut frame, height - 1);
+            write_u24(&mut frame, duration_ms);
+            frame.push(0b0000_0010);
+            frame.extend_from_slice(frame_chunk);
+            push_chunk(&mut body, b"ANMF", &frame);
+        }
+        let mut output = b"RIFF".to_vec();
+        output.extend_from_slice(&(body.len() as u32).to_le_bytes());
+        output.extend_from_slice(&body);
+        output
+    }
+
     fn record(width: i64, height: i64, expected_has_alpha: bool) -> HandoffRecord {
         HandoffRecord {
             request_id: "ai_request_00000000000000000000000000000001_00000001".to_string(),
@@ -2650,15 +2841,40 @@ mod tests {
     }
 
     #[test]
-    fn static_single_prompt_is_deterministic_and_never_describes_a_grid() {
-        let first = build_static_single_prompt(200, 200, true, "표정을 더 밝게").unwrap();
-        let second = build_static_single_prompt(200, 200, true, "표정을 더 밝게").unwrap();
+    fn gemini_static_single_prompt_is_deterministic_and_never_describes_a_grid() {
+        let first =
+            build_static_single_prompt("gemini_web", 200, 200, true, "표정을 더 밝게").unwrap();
+        let second =
+            build_static_single_prompt("gemini_web", 200, 200, true, "표정을 더 밝게").unwrap();
 
         assert_eq!(first, second);
         assert!(first.contains("exactly 200×200px"));
         assert!(first.contains("스프라이트 시트가 아닌 이미지 한 장"));
         assert!(first.contains("transparent background"));
+        assert!(first.contains("alpha=0"));
+        assert!(first.contains("checkerboard"));
+        assert!(first.contains("transparency grid"));
         assert!(first.len() <= MAX_FINAL_PROMPT_BYTES);
+    }
+
+    #[test]
+    fn novelai_static_single_prompt_is_a_compact_normalized_tag_line() {
+        let prompt = build_static_single_prompt(
+            "novelai_web",
+            200,
+            200,
+            true,
+            "  Happy   FACE;\n blue EYES, 표정을   더 밝게  ",
+        )
+        .unwrap();
+
+        assert_eq!(
+            prompt,
+            "single image, square canvas, emoticon, sticker, solo, centered, transparent background, happy face, blue eyes, 표정을 더 밝게"
+        );
+        assert!(!prompt.contains('\n'));
+        assert!(!prompt.contains("Return exactly"));
+        assert!(prompt.len() <= MAX_FINAL_PROMPT_BYTES);
     }
 
     #[test]
@@ -2703,6 +2919,90 @@ mod tests {
             .issues
             .iter()
             .any(|issue| issue.code == "ai_handoff_result_dimensions"));
+    }
+
+    #[test]
+    fn novelai_192_square_result_is_accepted_for_200_target_with_normalization_warning() {
+        let file = ImportImageFilePayload {
+            original_filename: "novelai-result.png".to_string(),
+            bytes: png_bytes(192, 192, 0),
+        };
+        let mut handoff = record(200, 200, true);
+        handoff.service_surface = "novelai_web".to_string();
+        let inspected = inspect_result(&handoff, &file, true).unwrap();
+
+        assert!(inspected.dto.accepted);
+        assert!(inspected.dto.validation_signature.is_some());
+        assert_eq!(inspected.dto.actual_width, Some(192));
+        assert_eq!(inspected.dto.actual_height, Some(192));
+        assert!(inspected.dto.issues.iter().any(|issue| {
+            issue.code == "ai_handoff_result_size_normalization"
+                && issue.severity == "warning"
+                && issue.expected.as_deref() == Some("200×200px (같은 비율 허용)")
+                && issue.actual.as_deref() == Some("192×192px")
+        }));
+        assert!(!inspected
+            .dto
+            .issues
+            .iter()
+            .any(|issue| issue.code == "ai_handoff_result_dimensions"));
+    }
+
+    #[test]
+    fn novelai_webp_result_is_accepted_by_bytes_and_preserves_alpha() {
+        let file = ImportImageFilePayload {
+            original_filename: "novelai-download-with-random-name.webp".to_string(),
+            bytes: webp_bytes(192, 192, 0),
+        };
+        let inspected = inspect_result(&record(200, 200, true), &file, true).unwrap();
+
+        assert!(inspected.dto.accepted);
+        assert_eq!(inspected.extension, Some("webp"));
+        assert_eq!(inspected.dto.actual_width, Some(192));
+        assert_eq!(inspected.dto.actual_height, Some(192));
+        assert_eq!(inspected.dto.actual_has_alpha, Some(true));
+        assert!(inspected.dto.issues.iter().any(|issue| {
+            issue.code == "ai_handoff_result_size_normalization" && issue.severity == "warning"
+        }));
+    }
+
+    #[test]
+    fn animated_webp_result_is_rejected_instead_of_flattening_the_first_frame() {
+        let file = ImportImageFilePayload {
+            original_filename: "animated-result.webp".to_string(),
+            bytes: animated_webp_bytes(64, 64),
+        };
+        let inspected = inspect_result(&record(64, 64, true), &file, true).unwrap();
+
+        assert!(!inspected.dto.accepted);
+        assert!(inspected.dto.validation_signature.is_none());
+        assert!(inspected.dto.issues.iter().any(|issue| {
+            issue.code == "ai_handoff_result_animated"
+                && issue.severity == "blocking"
+                && issue.actual.as_deref() == Some("애니메이션 WebP")
+        }));
+    }
+
+    #[test]
+    fn webp_result_storage_normalizes_to_png_without_losing_alpha() {
+        let normalized = normalize_handoff_result_for_storage(
+            ImportImageFilePayload {
+                original_filename: "novelai-random-name.webp".to_string(),
+                bytes: webp_bytes(32, 32, 0),
+            },
+            "webp",
+        )
+        .unwrap();
+
+        assert_eq!(normalized.original_filename, "ai-web-result.png");
+        assert_eq!(
+            image::guess_format(&normalized.bytes).unwrap(),
+            ImageFormat::Png
+        );
+        let decoded = decode_import_image(&normalized.bytes, ImageFormat::Png)
+            .unwrap()
+            .to_rgba8();
+        assert!(decoded.pixels().any(|pixel| pixel[3] < 255));
     }
 
     #[test]

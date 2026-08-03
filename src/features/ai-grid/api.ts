@@ -99,11 +99,16 @@ export function markAiGridWorkspaceAwaitingResult(requestId: string) {
   ).then(normalizeWorkspace);
 }
 
-export async function attachAiGridOutput(requestId: string, file: File) {
+export async function attachAiGridOutput(
+  requestId: string,
+  file: File,
+  allowOpaqueBackground = false,
+) {
   return invokeCommand<AiGridWorkspace>("attach_ai_grid_output", {
     requestId,
     file: await fileToImportPayload(file),
     manifestJson: null,
+    allowOpaqueBackground,
   }).then(normalizeWorkspace);
 }
 

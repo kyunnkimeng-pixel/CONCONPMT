@@ -96,24 +96,25 @@ describe("AI web handoff result diagnostics", () => {
 });
 
 describe("AI web handoff result file selection", () => {
-  it("accepts one local JPG or PNG and rejects missing, multiple, unsupported, and oversized files", () => {
+  it("passes one downloaded file to byte sniffing and rejects missing, multiple, and oversized files", () => {
     const png = { name: "result.png", size: 100, type: "image/png" } as File;
-    const jpg = { name: "result.JPEG", size: 100, type: "image/jpeg" } as File;
-    const gif = { name: "result.gif", size: 100, type: "image/gif" } as File;
+    const webp = { name: "novelai prompt s-123.webp", size: 100, type: "image/webp" } as File;
+    const unknownName = { name: "download.bin", size: 100, type: "application/octet-stream" } as File;
     const large = {
-      name: "large.png",
+      name: "large.webp",
       size: 16 * 1024 * 1024 + 1,
-      type: "image/png",
+      type: "image/webp",
     } as File;
 
     expect(selectAiWebHandoffResultFile([png])).toEqual({
       file: png,
       error: null,
     });
-    expect(selectAiWebHandoffResultFile([jpg]).error).toBeNull();
-    expect(selectAiWebHandoffResultFile([]).error).toContain("내려받은");
-    expect(selectAiWebHandoffResultFile([png, jpg]).error).toContain("한 장");
-    expect(selectAiWebHandoffResultFile([gif]).error).toContain("JPG 또는 PNG");
+    expect(selectAiWebHandoffResultFile([webp]).error).toBeNull();
+    expect(selectAiWebHandoffResultFile([unknownName]).error).toBeNull();
+    expect(selectAiWebHandoffResultFile([]).error).toContain("Download Image");
+    expect(selectAiWebHandoffResultFile([]).error).toContain("WebP");
+    expect(selectAiWebHandoffResultFile([png, webp]).error).toContain("한 장");
     expect(selectAiWebHandoffResultFile([large]).error).toContain("16MB");
   });
 });

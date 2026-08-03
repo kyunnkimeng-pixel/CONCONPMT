@@ -10,8 +10,8 @@ AI 프리릴리스 검증 범위는 [Release Readiness 0.3.0-alpha.1](docs/RELEA
 최신 안정 버전의 변경 사항은 [Release Notes 0.2.0](docs/RELEASE_NOTES_0.2.0.md)에서 볼 수 있습니다.
 AI 후보 작업공간 프리릴리스는 [Release Notes 0.3.0-alpha.1](docs/RELEASE_NOTES_0.3.0-alpha.1.md)에서 확인할 수 있습니다.
 이미지 표시 핫픽스는 [Release Notes 0.3.0-alpha.2](docs/RELEASE_NOTES_0.3.0-alpha.2.md)에서 확인할 수 있습니다.
-AI 참고 이미지·GIF 웹 왕복·Gemini 호환성 수정 프리릴리스는 [Release Notes 0.3.0-alpha.4](docs/RELEASE_NOTES_0.3.0-alpha.4.md)에서 확인할 수 있습니다.
-검증·패키징 결과는 [Release Readiness 0.3.0-alpha.4](docs/RELEASE_READINESS_0.3.0-alpha.4.md)에 기록했습니다.
+GIF AI 전달 UX·배경 검토·NovelAI 안내 개선 프리릴리스는 [Release Notes 0.3.0-alpha.5](docs/RELEASE_NOTES_0.3.0-alpha.5.md)에서 확인할 수 있습니다.
+검증·패키징 결과는 [Release Readiness 0.3.0-alpha.5](docs/RELEASE_READINESS_0.3.0-alpha.5.md)에 기록했습니다.
 
 ## 화면
 
@@ -62,6 +62,15 @@ GIF 아이콘은 우클릭 메뉴에서 모든 프레임을 PNG frame sheet로 �
 
 정적 단일 결과가 200×200 대신 1024×1024처럼 같은 비율로 돌아오면 원본 결과를 보존하고 경고한 뒤 앱의 후보 검토에서 목표 크기로 정규화합니다. 비율이 다르거나 필요한 투명도가 사라진 결과는 계속 차단합니다. GIF는 편집기의 `GIF AI 프레임 시트 작업 시작`에서 clean PNG와 manifest를 내보내고, 구조 보호 프롬프트와 함께 Gemini AI Studio/NovelAI 웹으로 전달한 뒤 timing·순서·loop를 복원해 별도 GIF 처리 버전으로 다시 가져옵니다.
 
+#### NovelAI 웹 사용 팁
+
+NovelAI는 자연어도 이해하지만, 앱은 결과 제어가 쉬운 `lower-case, comma-separated` 영문 태그를 Prompt용으로 준비하고 제외 태그는 `Undesired Content`용으로 따로 복사합니다. 업로드 뒤에는 목적에 맞춰 다음 방식을 고릅니다.
+
+- 기존 아이콘·그리드·GIF 프레임 배치 유지: `Image2Image`
+- 그림체·색감·질감 참고: `Vibe Transfer`
+- V4.5에서 캐릭터/스타일 일관성 참고: `Precise Reference` (Vibe Transfer와 동시 사용 불가)
+
+전달 이미지는 `Add a Base Img (Optional)`로 올립니다. `What do you want to do with this image?` 창이 뜨면 `Image2Image`를 고르고, 바로 base image가 붙으면 이어서 보이는 Strength/Noise를 낮게 시작하세요. PNG 설정 경로는 `메뉴(☰) → Account Settings → Image Settings 탭 → Image Generation → Image Format for Generated Images → PNG`입니다. 앱에서는 먼저 `1/2 Prompt`를 복사한 뒤에만 `2/2 Undesired Content` 버튼이 열리며, 요청을 바꾸면 다시 1단계로 돌아갑니다. 정적 단일·그리드는 Download Image로 받은 PNG/JPG/WebP를 가져올 수 있고 정적 WebP는 alpha를 보존한 내부 PNG로 자동 변환합니다. animated WebP는 첫 프레임으로 바꾸지 않고 오류로 알립니다. 투명 배경이 채워졌다면 `Director Tools → Remove BG`를 적용하세요. 200×200이 192×192처럼 바뀌어도 단일 아이콘은 정사각 비율과 필요한 투명도가 유지되면 적용 시 목표 크기로 맞춥니다. 그리드와 GIF 시트는 정확한 캔버스가 필요합니다. GIF clean PNG는 한 장씩 같은 Prompt·Strength·Noise·sampler 설정으로 처리하되, 해상도는 앱이 표시한 페이지별 실제 캔버스로 바꾼 뒤 다시 가져오기 슬롯에 연결합니다. NovelAI가 파일명을 바꾸어도 직접 연결할 수 있고 Chrome의 `(1)` 접미사는 모호하지 않을 때만 자동 인식합니다. 다중 페이지의 마지막 남은 파일은 추측하지 않습니다. GIF 결과는 PNG를 권장하지만 JPG/JPEG·정적 WebP도 실제 디코딩 형식과 exact canvas를 검사해 내부 PNG로 변환하며, 불투명 결과는 배경 포함 동의를 요구합니다. GIF·animated WebP는 지원하지 않아 구체적인 안내와 함께 차단합니다. manifest는 4MB, 페이지는 500개, 결과 이미지 한 장과 전체 전달은 각각 64MB 한도에서 앱이 읽기 전에 검사합니다. `NovelAI 웹 호환 GIF / 200x200 / 4x4` 프리셋을 권장하며, 생성 전 Generate 버튼의 Anlas 비용을 확인하세요.
 Windows에서는 앱이 다시 검증한 관리형 파일을 공식 웹의 업로드 영역까지 직접 끌 수 있고, 키보드·비Windows·호환성 문제에는 Explorer 선택을 사용합니다. 앱은 로그인, DOM, cookie, 생성 완료 또는 다운로드를 자동 제어하지 않습니다. 사이드바 `최근 AI 전달`에서 256MiB 임시 저장 공간, 만료/정리 상태와 최근 기록을 확인할 수 있으며 앱이 켜져 있으면 15분마다 만료 정리를 다시 시도합니다.
 
 ## 주요 기능

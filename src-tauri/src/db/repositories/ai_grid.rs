@@ -1,7 +1,9 @@
-use std::collections::{HashMap, HashSet};
+use std::collections::{HashMap, HashSet, VecDeque};
+use std::io::Cursor;
 use std::path::{Path, PathBuf};
 
-use image::ImageFormat;
+use image::codecs::webp::WebPDecoder;
+use image::{DynamicImage, ImageFormat, RgbaImage};
 use rusqlite::{params, Connection, OptionalExtension, Transaction, TransactionBehavior};
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
@@ -14,6 +16,7 @@ use crate::db::repositories::source_files::{
 use crate::db::repositories::{ai, ai_activation, ai_handoff, ai_snapshots, icons};
 use crate::error::{AppError, AppResult};
 use crate::ids::create_id;
+use crate::imaging::ai_transparency::has_high_confidence_painted_checker;
 use crate::imaging::import_limits::{decode_import_image, read_import_file_bytes};
 use crate::models::{IconDto, ImportImageFilePayload};
 use crate::optimization::cache::hash_text;
@@ -37,6 +40,8 @@ const MAX_GRID_MANIFEST_BYTES: usize = 64 * 1024;
 const MAX_GRID_CANVAS_DIMENSION: u32 = 2_048;
 const MAX_GRID_CANVAS_PIXELS: u64 = 4_194_304;
 const GRID_THUMBNAIL_RESERVATION_BYTES: u64 = 1024 * 1024;
+const MIN_MEANINGFUL_TRANSPARENT_PERCENT: usize = 5;
+const MIN_OUTSIDE_TRANSPARENT_PERCENT: usize = 95;
 
 #[derive(Debug, Clone, Serialize, PartialEq, Eq)]
 #[serde(rename_all = "camelCase")]
@@ -475,11 +480,292 @@ pub(crate) fn prepare_ai_generation_with_references(
     result
 }
 
+fn normalize_ai_grid_output_file(
+    file: ImportImageFilePayload,
+) -> AppResult<ImportImageFilePayload> {
+    let format = image::guess_format(&file.bytes).map_err(|_| {
+        AppError::new(
+            "ai_grid_output_format",
+            "AI 그리드 결과를 이미지로 읽을 수 없습니다. Download Image로 받은 PNG, JPG 또는 WebP 파일을 선택해 주세요.",
+        )
+    })?;
+    if !matches!(
+        format,
+        ImageFormat::Png | ImageFormat::Jpeg | ImageFormat::WebP
+    ) {
+        return Err(AppError::new(
+            "ai_grid_output_format",
+            "AI 그리드 결과는 정적 PNG, JPG 또는 WebP 한 장만 사용할 수 있습니다.",
+        ));
+    }
+    if format == ImageFormat::WebP {
+        let decoder = WebPDecoder::new(Cursor::new(file.bytes.as_slice())).map_err(|_| {
+            AppError::new(
+                "ai_grid_output_format",
+                "WebP 결과 파일의 구조를 읽을 수 없습니다. 정적 PNG 또는 WebP를 다시 내려받아 주세요.",
+            )
+        })?;
+        if decoder.has_animation() {
+            return Err(AppError::new(
+                "ai_grid_output_animated",
+                "애니메이션 WebP는 정적 AI 그리드 결과로 사용할 수 없습니다. 정적 PNG/JPG/WebP 한 장을 내려받아 주세요.",
+            ));
+        }
+        let decoded = decode_import_image(&file.bytes, ImageFormat::WebP)?;
+        let mut cursor = Cursor::new(Vec::new());
+        decoded
+            .write_to(&mut cursor, ImageFormat::Png)
+            .map_err(|_| {
+                AppError::new(
+                    "ai_grid_output_format",
+                    "WebP 결과를 투명 PNG로 변환하지 못했습니다. NovelAI에서 PNG로 다시 내려받아 주세요.",
+                )
+            })?;
+        return Ok(ImportImageFilePayload {
+            original_filename: "ai-grid-output.png".to_string(),
+            bytes: cursor.into_inner(),
+        });
+    }
+    Ok(ImportImageFilePayload {
+        original_filename: if format == ImageFormat::Png {
+            "ai-grid-output.png".to_string()
+        } else {
+            "ai-grid-output.jpg".to_string()
+        },
+        bytes: file.bytes,
+    })
+}
+
 pub(crate) fn mark_ai_grid_awaiting_result(
     connection: &Connection,
     request_id: &str,
 ) -> AppResult<()> {
     transition_request(connection, request_id, "prepared", "awaiting_result")
+}
+
+fn source_free_alpha_required_error() -> AppError {
+    AppError::new(
+        "ai_grid_output_alpha_required",
+        "AI로 새 이모티콘을 만들 때는 투명 픽셀 몇 개가 아니라 캐릭터 밖과 각 셀 외곽에 충분한 실제 alpha=0 투명 영역이 있는 PNG가 필요합니다. 이미지에 그려 넣은 체크무늬는 투명 배경이 아니며, 셀 사이 간격과 빈 셀도 실제로 투명해야 합니다. 실제 투명 PNG로 다시 받아 주세요. 후보나 아이콘은 만들지 않았습니다.",
+    )
+}
+
+fn ensure_source_free_meaningful_transparency(
+    image: &DynamicImage,
+    layout: &AiGridLayout,
+    items: &[AiGridWorkspaceItemDto],
+) -> AppResult<()> {
+    let rgba = image.to_rgba8();
+    if has_high_confidence_painted_checker(&rgba) {
+        return Err(source_free_alpha_required_error());
+    }
+    if source_free_output_has_meaningful_transparency(image, layout, items) {
+        Ok(())
+    } else {
+        Err(source_free_alpha_required_error())
+    }
+}
+
+fn source_free_output_has_meaningful_transparency(
+    image: &DynamicImage,
+    layout: &AiGridLayout,
+    items: &[AiGridWorkspaceItemDto],
+) -> bool {
+    let rgba = image.to_rgba8();
+    let canvas = AiGridRect {
+        x: 0,
+        y: 0,
+        width: i64::from(rgba.width()),
+        height: i64::from(rgba.height()),
+    };
+    if i64::from(rgba.width()) != layout.canvas_width
+        || i64::from(rgba.height()) != layout.canvas_height
+    {
+        // Preserve the existing follow-up structure-validation contract for a
+        // geometrically wrong result, while still rejecting fake alpha bypasses.
+        return region_has_meaningful_edge_transparency(&rgba, canvas);
+    }
+    if items.is_empty() {
+        return false;
+    }
+
+    let image_width = match usize::try_from(rgba.width()) {
+        Ok(value) => value,
+        Err(_) => return false,
+    };
+    let image_height = match usize::try_from(rgba.height()) {
+        Ok(value) => value,
+        Err(_) => return false,
+    };
+    let pixel_count = match image_width.checked_mul(image_height) {
+        Some(value) => value,
+        None => return false,
+    };
+    let required_canvas_transparency =
+        match meaningful_transparent_area_requirement(image_width, image_height) {
+            Some(value) => value,
+            None => return false,
+        };
+    if rgba.pixels().filter(|pixel| pixel.0[3] == 0).count() < required_canvas_transparency {
+        return false;
+    }
+    let mut target_pixels = vec![false; pixel_count];
+
+    for item in items {
+        let rect = item.input_rect;
+        if !region_has_meaningful_edge_transparency(&rgba, rect) {
+            return false;
+        }
+        let Some((x, y, width, height)) = rgba_rect_bounds(&rgba, rect) else {
+            return false;
+        };
+        for pixel_y in y..y + height {
+            let row_start = match usize::try_from(pixel_y)
+                .ok()
+                .and_then(|row| row.checked_mul(image_width))
+            {
+                Some(value) => value,
+                None => return false,
+            };
+            for pixel_x in x..x + width {
+                let index = match usize::try_from(pixel_x)
+                    .ok()
+                    .and_then(|column| row_start.checked_add(column))
+                {
+                    Some(value) if value < target_pixels.len() => value,
+                    _ => return false,
+                };
+                target_pixels[index] = true;
+            }
+        }
+    }
+
+    let mut outside_pixels = 0_usize;
+    let mut transparent_outside_pixels = 0_usize;
+    for (index, pixel) in rgba.pixels().enumerate() {
+        if target_pixels.get(index).copied().unwrap_or(true) {
+            continue;
+        }
+        outside_pixels += 1;
+        if pixel.0[3] == 0 {
+            transparent_outside_pixels += 1;
+        }
+    }
+    if outside_pixels == 0 {
+        return true;
+    }
+    let required_outside = outside_pixels
+        .checked_mul(MIN_OUTSIDE_TRANSPARENT_PERCENT)
+        .map(|value| value.div_ceil(100))
+        .unwrap_or(usize::MAX);
+    transparent_outside_pixels >= required_outside
+}
+
+fn region_has_meaningful_edge_transparency(image: &RgbaImage, rect: AiGridRect) -> bool {
+    let Some((_, _, width, height)) = rgba_rect_bounds(image, rect) else {
+        return false;
+    };
+    let width = match usize::try_from(width) {
+        Ok(value) => value,
+        Err(_) => return false,
+    };
+    let height = match usize::try_from(height) {
+        Ok(value) => value,
+        Err(_) => return false,
+    };
+    let Some(required) = meaningful_transparent_area_requirement(width, height) else {
+        return false;
+    };
+    largest_edge_connected_alpha_zero_component(image, rect).is_some_and(|area| area >= required)
+}
+
+fn meaningful_transparent_area_requirement(width: usize, height: usize) -> Option<usize> {
+    if width == 0 || height == 0 {
+        return None;
+    }
+    if width == 1 || height == 1 {
+        return Some(1);
+    }
+    width
+        .checked_mul(height)?
+        .checked_mul(MIN_MEANINGFUL_TRANSPARENT_PERCENT)
+        .map(|value| value.div_ceil(100).max(2))
+}
+
+fn largest_edge_connected_alpha_zero_component(
+    image: &RgbaImage,
+    rect: AiGridRect,
+) -> Option<usize> {
+    let (origin_x, origin_y, width, height) = rgba_rect_bounds(image, rect)?;
+    let width = usize::try_from(width).ok()?;
+    let height = usize::try_from(height).ok()?;
+    let area = width.checked_mul(height)?;
+    let mut visited = vec![false; area];
+    let mut queue = VecDeque::new();
+    let mut largest = 0_usize;
+
+    for start in 0..area {
+        if visited[start] {
+            continue;
+        }
+        let start_x = start % width;
+        let start_y = start / width;
+        let pixel_x = origin_x.checked_add(u32::try_from(start_x).ok()?)?;
+        let pixel_y = origin_y.checked_add(u32::try_from(start_y).ok()?)?;
+        if image.get_pixel(pixel_x, pixel_y).0[3] != 0 {
+            continue;
+        }
+
+        visited[start] = true;
+        queue.push_back(start);
+        let mut component_area = 0_usize;
+        let mut touches_edge = false;
+        while let Some(index) = queue.pop_front() {
+            component_area += 1;
+            let x = index % width;
+            let y = index / width;
+            touches_edge |= x == 0 || y == 0 || x + 1 == width || y + 1 == height;
+            let neighbors = [
+                (x > 0).then(|| index - 1),
+                (x + 1 < width).then(|| index + 1),
+                (y > 0).then(|| index - width),
+                (y + 1 < height).then(|| index + width),
+            ];
+            for neighbor in neighbors.into_iter().flatten() {
+                if visited[neighbor] {
+                    continue;
+                }
+                let neighbor_x = neighbor % width;
+                let neighbor_y = neighbor / width;
+                let pixel_x = origin_x.checked_add(u32::try_from(neighbor_x).ok()?)?;
+                let pixel_y = origin_y.checked_add(u32::try_from(neighbor_y).ok()?)?;
+                if image.get_pixel(pixel_x, pixel_y).0[3] == 0 {
+                    visited[neighbor] = true;
+                    queue.push_back(neighbor);
+                }
+            }
+        }
+        if touches_edge {
+            largest = largest.max(component_area);
+        }
+    }
+    Some(largest)
+}
+
+fn rgba_rect_bounds(image: &RgbaImage, rect: AiGridRect) -> Option<(u32, u32, u32, u32)> {
+    let x = u32::try_from(rect.x).ok()?;
+    let y = u32::try_from(rect.y).ok()?;
+    let width = u32::try_from(rect.width).ok()?;
+    let height = u32::try_from(rect.height).ok()?;
+    if width == 0 || height == 0 {
+        return None;
+    }
+    let right = x.checked_add(width)?;
+    let bottom = y.checked_add(height)?;
+    if right > image.width() || bottom > image.height() {
+        return None;
+    }
+    Some((x, y, width, height))
 }
 
 pub(crate) fn record_ai_grid_output_artifact(
@@ -489,6 +775,24 @@ pub(crate) fn record_ai_grid_output_artifact(
     file: ImportImageFilePayload,
     manifest_json: &str,
 ) -> AppResult<AiGridRequestState> {
+    record_ai_grid_output_artifact_with_policy(
+        connection,
+        paths,
+        request_id,
+        file,
+        manifest_json,
+        false,
+    )
+}
+
+pub(crate) fn record_ai_grid_output_artifact_with_policy(
+    connection: &mut Connection,
+    paths: &AppPaths,
+    request_id: &str,
+    file: ImportImageFilePayload,
+    manifest_json: &str,
+    allow_opaque_background: bool,
+) -> AppResult<AiGridRequestState> {
     if file.bytes.len() > MAX_GRID_OUTPUT_BYTES {
         return Err(AppError::new(
             "ai_grid_output_too_large",
@@ -496,6 +800,13 @@ pub(crate) fn record_ai_grid_output_artifact(
         ));
     }
     let canonical_manifest = canonical_grid_manifest(manifest_json)?;
+    let file = normalize_ai_grid_output_file(file)?;
+    if file.bytes.len() > MAX_GRID_OUTPUT_BYTES {
+        return Err(AppError::new(
+            "ai_grid_output_too_large",
+            "WebP를 PNG로 변환한 AI 그리드 결과가 16MB를 넘습니다. 더 작은 해상도로 다시 내려받아 주세요.",
+        ));
+    }
     let prepared = prepare_source_file_from_bytes(
         &file,
         SourceFileImportOptions {
@@ -516,7 +827,7 @@ pub(crate) fn record_ai_grid_output_artifact(
     {
         return Err(AppError::new(
             "ai_grid_output_format",
-            "AI 그리드 결과는 최대 2048×2048의 정적 PNG/JPG만 사용할 수 있습니다.",
+            "AI 그리드 결과는 최대 2048×2048의 정적 PNG/JPG/WebP만 사용할 수 있습니다.",
         ));
     }
     let _storage_reservation = ai_handoff::reserve_ai_transfer_storage(
@@ -527,16 +838,29 @@ pub(crate) fn record_ai_grid_output_artifact(
     let artifact_snapshot = prepared.artifact_snapshot(connection, paths)?;
     let result = (|| -> AppResult<AiGridRequestState> {
         let tx = connection.transaction_with_behavior(TransactionBehavior::Immediate)?;
-        let current_status = tx
+        let (request_scope, current_status) = tx
             .query_row(
-                "SELECT status FROM ai_requests
+                "SELECT request_scope, status FROM ai_requests
                  WHERE id = ?1
                    AND request_scope IN ('grid_edit', 'single_generate', 'grid_generate')",
                 [request_id],
-                |row| row.get::<_, String>(0),
+                |row| Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?)),
             )
             .optional()?
             .ok_or_else(|| AppError::not_found("AI 그리드 요청을 찾을 수 없습니다."))?;
+        if matches!(request_scope.as_str(), "single_generate" | "grid_generate")
+            && !allow_opaque_background
+        {
+            if planned.has_alpha != Some(true) {
+                return Err(source_free_alpha_required_error());
+            }
+            let workspace = get_ai_grid_workspace(&tx, request_id)?;
+            ensure_source_free_meaningful_transparency(
+                prepared.decoded_image(),
+                &workspace.layout,
+                &workspace.items,
+            )?;
+        }
         match current_status.as_str() {
             "prepared" => {
                 transition_request(&tx, request_id, "prepared", "awaiting_result")?;
@@ -2517,10 +2841,11 @@ mod tests {
     use super::{
         analyze_ai_grid_output, cancel_ai_grid_request, commit_ai_generated_icons,
         commit_ai_grid_candidates, get_ai_grid_request_state, get_ai_grid_workspace,
-        get_latest_ai_grid_workspace, mark_ai_grid_awaiting_result, prepare_ai_generation,
-        prepare_ai_generation_with_references, prepare_ai_grid_edit,
-        record_ai_grid_output_artifact, verified_ai_grid_input_path, FinalizeGeneratedIconInput,
-        PrepareAiGenerationReferences, PrepareAiGenerationRequest,
+        get_latest_ai_grid_workspace, mark_ai_grid_awaiting_result, normalize_ai_grid_output_file,
+        prepare_ai_generation, prepare_ai_generation_with_references, prepare_ai_grid_edit,
+        record_ai_grid_output_artifact, record_ai_grid_output_artifact_with_policy,
+        verified_ai_grid_input_path, FinalizeGeneratedIconInput, PrepareAiGenerationReferences,
+        PrepareAiGenerationRequest,
     };
 
     struct Fixture {
@@ -2590,15 +2915,257 @@ mod tests {
         png_from_rgba(image)
     }
 
+    fn alpha_png(width: u32, height: u32, color: [u8; 4]) -> Vec<u8> {
+        let margin = 3_u32.min(width.min(height).saturating_sub(1) / 2);
+        let image = ImageBuffer::from_fn(width, height, |x, y| {
+            if margin > 0
+                && (x < margin || y < margin || x >= width - margin || y >= height - margin)
+            {
+                Rgba([0, 0, 0, 0])
+            } else {
+                Rgba(color)
+            }
+        });
+        png_from_rgba(image)
+    }
+
+    fn opaque_checker_png(width: u32, height: u32) -> Vec<u8> {
+        let image = ImageBuffer::from_fn(width, height, |x, y| {
+            if (x / 4 + y / 4) % 2 == 0 {
+                Rgba([238, 238, 238, 255])
+            } else {
+                Rgba([190, 190, 190, 255])
+            }
+        });
+        png_from_rgba(image)
+    }
+
+    fn one_alpha_checker_png(width: u32, height: u32) -> Vec<u8> {
+        let mut image = ImageBuffer::from_fn(width, height, |x, y| {
+            if (x / 4 + y / 4) % 2 == 0 {
+                Rgba([238, 238, 238, 255])
+            } else {
+                Rgba([190, 190, 190, 255])
+            }
+        });
+        image.put_pixel(0, 0, Rgba([0, 0, 0, 0]));
+        png_from_rgba(image)
+    }
+
+    fn one_pixel_alpha_border_checker_png(width: u32, height: u32) -> Vec<u8> {
+        let image = ImageBuffer::from_fn(width, height, |x, y| {
+            if x == 0 || y == 0 || x + 1 == width || y + 1 == height {
+                Rgba([0, 0, 0, 0])
+            } else if (x / 8 + y / 8) % 2 == 0 {
+                Rgba([238, 238, 238, 255])
+            } else {
+                Rgba([190, 190, 190, 255])
+            }
+        });
+        png_from_rgba(image)
+    }
+
+    fn meaningful_alpha_border_checker_png(width: u32, height: u32) -> Vec<u8> {
+        let margin = (width.min(height) / 20).max(2);
+        let image = ImageBuffer::from_fn(width, height, |x, y| {
+            if x < margin || y < margin || x >= width - margin || y >= height - margin {
+                Rgba([0, 0, 0, 0])
+            } else if (x / 8 + y / 8) % 2 == 0 {
+                Rgba([238, 238, 238, 255])
+            } else {
+                Rgba([190, 190, 190, 255])
+            }
+        });
+        png_from_rgba(image)
+    }
+    fn single_item_generation_layout(cell_size: i64) -> AiGridLayout {
+        AiGridLayout {
+            canvas_width: cell_size,
+            canvas_height: cell_size,
+            rows: 1,
+            columns: 1,
+            cell_size,
+            gap_x: 0,
+            gap_y: 0,
+            border_left: 0,
+            border_top: 0,
+            border_right: 0,
+            border_bottom: 0,
+        }
+    }
+
+    fn two_item_generation_layout() -> AiGridLayout {
+        AiGridLayout {
+            canvas_width: 64,
+            canvas_height: 32,
+            rows: 1,
+            columns: 2,
+            cell_size: 32,
+            gap_x: 0,
+            gap_y: 0,
+            border_left: 0,
+            border_top: 0,
+            border_right: 0,
+            border_bottom: 0,
+        }
+    }
+
+    fn three_item_generation_layout() -> AiGridLayout {
+        AiGridLayout {
+            canvas_width: 38,
+            canvas_height: 38,
+            rows: 2,
+            columns: 2,
+            cell_size: 16,
+            gap_x: 2,
+            gap_y: 2,
+            border_left: 2,
+            border_top: 2,
+            border_right: 2,
+            border_bottom: 2,
+        }
+    }
+
+    fn three_item_grid_png(opaque_unused_cell: bool) -> Vec<u8> {
+        let mut image = ImageBuffer::from_pixel(38, 38, Rgba([0, 0, 0, 0]));
+        let cells = [
+            (2_u32, 2_u32, [230, 40, 70, 255]),
+            (20_u32, 2_u32, [30, 180, 120, 255]),
+            (2_u32, 20_u32, [60, 100, 230, 255]),
+        ];
+        for (cell_x, cell_y, color) in cells {
+            for y in cell_y + 3..cell_y + 13 {
+                for x in cell_x + 3..cell_x + 13 {
+                    image.put_pixel(x, y, Rgba(color));
+                }
+            }
+        }
+        if opaque_unused_cell {
+            for y in 20..36 {
+                for x in 20..36 {
+                    let color = if (x / 4 + y / 4) % 2 == 0 {
+                        [238, 238, 238, 255]
+                    } else {
+                        [190, 190, 190, 255]
+                    };
+                    image.put_pixel(x, y, Rgba(color));
+                }
+            }
+        }
+        png_from_rgba(image)
+    }
+
     fn two_cell_png() -> Vec<u8> {
-        let image = ImageBuffer::from_fn(64, 32, |x, _| {
-            if x < 32 {
+        let image = ImageBuffer::from_fn(64, 32, |x, y| {
+            let cell_x = x % 32;
+            if cell_x < 2 || cell_x >= 30 || y < 2 || y >= 30 {
+                Rgba([0, 0, 0, 0])
+            } else if x < 32 {
                 Rgba([230, 40, 70, 255])
             } else {
                 Rgba([30, 180, 120, 255])
             }
         });
         png_from_rgba(image)
+    }
+
+    fn two_cell_one_opaque_png() -> Vec<u8> {
+        let image = ImageBuffer::from_fn(64, 32, |x, y| {
+            if x < 32 {
+                if x < 2 || x >= 30 || y < 2 || y >= 30 {
+                    Rgba([0, 0, 0, 0])
+                } else {
+                    Rgba([230, 40, 70, 255])
+                }
+            } else if (x / 4 + y / 4) % 2 == 0 {
+                Rgba([238, 238, 238, 255])
+            } else {
+                Rgba([190, 190, 190, 255])
+            }
+        });
+        png_from_rgba(image)
+    }
+
+    fn two_cell_disconnected_alpha_png() -> Vec<u8> {
+        let image = ImageBuffer::from_fn(64, 32, |x, y| {
+            let cell_x = x % 32;
+            if cell_x < 8 && y < 8 {
+                Rgba([0, 0, 0, 0])
+            } else if x < 32 {
+                Rgba([230, 40, 70, 255])
+            } else {
+                Rgba([30, 180, 120, 255])
+            }
+        });
+        png_from_rgba(image)
+    }
+
+    fn two_cell_webp() -> Vec<u8> {
+        let image = ImageBuffer::from_fn(64, 32, |x, y| {
+            let cell_x = x % 32;
+            if cell_x < 2 || cell_x >= 30 || y < 2 || y >= 30 {
+                Rgba([0, 0, 0, 0])
+            } else if x < 32 {
+                Rgba([230, 40, 70, 255])
+            } else {
+                Rgba([30, 180, 120, 128])
+            }
+        });
+        let mut cursor = Cursor::new(Vec::new());
+        DynamicImage::ImageRgba8(image)
+            .write_to(&mut cursor, ImageFormat::WebP)
+            .unwrap();
+        cursor.into_inner()
+    }
+
+    fn animated_two_cell_webp() -> Vec<u8> {
+        fn push_chunk(target: &mut Vec<u8>, fourcc: &[u8; 4], payload: &[u8]) {
+            target.extend_from_slice(fourcc);
+            target.extend_from_slice(&(payload.len() as u32).to_le_bytes());
+            target.extend_from_slice(payload);
+            if payload.len() % 2 != 0 {
+                target.push(0);
+            }
+        }
+
+        fn write_u24(target: &mut Vec<u8>, value: u32) {
+            target.extend_from_slice(&value.to_le_bytes()[..3]);
+        }
+
+        let static_frame = two_cell_webp();
+        let frame_chunk = &static_frame[12..];
+        let mut body = b"WEBP".to_vec();
+        let mut vp8x = vec![0b0001_0010, 0, 0, 0];
+        write_u24(&mut vp8x, 63);
+        write_u24(&mut vp8x, 31);
+        push_chunk(&mut body, b"VP8X", &vp8x);
+        push_chunk(&mut body, b"ANIM", &[0, 0, 0, 0, 0, 0]);
+        for duration_ms in [80_u32, 120_u32] {
+            let mut frame = Vec::new();
+            write_u24(&mut frame, 0);
+            write_u24(&mut frame, 0);
+            write_u24(&mut frame, 63);
+            write_u24(&mut frame, 31);
+            write_u24(&mut frame, duration_ms);
+            frame.push(0b0000_0010);
+            frame.extend_from_slice(frame_chunk);
+            push_chunk(&mut body, b"ANMF", &frame);
+        }
+        let mut output = b"RIFF".to_vec();
+        output.extend_from_slice(&(body.len() as u32).to_le_bytes());
+        output.extend_from_slice(&body);
+        output
+    }
+
+    #[test]
+    fn animated_webp_grid_output_is_rejected_before_png_normalization() {
+        let error = normalize_ai_grid_output_file(ImportImageFilePayload {
+            original_filename: "animated-grid.webp".to_string(),
+            bytes: animated_two_cell_webp(),
+        })
+        .unwrap_err();
+
+        assert_eq!(error.code, "ai_grid_output_animated");
     }
 
     fn small_two_item_edit_layout() -> AiGridLayout {
@@ -2631,11 +3198,11 @@ mod tests {
     }
 
     fn two_cell_png_with_empty_second() -> Vec<u8> {
-        let image = ImageBuffer::from_fn(64, 32, |x, _| {
-            if x < 32 {
-                Rgba([230, 40, 70, 255])
-            } else {
+        let image = ImageBuffer::from_fn(64, 32, |x, y| {
+            if x >= 32 || x < 2 || x >= 30 || y < 2 || y >= 30 {
                 Rgba([0, 0, 0, 0])
+            } else {
+                Rgba([230, 40, 70, 255])
             }
         });
         png_from_rgba(image)
@@ -2647,6 +3214,83 @@ mod tests {
             .write_to(&mut cursor, ImageFormat::Png)
             .unwrap();
         cursor.into_inner()
+    }
+
+    fn assert_source_free_output_rejected_atomically(
+        target_names: Vec<String>,
+        layout: AiGridLayout,
+        bytes: Vec<u8>,
+        mark_awaiting: bool,
+    ) {
+        let mut fixture = Fixture::new(0);
+        let prepared = prepare_ai_generation(
+            &mut fixture.connection,
+            &fixture.collection_id,
+            PrepareAiGenerationRequest {
+                payload_input_signature: format!(
+                    "meaningful-alpha-rejection-{}",
+                    target_names.len()
+                ),
+                target_names,
+                layout,
+                retry_of_request_id: None,
+            },
+        )
+        .unwrap();
+        let expected_status = if mark_awaiting {
+            mark_ai_grid_awaiting_result(&fixture.connection, &prepared.request_id).unwrap();
+            "awaiting_result"
+        } else {
+            "prepared"
+        };
+
+        let error = record_ai_grid_output_artifact(
+            &mut fixture.connection,
+            &fixture.paths,
+            &prepared.request_id,
+            ImportImageFilePayload {
+                original_filename: "invalid-fake-alpha.png".into(),
+                bytes,
+            },
+            r#"{"schema":"pmtcon-ai-grid-v1","kind":"meaningful-alpha-rejection"}"#,
+        )
+        .unwrap_err();
+
+        assert_eq!(error.code, "ai_grid_output_alpha_required");
+        assert!(error.message.contains("투명 픽셀 몇 개가 아니라"));
+        assert!(error.message.contains("체크무늬는 투명 배경이 아니며"));
+        assert!(error.message.contains("후보나 아이콘은 만들지 않았습니다"));
+        let state = get_ai_grid_request_state(&fixture.connection, &prepared.request_id).unwrap();
+        assert_eq!(
+            (state.status.as_str(), state.candidate_count),
+            (expected_status, 0)
+        );
+        assert!(state.output_sheet_sha256.is_none());
+        let counts: (i64, i64, i64, i64) = fixture
+            .connection
+            .query_row(
+                "SELECT
+                   (SELECT COUNT(*) FROM ai_request_artifacts
+                    WHERE request_id = ?1 AND role = 'output_sheet'),
+                   (SELECT COUNT(*) FROM ai_candidates WHERE request_id = ?1),
+                   (SELECT COUNT(*) FROM icons WHERE collection_id = ?2),
+                   (SELECT COUNT(*) FROM source_files)",
+                params![&prepared.request_id, &fixture.collection_id],
+                |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?)),
+            )
+            .unwrap();
+        assert_eq!(counts, (0, 0, 0, 0));
+        assert!(
+            get_ai_grid_workspace(&fixture.connection, &prepared.request_id)
+                .unwrap()
+                .output_artifact
+                .is_none()
+        );
+        assert!(std::fs::read_dir(&fixture.paths.originals_dir)
+            .unwrap()
+            .next()
+            .is_none());
+        fixture.cleanup();
     }
 
     fn input_artifact(connection: &Connection, request_id: &str) -> (Vec<u8>, String) {
@@ -3044,6 +3688,286 @@ mod tests {
         .unwrap();
         assert_ne!(retry.request_id, original.request_id);
         assert_eq!(retry.retry_of_request_id, Some(original.request_id));
+        fixture.cleanup();
+    }
+    #[test]
+    fn source_free_single_rejects_opaque_output_atomically() {
+        assert_source_free_output_rejected_atomically(
+            vec!["불투명 단일".into()],
+            single_item_generation_layout(32),
+            solid_png(32, 32, [80, 160, 220, 255]),
+            false,
+        );
+    }
+
+    #[test]
+    fn source_free_single_accepts_opaque_output_only_with_explicit_policy() {
+        let mut fixture = Fixture::new(0);
+        let prepared = prepare_ai_generation(
+            &mut fixture.connection,
+            &fixture.collection_id,
+            PrepareAiGenerationRequest {
+                target_names: vec!["배경 포함 단일".into()],
+                layout: single_item_generation_layout(32),
+                payload_input_signature: "opaque-background-approved".into(),
+                retry_of_request_id: None,
+            },
+        )
+        .unwrap();
+        mark_ai_grid_awaiting_result(&fixture.connection, &prepared.request_id).unwrap();
+
+        let state = record_ai_grid_output_artifact_with_policy(
+            &mut fixture.connection,
+            &fixture.paths,
+            &prepared.request_id,
+            ImportImageFilePayload {
+                original_filename: "opaque-approved.png".into(),
+                bytes: opaque_checker_png(32, 32),
+            },
+            r#"{"schema":"pmtcon-ai-grid-v1","kind":"opaque-background-approved"}"#,
+            true,
+        )
+        .unwrap();
+
+        assert_eq!(state.status, "layout_review_pending");
+        assert_eq!(state.candidate_count, 0);
+        let workspace = get_ai_grid_workspace(&fixture.connection, &prepared.request_id).unwrap();
+        let output = workspace.output_artifact.expect("stored output artifact");
+        assert!(!output.has_alpha);
+        assert_eq!(output.original_filename, "ai-grid-output.png");
+        fixture.cleanup();
+    }
+    #[test]
+    fn source_free_grid_rejects_opaque_output_atomically() {
+        assert_source_free_output_rejected_atomically(
+            vec!["불투명 왼쪽".into(), "불투명 오른쪽".into()],
+            two_item_generation_layout(),
+            opaque_checker_png(64, 32),
+            true,
+        );
+    }
+
+    #[test]
+    fn source_free_grid_rejects_one_opaque_target_cell_atomically() {
+        assert_source_free_output_rejected_atomically(
+            vec!["정상 왼쪽".into(), "불투명 오른쪽".into()],
+            two_item_generation_layout(),
+            two_cell_one_opaque_png(),
+            true,
+        );
+    }
+
+    #[test]
+    fn source_free_rejects_one_alpha_checker_bypass_atomically() {
+        assert_source_free_output_rejected_atomically(
+            vec!["한 픽셀 우회".into()],
+            single_item_generation_layout(200),
+            one_alpha_checker_png(200, 200),
+            true,
+        );
+    }
+
+    #[test]
+    fn source_free_rejects_one_pixel_alpha_border_checker_atomically() {
+        assert_source_free_output_rejected_atomically(
+            vec!["얇은 테두리 우회".into()],
+            single_item_generation_layout(200),
+            one_pixel_alpha_border_checker_png(200, 200),
+            true,
+        );
+    }
+
+    #[test]
+    fn source_free_rejects_painted_checker_inside_meaningful_alpha_border_atomically() {
+        assert_source_free_output_rejected_atomically(
+            vec!["체커 우회".into()],
+            single_item_generation_layout(200),
+            meaningful_alpha_border_checker_png(200, 200),
+            true,
+        );
+    }
+    #[test]
+    fn source_free_grid_rejects_opaque_unused_cell_atomically() {
+        assert_source_free_output_rejected_atomically(
+            vec!["첫째".into(), "둘째".into(), "셋째".into()],
+            three_item_generation_layout(),
+            three_item_grid_png(true),
+            true,
+        );
+    }
+
+    #[test]
+    fn source_free_single_accepts_meaningful_exterior_alpha() {
+        let mut fixture = Fixture::new(0);
+        let prepared = prepare_ai_generation(
+            &mut fixture.connection,
+            &fixture.collection_id,
+            PrepareAiGenerationRequest {
+                target_names: vec!["정상 단일".into()],
+                layout: single_item_generation_layout(200),
+                payload_input_signature: "meaningful-alpha-single".into(),
+                retry_of_request_id: None,
+            },
+        )
+        .unwrap();
+        mark_ai_grid_awaiting_result(&fixture.connection, &prepared.request_id).unwrap();
+
+        let state = record_ai_grid_output_artifact(
+            &mut fixture.connection,
+            &fixture.paths,
+            &prepared.request_id,
+            ImportImageFilePayload {
+                original_filename: "meaningful-single.png".into(),
+                bytes: alpha_png(200, 200, [80, 160, 220, 255]),
+            },
+            r#"{"schema":"pmtcon-ai-grid-v1","kind":"meaningful-single"}"#,
+        )
+        .unwrap();
+
+        assert_eq!(
+            (state.status.as_str(), state.candidate_count),
+            ("layout_review_pending", 0)
+        );
+        let workspace = get_ai_grid_workspace(&fixture.connection, &prepared.request_id).unwrap();
+        let output = workspace.output_artifact.unwrap();
+        assert!(output.has_alpha);
+        assert!(std::path::Path::new(&output.file_path).is_file());
+        let counts: (i64, i64, i64, i64) = fixture
+            .connection
+            .query_row(
+                "SELECT
+                   (SELECT COUNT(*) FROM ai_request_artifacts
+                    WHERE request_id = ?1 AND role = 'output_sheet'),
+                   (SELECT COUNT(*) FROM ai_candidates WHERE request_id = ?1),
+                   (SELECT COUNT(*) FROM icons WHERE collection_id = ?2),
+                   (SELECT COUNT(*) FROM source_files)",
+                params![&prepared.request_id, &fixture.collection_id],
+                |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?)),
+            )
+            .unwrap();
+        assert_eq!(counts, (1, 0, 0, 1));
+        fixture.cleanup();
+    }
+
+    #[test]
+    fn source_free_grid_accepts_meaningful_cell_gap_and_unused_alpha() {
+        let mut fixture = Fixture::new(0);
+        let prepared = prepare_ai_generation(
+            &mut fixture.connection,
+            &fixture.collection_id,
+            PrepareAiGenerationRequest {
+                target_names: vec!["첫째".into(), "둘째".into(), "셋째".into()],
+                layout: three_item_generation_layout(),
+                payload_input_signature: "meaningful-alpha-grid".into(),
+                retry_of_request_id: None,
+            },
+        )
+        .unwrap();
+
+        let state = record_ai_grid_output_artifact(
+            &mut fixture.connection,
+            &fixture.paths,
+            &prepared.request_id,
+            ImportImageFilePayload {
+                original_filename: "meaningful-grid.png".into(),
+                bytes: three_item_grid_png(false),
+            },
+            r#"{"schema":"pmtcon-ai-grid-v1","kind":"meaningful-grid"}"#,
+        )
+        .unwrap();
+
+        assert_eq!(
+            (state.status.as_str(), state.candidate_count),
+            ("layout_review_pending", 0)
+        );
+        let workspace = get_ai_grid_workspace(&fixture.connection, &prepared.request_id).unwrap();
+        assert_eq!(workspace.items.len(), 3);
+        assert!(workspace.output_artifact.is_some_and(|output| {
+            output.has_alpha && std::path::Path::new(&output.file_path).is_file()
+        }));
+        let counts: (i64, i64, i64, i64) = fixture
+            .connection
+            .query_row(
+                "SELECT
+                   (SELECT COUNT(*) FROM ai_request_artifacts
+                    WHERE request_id = ?1 AND role = 'output_sheet'),
+                   (SELECT COUNT(*) FROM ai_candidates WHERE request_id = ?1),
+                   (SELECT COUNT(*) FROM icons WHERE collection_id = ?2),
+                   (SELECT COUNT(*) FROM source_files)",
+                params![&prepared.request_id, &fixture.collection_id],
+                |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?)),
+            )
+            .unwrap();
+        assert_eq!(counts, (1, 0, 0, 1));
+        fixture.cleanup();
+    }
+
+    #[test]
+    fn source_free_gap_zero_grid_accepts_disconnected_valid_cell_alpha() {
+        let mut fixture = Fixture::new(0);
+        let prepared = prepare_ai_generation(
+            &mut fixture.connection,
+            &fixture.collection_id,
+            PrepareAiGenerationRequest {
+                target_names: vec!["분리 왼쪽".into(), "분리 오른쪽".into()],
+                layout: two_item_generation_layout(),
+                payload_input_signature: "disconnected-valid-alpha-grid".into(),
+                retry_of_request_id: None,
+            },
+        )
+        .unwrap();
+
+        let state = record_ai_grid_output_artifact(
+            &mut fixture.connection,
+            &fixture.paths,
+            &prepared.request_id,
+            ImportImageFilePayload {
+                original_filename: "disconnected-valid-alpha-grid.png".into(),
+                bytes: two_cell_disconnected_alpha_png(),
+            },
+            r#"{"schema":"pmtcon-ai-grid-v1","kind":"disconnected-valid-alpha"}"#,
+        )
+        .unwrap();
+
+        assert_eq!(state.status, "layout_review_pending");
+        let workspace = get_ai_grid_workspace(&fixture.connection, &prepared.request_id).unwrap();
+        assert!(workspace
+            .output_artifact
+            .is_some_and(|output| output.has_alpha));
+        fixture.cleanup();
+    }
+
+    #[test]
+    fn grid_edit_keeps_accepting_opaque_output_artifacts() {
+        let mut fixture = Fixture::new(2);
+        let prepared = prepare_ai_grid_edit(
+            &mut fixture.connection,
+            &fixture.paths,
+            &fixture.collection_id,
+            fixture.icon_ids.clone(),
+            small_two_item_edit_layout(),
+            None,
+        )
+        .unwrap();
+        mark_ai_grid_awaiting_result(&fixture.connection, &prepared.request_id).unwrap();
+
+        let state = record_ai_grid_output_artifact(
+            &mut fixture.connection,
+            &fixture.paths,
+            &prepared.request_id,
+            ImportImageFilePayload {
+                original_filename: "opaque-grid-edit.png".into(),
+                bytes: solid_png(64, 64, [90, 120, 180, 255]),
+            },
+            r#"{"schema":"pmtcon-ai-grid-v1","kind":"opaque-grid-edit"}"#,
+        )
+        .unwrap();
+
+        assert_eq!(state.status, "layout_review_pending");
+        let workspace = get_ai_grid_workspace(&fixture.connection, &prepared.request_id).unwrap();
+        assert!(workspace
+            .output_artifact
+            .is_some_and(|output| !output.has_alpha));
         fixture.cleanup();
     }
     #[test]
@@ -3549,7 +4473,7 @@ mod tests {
             &prepared.request_id,
             ImportImageFilePayload {
                 original_filename: "wrong-source-free-canvas.png".into(),
-                bytes: solid_png(32, 64, [80, 160, 220, 255]),
+                bytes: alpha_png(32, 64, [80, 160, 220, 255]),
             },
             r#"{"schema":"pmtcon-ai-grid-v1","kind":"wrong-source-free"}"#,
         )
@@ -3845,7 +4769,7 @@ mod tests {
             &prepared.request_id,
             ImportImageFilePayload {
                 original_filename: "generated-single.png".into(),
-                bytes: solid_png(32, 32, [80, 160, 220, 255]),
+                bytes: alpha_png(32, 32, [80, 160, 220, 255]),
             },
             r#"{"schema":"pmtcon-ai-grid-v1","kind":"mock-single-output"}"#,
         )
@@ -3930,7 +4854,7 @@ mod tests {
             &prepared.request_id,
             ImportImageFilePayload {
                 original_filename: "clone-source-free.png".into(),
-                bytes: solid_png(32, 32, [130, 70, 220, 255]),
+                bytes: alpha_png(32, 32, [130, 70, 220, 255]),
             },
             r#"{"schema":"pmtcon-ai-grid-v1","kind":"clone-fixture"}"#,
         )
@@ -4092,7 +5016,7 @@ mod tests {
                 &prepared.request_id,
                 ImportImageFilePayload {
                     original_filename: "restart-result.png".into(),
-                    bytes: solid_png(24, 24, [200, 100, 40, 255]),
+                    bytes: alpha_png(24, 24, [200, 100, 40, 255]),
                 },
                 r#"{"schema":"pmtcon-ai-grid-v1","kind":"restart-fixture"}"#,
             )
@@ -4234,8 +5158,8 @@ mod tests {
             &fixture.paths,
             &request.request_id,
             ImportImageFilePayload {
-                original_filename: "direct.png".into(),
-                bytes: two_cell_png(),
+                original_filename: "novelai-renamed-download.webp".into(),
+                bytes: two_cell_webp(),
             },
             r#"{"schema":"pmtcon-ai-grid-v1","kind":"direct"}"#,
         )
@@ -4244,10 +5168,11 @@ mod tests {
         assert_eq!(workspace.status, "layout_review_pending");
         assert_eq!(workspace.layout.columns, 2);
         assert!(workspace.input_artifact.is_none());
-        assert!(workspace
-            .output_artifact
-            .as_ref()
-            .is_some_and(|artifact| std::path::Path::new(&artifact.file_path).is_file()));
+        assert!(workspace.output_artifact.as_ref().is_some_and(|artifact| {
+            artifact.extension == "png"
+                && artifact.original_filename == "ai-grid-output.png"
+                && std::path::Path::new(&artifact.file_path).is_file()
+        }));
         let latest = get_latest_ai_grid_workspace(&fixture.connection, &fixture.collection_id)
             .unwrap()
             .unwrap();

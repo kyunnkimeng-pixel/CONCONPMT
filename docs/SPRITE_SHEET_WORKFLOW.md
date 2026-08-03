@@ -61,7 +61,7 @@ PMTCONCON Studio의 시트 도구는 자동 마법사가 아니라 제작자가 
   왕복한다. crop·변형·텍스트·정적 효과·모션을 포함한 `render_recipe_hash`가
   달라지면 가공본 적용/교체 모드에서 해당 셀을 건너뛰고 적용하지 않는다.
 - `GIF 프레임 작업 시트`는 GIF 하나의 모든 유효 프레임을 펼친다. frame duration,
-  loop와 page/cell 좌표를 `pmtcon-gif-frame-sheet-v1`에 저장하므로 애니메이션을
+  loop와 page/cell 좌표를 `pmtcon-gif-frame-sheet-v2`에 저장하므로 애니메이션을
   편집하고 다시 조립할 때 사용한다.
 - 정적 원본에 모션을 저장하면 preview/export는 GIF가 되지만, 정적 작업 시트는
   여전히 0ms 포스터만 내보낸다. 움직임 전체를 외부에서 편집하려면 GIF 프레임
@@ -135,25 +135,41 @@ GIF 프레임 시트는 애니메이션 GIF 하나를 외부 편집 가능한 PN
 3. frame count, duration, loop mode, 예상 page 수를 확인한다.
 4. frame cell size, columns, frames per page, max sheet size, gap, border, background를 설정한다.
 5. `GIF 프레임 시트 내보내기`를 실행한다.
-6. PMTCONCON Studio가 clean frame sheet PNG, guide frame sheet PNG, `frames_manifest.json`을 생성한다.
-7. Clean sheet에는 번호, grid, label이 들어가지 않는다. Guide sheet는 사람 확인용이며 reimport 기준은 manifest다.
+6. PMTCONCON Studio가 clean `frames_sheet_*.png`, guide `frames_guide_*.png`,
+   `frames_manifest.json`을 생성한다.
+7. 웹 AI에는 `frames_sheet_*.png`만 올린다. Clean sheet에는 번호, grid, label이
+   들어가지 않는다. `frames_guide_*.png`는 사람 확인용이며 절대 편집 결과로
+   업로드하지 않는다. `frames_manifest.json`은 앱 복원용이고 웹에 올리지 않는다.
 8. frame 수가 많으면 max sheet size와 frames per page 기준으로 자동 page split된다.
+9. 웹 AI 전달 화면은 clean page마다 `이 파일 끌기`와 Explorer fallback을 제공한다.
+   여러 page는 한 장씩 같은 prompt와 provider settings로 처리한다.
 
 ## GIF 프레임 시트 다시 가져오기
 
 수정된 GIF 프레임 시트는 원본 GIF를 덮어쓰지 않고 새 processed variant로 재조립한다.
 
-1. `pmtcon-gif-frame-sheet-v1` manifest를 선택한다.
-2. 수정된 `frames_sheet_*.png` 파일을 선택하거나 드래그해서 놓는다.
-3. frame count, missing page, changed dimension, loop mode, duration summary를 검토한다.
-4. mismatch가 있으면 자동 진행하지 않는다.
-5. 문제가 없으면 `GIF variant 만들기`를 실행한다.
-6. PMTCONCON Studio가 frame index 순서대로 셀을 crop하고 duration/loop mode를 유지해 animated GIF를 다시 만든다.
-7. 결과는 `processed_variants/gif_frame_reimports` 계열의 새 GIF 파일이며 원본 GIF는 보존한다.
-8. single GIF 아이콘이고 선택한 export profile 셀 크기가 프레임 시트 셀 크기와 같으면 export 활성 variant로 설정할 수 있다.
-9. 프레임 시트에는 내보낼 당시의 source와 crop·회전·반전·텍스트·정적 효과·모션·반복 recipe hash가 기록된다. 그 뒤 원본이나 recipe가 바뀌었다면 재가져온 GIF는 파일 variant로만 보존하고 현재 export의 활성 variant로 잘못 연결하지 않는다.
-10. 선택한 대상 아이콘 ID와 manifest의 icon_id가 다르면 파일을 만들기 전에 중단한다.
-11. manifest의 ID·PNG 파일명·좌표·페이지/프레임/픽셀 작업량을 먼저 검증하고, 검증한 동일 이미지 스냅샷으로 GIF를 조립한다. DB 저장이 실패하면 생성 중인 파일도 정리한다.
+1. 내보낸 dialog/session을 계속 사용하면 앱이 `pmtcon-gif-frame-sheet-v2` manifest와
+   page slot을 유지하므로 JSON을 다시 넣지 않는다. 수정된 결과 page만 놓는다.
+2. 앱을 재시작했거나 별도 `교체하기`로 들어온 경우에는 복구 fallback으로
+   `frames_manifest.json`을 선택한 뒤 수정 결과를 연결한다.
+3. 수정된 PNG/JPG/JPEG/static WebP 결과를 page slot에 놓는다. 이름이 바뀌었거나
+   여러 page라면 각 결과를 해당 `frames_sheet_*.png` slot에 직접 연결한다.
+4. PNG는 권장 형식이다. JPG/JPEG/static WebP 또는 완전 불투명 PNG는 exact canvas
+   검사 뒤 `배경 포함으로 계속`을 명시적으로 선택해야 내부 PNG로 정규화된다.
+   animated WebP는 첫 frame으로 바꾸지 않고 오류로 알린다.
+5. painted checker는 실제 투명이 아니라는 경고를 표시하고 자동 제거하지 않는다.
+   배경 포함을 선택하면 checker pixel도 결과 GIF에 남는다.
+6. frame count, missing page, changed dimension, loop mode, duration summary와 전체
+   animation의 style drift·깜빡임을 검토한다. AI가 원본 그림체나 frame 일관성을
+   보장한다고 가정하지 않는다.
+7. mismatch가 있거나 불투명 결과의 명시적 선택이 없으면 자동 진행하지 않는다.
+8. 문제가 없으면 `GIF variant 만들기`를 실행한다.
+9. PMTCONCON Studio가 frame index 순서대로 셀을 crop하고 duration/loop mode를 유지해 animated GIF를 다시 만든다.
+10. 결과는 `processed_variants/gif_frame_reimports` 계열의 새 GIF 파일이며 원본 GIF는 보존한다.
+11. single GIF 아이콘이고 선택한 export profile 셀 크기가 프레임 시트 셀 크기와 같으면 export 활성 variant로 설정할 수 있다.
+12. 프레임 시트에는 내보낼 당시의 source와 crop·회전·반전·텍스트·정적 효과·모션·반복 recipe hash가 기록된다. 그 뒤 원본이나 recipe가 바뀌었다면 재가져온 GIF는 파일 variant로만 보존하고 현재 export의 활성 variant로 잘못 연결하지 않는다.
+13. 선택한 대상 아이콘 ID와 manifest의 icon_id가 다르면 파일을 만들기 전에 중단한다.
+14. manifest의 ID·결과 파일명·좌표·페이지/프레임/픽셀 작업량을 먼저 검증하고, 검증한 동일 이미지 스냅샷으로 GIF를 조립한다. DB 저장이 실패하면 생성 중인 파일도 정리한다.
 
 ## 우클릭 기반 작업 시트 흐름
 

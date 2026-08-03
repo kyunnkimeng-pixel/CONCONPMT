@@ -672,6 +672,53 @@ mod tests {
     }
 
     #[test]
+    fn novelai_gif_preset_preserves_200px_cells_and_64px_page_extents() {
+        let connection = connection();
+        let presets = list_sheet_grid_presets(&connection, None).unwrap();
+        let preset = presets
+            .iter()
+            .find(|preset| preset.id == "builtin_novelai_gif_200_4x4_1024")
+            .expect("NovelAI GIF preset should be seeded");
+
+        assert!(preset.is_builtin);
+        assert_eq!(preset.kind, "gif_frame_export");
+        assert_eq!((preset.cell_width, preset.cell_height), (200, 200));
+        assert_eq!(preset.columns, Some(4));
+        assert_eq!(preset.frames_per_page, Some(16));
+        assert_eq!(
+            (preset.max_sheet_width, preset.max_sheet_height),
+            (1024, 1024)
+        );
+        assert_eq!(
+            (
+                preset.gap_x,
+                preset.gap_y,
+                preset.border_left,
+                preset.border_top,
+                preset.border_right,
+                preset.border_bottom,
+            ),
+            (56, 56, 28, 28, 28, 28)
+        );
+
+        for count in 1_i64..=4 {
+            let width = preset.border_left
+                + preset.border_right
+                + count * preset.cell_width
+                + (count - 1) * preset.gap_x;
+            let height = preset.border_top
+                + preset.border_bottom
+                + count * preset.cell_height
+                + (count - 1) * preset.gap_y;
+
+            assert_eq!(width, 256 * count);
+            assert_eq!(height, 256 * count);
+            assert_eq!(width % 64, 0);
+            assert_eq!(height % 64, 0);
+        }
+    }
+
+    #[test]
     fn user_preset_persists_can_be_defaulted_and_duplicated() {
         let mut connection = connection();
         let collection =

@@ -125,6 +125,8 @@ pub fn run() {
             commands::sheet::reimport_edit_sheet,
             commands::sheet::analyze_gif_frame_sheet_export,
             commands::sheet::export_gif_frame_sheet,
+            commands::sheet::start_gif_frame_sheet_page_drag,
+            commands::sheet::reveal_gif_frame_sheet_page,
             commands::sheet::validate_gif_frame_sheet_reimport,
             commands::sheet::reimport_gif_frame_sheet,
             commands::sheet::list_sheet_grid_presets,
